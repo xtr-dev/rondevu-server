@@ -13,11 +13,22 @@ export interface AppConfig {
 export function createApp(storage: Storage, config: AppConfig) {
   const app = new Hono();
 
-  // Enable CORS
+  // Enable CORS with dynamic origin handling
   app.use('/*', cors({
-    origin: config.corsOrigins,
+    origin: (origin) => {
+      // If no origin restrictions (wildcard), allow any origin
+      if (config.corsOrigins.length === 1 && config.corsOrigins[0] === '*') {
+        return origin;
+      }
+      // Otherwise check if origin is in allowed list
+      if (config.corsOrigins.includes(origin)) {
+        return origin;
+      }
+      // Default to first allowed origin
+      return config.corsOrigins[0];
+    },
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type'],
+    allowHeaders: ['Content-Type', 'Origin'],
     exposeHeaders: ['Content-Type'],
     maxAge: 600,
     credentials: true,
