@@ -1,5 +1,5 @@
 {
-  "name": "rondevu",
+  "name": "@xtr-dev/rondevu-server",
   "version": "1.0.0",
   "description": "Open signaling and tracking server for peer discovery in distributed P2P applications",
   "main": "dist/index.js",
