@@ -36,4 +36,25 @@ export default {
     // Handle request
     return app.fetch(request, env, ctx);
   },
+
+  /**
+   * Scheduled handler for cron triggers
+   * Runs every 5 minutes to clean up expired sessions
+   */
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    const storage = new D1Storage(env.DB);
+    const now = Date.now();
+
+    try {
+      // Delete expired sessions
+      await storage.db
+        .prepare('DELETE FROM sessions WHERE expires_at < ?')
+        .bind(now)
+        .run();
+
+      console.log(`Cleaned up expired sessions at ${new Date(now).toISOString()}`);
+    } catch (error) {
+      console.error('Error cleaning up sessions:', error);
+    }
+  },
 };
