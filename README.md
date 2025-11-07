@@ -4,7 +4,7 @@
 
 ## Rondevu Server
 
-A simple HTTP server for WebRTC peer signaling and discovery.
+A simple TypeScript HTTP server for WebRTC peer signaling and discovery.
 
 **Three ways to connect:** by topic, by peer ID, or by connection ID.
 
