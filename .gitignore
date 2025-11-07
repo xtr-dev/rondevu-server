@@ -11,4 +11,3 @@ data/
 .wrangler/
 .dev.vars
 wrangler.toml.backup
-wrangler.toml
