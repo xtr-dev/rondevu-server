@@ -1,10 +1,24 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Storage } from './storage/types.ts';
+import type { Context } from 'hono';
 
 export interface AppConfig {
   sessionTimeout: number;
   corsOrigins: string[];
+}
+
+/**
+ * Determines the origin for session isolation.
+ * If X-Rondevu-Global header is set to 'true', returns the global origin (https://ronde.vu).
+ * Otherwise, returns the request's Origin header.
+ */
+function getOrigin(c: Context): string {
+  const globalHeader = c.req.header('X-Rondevu-Global');
+  if (globalHeader === 'true') {
+    return 'https://ronde.vu';
+  }
+  return c.req.header('Origin') || c.req.header('origin') || 'unknown';
 }
 
 /**
@@ -28,7 +42,7 @@ export function createApp(storage: Storage, config: AppConfig) {
       return config.corsOrigins[0];
     },
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Origin'],
+    allowHeaders: ['Content-Type', 'Origin', 'X-Rondevu-Global'],
     exposeHeaders: ['Content-Type'],
     maxAge: 600,
     credentials: true,
@@ -41,7 +55,7 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.get('/', async (c) => {
     try {
-      const origin = c.req.header('Origin') || c.req.header('origin') || 'unknown';
+      const origin = getOrigin(c);
       const page = parseInt(c.req.query('page') || '1', 10);
       const limit = parseInt(c.req.query('limit') || '100', 10);
 
@@ -60,7 +74,7 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.get('/:topic/sessions', async (c) => {
     try {
-      const origin = c.req.header('Origin') || c.req.header('origin') || 'unknown';
+      const origin = getOrigin(c);
       const topic = c.req.param('topic');
 
       if (!topic) {
@@ -96,7 +110,7 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.post('/:topic/offer', async (c) => {
     try {
-      const origin = c.req.header('Origin') || c.req.header('origin') || 'unknown';
+      const origin = getOrigin(c);
       const topic = c.req.param('topic');
       const body = await c.req.json();
       const { peerId, offer, code: customCode } = body;
@@ -138,7 +152,7 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.post('/answer', async (c) => {
     try {
-      const origin = c.req.header('Origin') || c.req.header('origin') || 'unknown';
+      const origin = getOrigin(c);
       const body = await c.req.json();
       const { code, answer, candidate, side } = body;
 
@@ -192,7 +206,7 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.post('/poll', async (c) => {
     try {
-      const origin = c.req.header('Origin') || c.req.header('origin') || 'unknown';
+      const origin = getOrigin(c);
       const body = await c.req.json();
       const { code, side } = body;
 
