@@ -67,8 +67,8 @@ export function createApp(storage: Storage, config: AppConfig) {
         return c.json({ error: 'Missing required parameter: topic' }, 400);
       }
 
-      if (topic.length > 256) {
-        return c.json({ error: 'Topic string must be 256 characters or less' }, 400);
+      if (topic.length > 1024) {
+        return c.json({ error: 'Topic string must be 1024 characters or less' }, 400);
       }
 
       const sessions = await storage.listSessionsByTopic(origin, topic);
@@ -76,7 +76,7 @@ export function createApp(storage: Storage, config: AppConfig) {
       return c.json({
         sessions: sessions.map(s => ({
           code: s.code,
-          info: s.info,
+          peerId: s.peerId,
           offer: s.offer,
           offerCandidates: s.offerCandidates,
           createdAt: s.createdAt,
@@ -92,29 +92,29 @@ export function createApp(storage: Storage, config: AppConfig) {
   /**
    * POST /:topic/offer
    * Creates a new offer and returns a unique session code
-   * Body: { info: string, offer: string }
+   * Body: { peerId: string, offer: string }
    */
   app.post('/:topic/offer', async (c) => {
     try {
       const origin = c.req.header('Origin') || c.req.header('origin') || 'unknown';
       const topic = c.req.param('topic');
       const body = await c.req.json();
-      const { info, offer } = body;
+      const { peerId, offer, code: customCode } = body;
 
       if (!topic || typeof topic !== 'string') {
         return c.json({ error: 'Missing or invalid required parameter: topic' }, 400);
       }
 
-      if (topic.length > 256) {
-        return c.json({ error: 'Topic string must be 256 characters or less' }, 400);
+      if (topic.length > 1024) {
+        return c.json({ error: 'Topic string must be 1024 characters or less' }, 400);
       }
 
-      if (!info || typeof info !== 'string') {
-        return c.json({ error: 'Missing or invalid required parameter: info' }, 400);
+      if (!peerId || typeof peerId !== 'string') {
+        return c.json({ error: 'Missing or invalid required parameter: peerId' }, 400);
       }
 
-      if (info.length > 1024) {
-        return c.json({ error: 'Info string must be 1024 characters or less' }, 400);
+      if (peerId.length > 1024) {
+        return c.json({ error: 'PeerId string must be 1024 characters or less' }, 400);
       }
 
       if (!offer || typeof offer !== 'string') {
@@ -122,7 +122,7 @@ export function createApp(storage: Storage, config: AppConfig) {
       }
 
       const expiresAt = Date.now() + config.sessionTimeout;
-      const code = await storage.createSession(origin, topic, info, offer, expiresAt);
+      const code = await storage.createSession(origin, topic, peerId, offer, expiresAt, customCode);
 
       return c.json({ code }, 200);
     } catch (err) {

@@ -12,7 +12,7 @@ This guide covers deploying Rondevu to various platforms.
 
 ## Cloudflare Workers
 
-Deploy to Cloudflare's edge network using Cloudflare Workers and KV storage.
+Deploy to Cloudflare's edge network using Cloudflare Workers and D1 storage.
 
 ### Prerequisites
 
@@ -27,26 +27,34 @@ npm install -g wrangler
    wrangler login
    ```
 
-2. **Create KV Namespace**
+2. **Create D1 Database**
    ```bash
    # For production
-   wrangler kv:namespace create SESSIONS
+   npx wrangler d1 create rondevu-sessions
 
-   # This will output something like:
-   # { binding = "SESSIONS", id = "abc123..." }
+   # This will output:
+   # database_name = "rondevu-sessions"
+   # database_id = "abc123..."
    ```
 
 3. **Update wrangler.toml**
 
-   Edit `wrangler.toml` and replace `YOUR_KV_NAMESPACE_ID` with the ID from step 2:
+   Edit `wrangler.toml` and replace the `database_id` with the ID from step 2:
 
    ```toml
-   [[kv_namespaces]]
-   binding = "SESSIONS"
-   id = "abc123..."  # Your actual KV namespace ID
+   [[d1_databases]]
+   binding = "DB"
+   database_name = "rondevu-sessions"
+   database_id = "abc123..."  # Your actual D1 database ID
    ```
 
-4. **Configure Environment Variables** (Optional)
+4. **Run Database Migration**
+   ```bash
+   # Run the migration on the remote database
+   npx wrangler d1 execute rondevu-sessions --remote --file=./migrations/0001_add_peer_id.sql
+   ```
+
+5. **Configure Environment Variables** (Optional)
 
    Update `wrangler.toml` to customize settings:
 
@@ -64,7 +72,7 @@ npx wrangler dev
 
 # The local development server will:
 # - Start on http://localhost:8787
-# - Use a local KV namespace automatically
+# - Use a local D1 database automatically
 # - Hot-reload on file changes
 ```
 
@@ -109,9 +117,9 @@ npx wrangler tail
 Cloudflare Workers Free Tier includes:
 - 100,000 requests/day
 - 10ms CPU time per request
-- KV: 100,000 reads/day, 1,000 writes/day
+- D1: 5 GB storage, 5 million reads/day, 100,000 writes/day
 
-For higher usage, see [Cloudflare Workers pricing](https://workers.cloudflare.com/#plans).
+For higher usage, see [Cloudflare Workers pricing](https://workers.cloudflare.com/#plans) and [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
 
 ### Advantages
 

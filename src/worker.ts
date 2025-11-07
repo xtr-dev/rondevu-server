@@ -1,11 +1,11 @@
 import { createApp } from './app.ts';
-import { KVStorage } from './storage/kv.ts';
+import { D1Storage } from './storage/d1.ts';
 
 /**
  * Cloudflare Workers environment bindings
  */
 export interface Env {
-  SESSIONS: KVNamespace;
+  DB: D1Database;
   SESSION_TIMEOUT?: string;
   CORS_ORIGINS?: string;
 }
@@ -15,8 +15,8 @@ export interface Env {
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Initialize KV storage
-    const storage = new KVStorage(env.SESSIONS);
+    // Initialize D1 storage
+    const storage = new D1Storage(env.DB);
 
     // Parse configuration
     const sessionTimeout = env.SESSION_TIMEOUT

@@ -28,7 +28,7 @@ export class SQLiteStorage implements Storage {
         code TEXT PRIMARY KEY,
         origin TEXT NOT NULL,
         topic TEXT NOT NULL,
-        info TEXT NOT NULL CHECK(length(info) <= 1024),
+        peer_id TEXT NOT NULL CHECK(length(peer_id) <= 1024),
         offer TEXT NOT NULL,
         answer TEXT,
         offer_candidates TEXT NOT NULL DEFAULT '[]',
@@ -62,19 +62,19 @@ export class SQLiteStorage implements Storage {
     return randomUUID();
   }
 
-  async createSession(origin: string, topic: string, info: string, offer: string, expiresAt: number): Promise<string> {
-    // Validate info length
-    if (info.length > 1024) {
-      throw new Error('Info string must be 1024 characters or less');
+  async createSession(origin: string, topic: string, peerId: string, offer: string, expiresAt: number, customCode?: string): Promise<string> {
+    // Validate peerId length
+    if (peerId.length > 1024) {
+      throw new Error('PeerId string must be 1024 characters or less');
     }
 
     let code: string;
     let attempts = 0;
     const maxAttempts = 10;
 
-    // Try to generate a unique code
+    // Try to generate or use custom code
     do {
-      code = this.generateCode();
+      code = customCode || this.generateCode();
       attempts++;
 
       if (attempts > maxAttempts) {
@@ -83,15 +83,19 @@ export class SQLiteStorage implements Storage {
 
       try {
         const stmt = this.db.prepare(`
-          INSERT INTO sessions (code, origin, topic, info, offer, created_at, expires_at)
+          INSERT INTO sessions (code, origin, topic, peer_id, offer, created_at, expires_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `);
 
-        stmt.run(code, origin, topic, info, offer, Date.now(), expiresAt);
+        stmt.run(code, origin, topic, peerId, offer, Date.now(), expiresAt);
         break;
       } catch (err: any) {
-        // If unique constraint failed, try again
+        // If unique constraint failed with custom code, throw error
         if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+          if (customCode) {
+            throw new Error(`Session code '${customCode}' already exists`);
+          }
+          // Try again with new generated code
           continue;
         }
         throw err;
@@ -114,7 +118,7 @@ export class SQLiteStorage implements Storage {
       code: row.code,
       origin: row.origin,
       topic: row.topic,
-      info: row.info,
+      peerId: row.peer_id,
       offer: row.offer,
       answer: row.answer || undefined,
       offerCandidates: JSON.parse(row.offer_candidates),
@@ -189,7 +193,7 @@ export class SQLiteStorage implements Storage {
       code: row.code,
       origin: row.origin,
       topic: row.topic,
-      info: row.info,
+      peerId: row.peer_id,
       offer: row.offer,
       answer: row.answer || undefined,
       offerCandidates: JSON.parse(row.offer_candidates),

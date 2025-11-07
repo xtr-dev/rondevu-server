@@ -5,7 +5,7 @@ export interface Session {
   code: string;
   origin: string;
   topic: string;
-  info: string;
+  peerId: string;
   offer: string;
   answer?: string;
   offerCandidates: string[];
@@ -23,12 +23,13 @@ export interface Storage {
    * Creates a new session with the given offer
    * @param origin The Origin header from the request
    * @param topic The topic to post the offer to
-   * @param info User info string (max 1024 chars)
+   * @param peerId Peer identifier string (max 1024 chars)
    * @param offer The WebRTC SDP offer message
    * @param expiresAt Unix timestamp when the session should expire
+   * @param customCode Optional custom code (if not provided, generates UUID)
    * @returns The unique session code
    */
-  createSession(origin: string, topic: string, info: string, offer: string, expiresAt: number): Promise<string>;
+  createSession(origin: string, topic: string, peerId: string, offer: string, expiresAt: number, customCode?: string): Promise<string>;
 
   /**
    * Lists all unanswered sessions for a given origin and topic
