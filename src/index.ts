@@ -31,6 +31,7 @@ async function main() {
   const app = createApp(storage, {
     sessionTimeout: config.sessionTimeout,
     corsOrigins: config.corsOrigins,
+    version: process.env.RONDEVU_VERSION || 'unknown',
   });
 
   const server = serve({

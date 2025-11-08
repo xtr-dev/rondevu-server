@@ -9,7 +9,7 @@
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "deploy": "npx wrangler deploy src/worker.ts"
+    "deploy": "npx wrangler deploy src/worker.ts --var VERSION:$(git rev-parse --short HEAD)"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251014.0",

@@ -6,6 +6,7 @@ import type { Context } from 'hono';
 export interface AppConfig {
   sessionTimeout: number;
   corsOrigins: string[];
+  version?: string;
 }
 
 /**
@@ -54,7 +55,7 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.get('/', (c) => {
     return c.json({
-      version: process.env.RONDEVU_VERSION || 'unknown'
+      version: config.version || 'unknown'
     });
   });
 

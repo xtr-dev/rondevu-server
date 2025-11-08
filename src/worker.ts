@@ -8,6 +8,7 @@ export interface Env {
   DB: D1Database;
   SESSION_TIMEOUT?: string;
   CORS_ORIGINS?: string;
+  VERSION?: string;
 }
 
 /**
@@ -31,6 +32,7 @@ export default {
     const app = createApp(storage, {
       sessionTimeout,
       corsOrigins,
+      version: env.VERSION || 'unknown',
     });
 
     // Handle request
