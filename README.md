@@ -6,6 +6,7 @@ Meet peers by topic, by peer ID, or by connection ID.
 
 **Related repositories:**
 - [rondevu-client](https://github.com/xtr-dev/rondevu-client) - TypeScript client library
+- [rondevu-demo](https://github.com/xtr-dev/rondevu-demo) - Interactive demo
 
 ---
 
