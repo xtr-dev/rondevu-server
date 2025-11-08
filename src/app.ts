@@ -50,10 +50,20 @@ export function createApp(storage: Storage, config: AppConfig) {
 
   /**
    * GET /
+   * Returns server version information
+   */
+  app.get('/', (c) => {
+    return c.json({
+      version: process.env.RONDEVU_VERSION || 'unknown'
+    });
+  });
+
+  /**
+   * GET /topics
    * Lists all topics with their unanswered session counts (paginated)
    * Query params: page (default: 1), limit (default: 100, max: 1000)
    */
-  app.get('/', async (c) => {
+  app.get('/topics', async (c) => {
     try {
       const origin = getOrigin(c);
       const page = parseInt(c.req.query('page') || '1', 10);

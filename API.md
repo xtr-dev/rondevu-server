@@ -19,6 +19,33 @@ This allows multiple peers from the same application (origin) to discover each o
 
 ## GET `/`
 
+Returns server version information including the git commit hash used to build the server.
+
+### Response
+
+**Content-Type:** `application/json`
+
+**Success (200 OK):**
+```json
+{
+  "version": "a1b2c3d"
+}
+```
+
+**Notes:**
+- Returns the git commit hash from build time
+- Returns "unknown" if git information is not available
+
+### Example
+
+```bash
+curl -X GET http://localhost:3000/
+```
+
+---
+
+## GET `/topics`
+
 Lists all topics with the count of available peers for each (paginated). Returns only topics that have unanswered sessions.
 
 ### Request
@@ -70,13 +97,13 @@ Lists all topics with the count of available peers for each (paginated). Returns
 
 **Default pagination (page 1, limit 100):**
 ```bash
-curl -X GET http://localhost:3000/ \
+curl -X GET http://localhost:3000/topics \
   -H "Origin: https://example.com"
 ```
 
 **Custom pagination:**
 ```bash
-curl -X GET "http://localhost:3000/?page=2&limit=50" \
+curl -X GET "http://localhost:3000/topics?page=2&limit=50" \
   -H "Origin: https://example.com"
 ```
 
@@ -403,26 +430,29 @@ All endpoints may return the following error responses:
 
 ### Peer Discovery and Connection
 
-1. **Discover active topics:**
-   - GET `/` to see all topics and peer counts
+1. **Check server version (optional):**
+   - GET `/` to see server version information
+
+2. **Discover active topics:**
+   - GET `/topics` to see all topics and peer counts
    - Optional: paginate through results with `?page=2&limit=100`
 
-2. **Peer A announces availability:**
+3. **Peer A announces availability:**
    - POST `/:topic/offer` with peer identifier and signaling data
    - Receives a unique session code
 
-3. **Peer B discovers peers:**
+4. **Peer B discovers peers:**
    - GET `/:topic/sessions` to list available sessions in a topic
    - Filters out sessions with their own info to avoid self-connection
    - Selects a peer to connect to
 
-4. **Peer B initiates connection:**
+5. **Peer B initiates connection:**
    - POST `/answer` with the session code and their signaling data
 
-5. **Both peers exchange signaling information:**
+6. **Both peers exchange signaling information:**
    - POST `/answer` with additional signaling data as needed
    - POST `/poll` to retrieve signaling data from the other peer
 
-6. **Peer connection established**
+7. **Peer connection established**
    - Peers use exchanged signaling data to establish direct connection
    - Session automatically expires after configured timeout
