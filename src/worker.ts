@@ -48,13 +48,10 @@ export default {
     const now = Date.now();
 
     try {
-      // Delete expired sessions
-      await storage.db
-        .prepare('DELETE FROM sessions WHERE expires_at < ?')
-        .bind(now)
-        .run();
+      // Delete expired sessions using the storage method
+      const deletedCount = await storage.cleanupExpiredSessions();
 
-      console.log(`Cleaned up expired sessions at ${new Date(now).toISOString()}`);
+      console.log(`Cleaned up ${deletedCount} expired sessions at ${new Date(now).toISOString()}`);
     } catch (error) {
       console.error('Error cleaning up sessions:', error);
     }
