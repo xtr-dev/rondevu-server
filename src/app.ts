@@ -152,6 +152,12 @@ export function createApp(storage: Storage, config: AppConfig) {
       return c.json({ code }, 200);
     } catch (err) {
       console.error('Error creating offer:', err);
+
+      // Check if it's a session code clash error
+      if (err instanceof Error && err.message.includes('already exists')) {
+        return c.json({ error: err.message }, 409);
+      }
+
       return c.json({ error: 'Internal server error' }, 500);
     }
   });
