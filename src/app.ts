@@ -190,5 +190,28 @@ export function createApp(storage: Storage, config: AppConfig) {
     }
   });
 
+  /**
+   * POST /leave
+   * Ends a session by deleting the offer
+   * Body: { code: string }
+   */
+  app.post('/leave', async (c) => {
+    try {
+      const body = await c.req.json();
+      const { code } = body;
+
+      if (!code || typeof code !== 'string') {
+        return c.json({ error: 'Missing or invalid required parameter: code' }, 400);
+      }
+
+      await storage.deleteOffer(code);
+
+      return c.json({ success: true }, 200);
+    } catch (err) {
+      console.error('Error leaving session:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
   return app;
 }
