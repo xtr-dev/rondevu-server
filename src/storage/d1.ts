@@ -27,7 +27,6 @@ export class D1Storage implements Storage {
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS offers (
         code TEXT PRIMARY KEY,
-        origin TEXT NOT NULL,
         peer_id TEXT NOT NULL CHECK(length(peer_id) <= 1024),
         offer TEXT NOT NULL,
         answer TEXT,
@@ -38,12 +37,10 @@ export class D1Storage implements Storage {
       );
 
       CREATE INDEX IF NOT EXISTS idx_offers_expires_at ON offers(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_offers_origin ON offers(origin);
     `);
   }
 
   async createOffer(
-    origin: string,
     peerId: string,
     offer: string,
     expiresAt: number,
@@ -64,9 +61,9 @@ export class D1Storage implements Storage {
 
       try {
         await this.db.prepare(`
-          INSERT INTO offers (code, origin, peer_id, offer, created_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(code, origin, peerId, offer, Date.now(), expiresAt).run();
+          INSERT INTO offers (code, peer_id, offer, created_at, expires_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).bind(code, peerId, offer, Date.now(), expiresAt).run();
 
         break;
       } catch (err: any) {
@@ -85,12 +82,12 @@ export class D1Storage implements Storage {
     return code;
   }
 
-  async getOffer(code: string, origin: string): Promise<Offer | null> {
+  async getOffer(code: string): Promise<Offer | null> {
     try {
       const result = await this.db.prepare(`
         SELECT * FROM offers
-        WHERE code = ? AND origin = ? AND expires_at > ?
-      `).bind(code, origin, Date.now()).first();
+        WHERE code = ? AND expires_at > ?
+      `).bind(code, Date.now()).first();
 
       if (!result) {
         return null;
@@ -100,7 +97,6 @@ export class D1Storage implements Storage {
 
       return {
         code: row.code,
-        origin: row.origin,
         peerId: row.peer_id,
         offer: row.offer,
         answer: row.answer || undefined,
@@ -115,12 +111,12 @@ export class D1Storage implements Storage {
     }
   }
 
-  async updateOffer(code: string, origin: string, update: Partial<Offer>): Promise<void> {
-    // Verify offer exists and origin matches
-    const current = await this.getOffer(code, origin);
+  async updateOffer(code: string, update: Partial<Offer>): Promise<void> {
+    // Verify offer exists
+    const current = await this.getOffer(code);
 
     if (!current) {
-      throw new Error('Offer not found or origin mismatch');
+      throw new Error('Offer not found');
     }
 
     // Build update query dynamically based on what fields are being updated
@@ -147,13 +143,13 @@ export class D1Storage implements Storage {
     }
 
     // Add WHERE clause values
-    values.push(code, origin);
+    values.push(code);
 
     // D1 provides strong consistency, so this update is atomic and immediately visible
     const query = `
       UPDATE offers
       SET ${updates.join(', ')}
-      WHERE code = ? AND origin = ?
+      WHERE code = ?
     `;
 
     await this.db.prepare(query).bind(...values).run();

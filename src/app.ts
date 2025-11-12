@@ -10,19 +10,6 @@ export interface AppConfig {
 }
 
 /**
- * Determines the origin for offer isolation.
- * If X-Rondevu-Global header is set to 'true', returns the global origin (https://ronde.vu).
- * Otherwise, returns the request's Origin header.
- */
-function getOrigin(c: Context): string {
-  const globalHeader = c.req.header('X-Rondevu-Global');
-  if (globalHeader === 'true') {
-    return 'https://ronde.vu';
-  }
-  return c.req.header('Origin') || c.req.header('origin') || 'unknown';
-}
-
-/**
  * Creates the Hono application with WebRTC signaling endpoints
  */
 export function createApp(storage: Storage, config: AppConfig) {
@@ -43,7 +30,7 @@ export function createApp(storage: Storage, config: AppConfig) {
       return config.corsOrigins[0];
     },
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Origin', 'X-Rondevu-Global'],
+    allowHeaders: ['Content-Type', 'Origin'],
     exposeHeaders: ['Content-Type'],
     maxAge: 600,
     credentials: true,
@@ -78,7 +65,6 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.post('/offer', async (c) => {
     try {
-      const origin = getOrigin(c);
       const body = await c.req.json();
       const { peerId, offer, code: customCode } = body;
 
@@ -95,7 +81,7 @@ export function createApp(storage: Storage, config: AppConfig) {
       }
 
       const expiresAt = Date.now() + config.offerTimeout;
-      const code = await storage.createOffer(origin, peerId, offer, expiresAt, customCode);
+      const code = await storage.createOffer(peerId, offer, expiresAt, customCode);
 
       return c.json({ code }, 200);
     } catch (err) {
@@ -117,7 +103,6 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.post('/answer', async (c) => {
     try {
-      const origin = getOrigin(c);
       const body = await c.req.json();
       const { code, answer, candidate, side } = body;
 
@@ -137,23 +122,23 @@ export function createApp(storage: Storage, config: AppConfig) {
         return c.json({ error: 'Cannot provide both answer and candidate' }, 400);
       }
 
-      const offer = await storage.getOffer(code, origin);
+      const offer = await storage.getOffer(code);
 
       if (!offer) {
-        return c.json({ error: 'Offer not found, expired, or origin mismatch' }, 404);
+        return c.json({ error: 'Offer not found or expired' }, 404);
       }
 
       if (answer) {
-        await storage.updateOffer(code, origin, { answer });
+        await storage.updateOffer(code, { answer });
       }
 
       if (candidate) {
         if (side === 'offerer') {
           const updatedCandidates = [...offer.offerCandidates, candidate];
-          await storage.updateOffer(code, origin, { offerCandidates: updatedCandidates });
+          await storage.updateOffer(code, { offerCandidates: updatedCandidates });
         } else {
           const updatedCandidates = [...offer.answerCandidates, candidate];
-          await storage.updateOffer(code, origin, { answerCandidates: updatedCandidates });
+          await storage.updateOffer(code, { answerCandidates: updatedCandidates });
         }
       }
 
@@ -171,7 +156,6 @@ export function createApp(storage: Storage, config: AppConfig) {
    */
   app.post('/poll', async (c) => {
     try {
-      const origin = getOrigin(c);
       const body = await c.req.json();
       const { code, side } = body;
 
@@ -183,10 +167,10 @@ export function createApp(storage: Storage, config: AppConfig) {
         return c.json({ error: 'Invalid or missing parameter: side (must be "offerer" or "answerer")' }, 400);
       }
 
-      const offer = await storage.getOffer(code, origin);
+      const offer = await storage.getOffer(code);
 
       if (!offer) {
-        return c.json({ error: 'Offer not found, expired, or origin mismatch' }, 404);
+        return c.json({ error: 'Offer not found or expired' }, 404);
       }
 
       if (side === 'offerer') {

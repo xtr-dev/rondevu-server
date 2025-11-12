@@ -26,7 +26,6 @@ export class SQLiteStorage implements Storage {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS offers (
         code TEXT PRIMARY KEY,
-        origin TEXT NOT NULL,
         peer_id TEXT NOT NULL CHECK(length(peer_id) <= 1024),
         offer TEXT NOT NULL,
         answer TEXT,
@@ -37,7 +36,6 @@ export class SQLiteStorage implements Storage {
       );
 
       CREATE INDEX IF NOT EXISTS idx_offers_expires_at ON offers(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_offers_origin ON offers(origin);
     `);
   }
 
@@ -60,7 +58,7 @@ export class SQLiteStorage implements Storage {
     return randomUUID();
   }
 
-  async createOffer(origin: string, peerId: string, offer: string, expiresAt: number, customCode?: string): Promise<string> {
+  async createOffer(peerId: string, offer: string, expiresAt: number, customCode?: string): Promise<string> {
     // Validate peerId length
     if (peerId.length > 1024) {
       throw new Error('PeerId string must be 1024 characters or less');
@@ -81,11 +79,11 @@ export class SQLiteStorage implements Storage {
 
       try {
         const stmt = this.db.prepare(`
-          INSERT INTO offers (code, origin, peer_id, offer, created_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO offers (code, peer_id, offer, created_at, expires_at)
+          VALUES (?, ?, ?, ?, ?)
         `);
 
-        stmt.run(code, origin, peerId, offer, Date.now(), expiresAt);
+        stmt.run(code, peerId, offer, Date.now(), expiresAt);
         break;
       } catch (err: any) {
         // If unique constraint failed with custom code, throw error
@@ -103,12 +101,12 @@ export class SQLiteStorage implements Storage {
     return code;
   }
 
-  async getOffer(code: string, origin: string): Promise<Offer | null> {
+  async getOffer(code: string): Promise<Offer | null> {
     const stmt = this.db.prepare(`
-      SELECT * FROM offers WHERE code = ? AND origin = ? AND expires_at > ?
+      SELECT * FROM offers WHERE code = ? AND expires_at > ?
     `);
 
-    const row = stmt.get(code, origin, Date.now()) as any;
+    const row = stmt.get(code, Date.now()) as any;
 
     if (!row) {
       return null;
@@ -116,7 +114,6 @@ export class SQLiteStorage implements Storage {
 
     return {
       code: row.code,
-      origin: row.origin,
       peerId: row.peer_id,
       offer: row.offer,
       answer: row.answer || undefined,
@@ -127,11 +124,11 @@ export class SQLiteStorage implements Storage {
     };
   }
 
-  async updateOffer(code: string, origin: string, update: Partial<Offer>): Promise<void> {
-    const current = await this.getOffer(code, origin);
+  async updateOffer(code: string, update: Partial<Offer>): Promise<void> {
+    const current = await this.getOffer(code);
 
     if (!current) {
-      throw new Error('Offer not found or origin mismatch');
+      throw new Error('Offer not found');
     }
 
     const updates: string[] = [];
@@ -157,10 +154,9 @@ export class SQLiteStorage implements Storage {
     }
 
     values.push(code);
-    values.push(origin);
 
     const stmt = this.db.prepare(`
-      UPDATE offers SET ${updates.join(', ')} WHERE code = ? AND origin = ?
+      UPDATE offers SET ${updates.join(', ')} WHERE code = ?
     `);
 
     stmt.run(...values);
