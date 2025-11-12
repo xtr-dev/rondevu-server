@@ -1,10 +1,9 @@
 /**
- * Represents a WebRTC signaling session
+ * Represents a WebRTC signaling offer
  */
-export interface Session {
+export interface Offer {
   code: string;
   origin: string;
-  topic: string;
   peerId: string;
   offer: string;
   answer?: string;
@@ -15,71 +14,45 @@ export interface Session {
 }
 
 /**
- * Storage interface for session management
- * Implementations can use different backends (SQLite, Redis, Memory, etc.)
+ * Storage interface for offer management
+ * Implementations can use different backends (SQLite, D1, Memory, etc.)
  */
 export interface Storage {
   /**
-   * Creates a new session with the given offer
+   * Creates a new offer
    * @param origin The Origin header from the request
-   * @param topic The topic to post the offer to
    * @param peerId Peer identifier string (max 1024 chars)
    * @param offer The WebRTC SDP offer message
-   * @param expiresAt Unix timestamp when the session should expire
+   * @param expiresAt Unix timestamp when the offer should expire
    * @param customCode Optional custom code (if not provided, generates UUID)
-   * @returns The unique session code
+   * @returns The unique offer code
    */
-  createSession(origin: string, topic: string, peerId: string, offer: string, expiresAt: number, customCode?: string): Promise<string>;
+  createOffer(origin: string, peerId: string, offer: string, expiresAt: number, customCode?: string): Promise<string>;
 
   /**
-   * Lists all unanswered sessions for a given origin and topic
-   * @param origin The Origin header from the request
-   * @param topic The topic to list offers for
-   * @returns Array of sessions that haven't been answered yet
-   */
-  listSessionsByTopic(origin: string, topic: string): Promise<Session[]>;
-
-  /**
-   * Lists all topics for a given origin with their session counts
-   * @param origin The Origin header from the request
-   * @param page Page number (starting from 1)
-   * @param limit Number of results per page (max 1000)
-   * @returns Object with topics array and pagination metadata
-   */
-  listTopics(origin: string, page: number, limit: number): Promise<{
-    topics: Array<{ topic: string; count: number }>;
-    pagination: {
-      page: number;
-      limit: number;
-      total: number;
-      hasMore: boolean;
-    };
-  }>;
-
-  /**
-   * Retrieves a session by its code
-   * @param code The session code
+   * Retrieves an offer by its code
+   * @param code The offer code
    * @param origin The Origin header from the request (for validation)
-   * @returns The session if found, null otherwise
+   * @returns The offer if found, null otherwise
    */
-  getSession(code: string, origin: string): Promise<Session | null>;
+  getOffer(code: string, origin: string): Promise<Offer | null>;
 
   /**
-   * Updates an existing session with new data
-   * @param code The session code
+   * Updates an existing offer with new data
+   * @param code The offer code
    * @param origin The Origin header from the request (for validation)
-   * @param update Partial session data to update
+   * @param update Partial offer data to update
    */
-  updateSession(code: string, origin: string, update: Partial<Session>): Promise<void>;
+  updateOffer(code: string, origin: string, update: Partial<Offer>): Promise<void>;
 
   /**
-   * Deletes a session
-   * @param code The session code
+   * Deletes an offer
+   * @param code The offer code
    */
-  deleteSession(code: string): Promise<void>;
+  deleteOffer(code: string): Promise<void>;
 
   /**
-   * Removes expired sessions
+   * Removes expired offers
    * Should be called periodically to clean up old data
    */
   cleanup(): Promise<void>;

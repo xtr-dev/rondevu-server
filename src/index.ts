@@ -15,8 +15,9 @@ async function main() {
     port: config.port,
     storageType: config.storageType,
     storagePath: config.storagePath,
-    sessionTimeout: `${config.sessionTimeout}ms`,
+    offerTimeout: `${config.offerTimeout}ms`,
     corsOrigins: config.corsOrigins,
+    version: config.version,
   });
 
   let storage: Storage;
@@ -29,9 +30,9 @@ async function main() {
   }
 
   const app = createApp(storage, {
-    sessionTimeout: config.sessionTimeout,
+    offerTimeout: config.offerTimeout,
     corsOrigins: config.corsOrigins,
-    version: process.env.RONDEVU_VERSION || 'unknown',
+    version: config.version,
   });
 
   const server = serve({

@@ -6,8 +6,9 @@ export interface Config {
   port: number;
   storageType: 'sqlite' | 'memory';
   storagePath: string;
-  sessionTimeout: number;
+  offerTimeout: number;
   corsOrigins: string[];
+  version: string;
 }
 
 /**
@@ -18,9 +19,10 @@ export function loadConfig(): Config {
     port: parseInt(process.env.PORT || '3000', 10),
     storageType: (process.env.STORAGE_TYPE || 'sqlite') as 'sqlite' | 'memory',
     storagePath: process.env.STORAGE_PATH || ':memory:',
-    sessionTimeout: parseInt(process.env.SESSION_TIMEOUT || '300000', 10),
+    offerTimeout: parseInt(process.env.OFFER_TIMEOUT || '60000', 10),
     corsOrigins: process.env.CORS_ORIGINS
       ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
       : ['*'],
+    version: process.env.VERSION || 'unknown',
   };
 }

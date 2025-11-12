@@ -4,13 +4,13 @@ import { Storage } from './storage/types.ts';
 import type { Context } from 'hono';
 
 export interface AppConfig {
-  sessionTimeout: number;
+  offerTimeout: number;
   corsOrigins: string[];
   version?: string;
 }
 
 /**
- * Determines the origin for session isolation.
+ * Determines the origin for offer isolation.
  * If X-Rondevu-Global header is set to 'true', returns the global origin (https://ronde.vu).
  * Otherwise, returns the request's Origin header.
  */
@@ -60,79 +60,27 @@ export function createApp(storage: Storage, config: AppConfig) {
   });
 
   /**
-   * GET /topics
-   * Lists all topics with their unanswered session counts (paginated)
-   * Query params: page (default: 1), limit (default: 100, max: 1000)
+   * GET /health
+   * Health check endpoint with version
    */
-  app.get('/topics', async (c) => {
-    try {
-      const origin = getOrigin(c);
-      const page = parseInt(c.req.query('page') || '1', 10);
-      const limit = parseInt(c.req.query('limit') || '100', 10);
-
-      const result = await storage.listTopics(origin, page, limit);
-
-      return c.json(result);
-    } catch (err) {
-      console.error('Error listing topics:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
+  app.get('/health', (c) => {
+    return c.json({
+      status: 'ok',
+      timestamp: Date.now(),
+      version: config.version || 'unknown'
+    });
   });
 
   /**
-   * GET /:topic/sessions
-   * Lists all unanswered sessions for a topic
+   * POST /offer
+   * Creates a new offer and returns a unique code
+   * Body: { peerId: string, offer: string, code?: string }
    */
-  app.get('/:topic/sessions', async (c) => {
+  app.post('/offer', async (c) => {
     try {
       const origin = getOrigin(c);
-      const topic = c.req.param('topic');
-
-      if (!topic) {
-        return c.json({ error: 'Missing required parameter: topic' }, 400);
-      }
-
-      if (topic.length > 1024) {
-        return c.json({ error: 'Topic string must be 1024 characters or less' }, 400);
-      }
-
-      const sessions = await storage.listSessionsByTopic(origin, topic);
-
-      return c.json({
-        sessions: sessions.map(s => ({
-          code: s.code,
-          peerId: s.peerId,
-          offer: s.offer,
-          offerCandidates: s.offerCandidates,
-          createdAt: s.createdAt,
-          expiresAt: s.expiresAt,
-        })),
-      });
-    } catch (err) {
-      console.error('Error listing sessions:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  /**
-   * POST /:topic/offer
-   * Creates a new offer and returns a unique session code
-   * Body: { peerId: string, offer: string }
-   */
-  app.post('/:topic/offer', async (c) => {
-    try {
-      const origin = getOrigin(c);
-      const topic = c.req.param('topic');
       const body = await c.req.json();
       const { peerId, offer, code: customCode } = body;
-
-      if (!topic || typeof topic !== 'string') {
-        return c.json({ error: 'Missing or invalid required parameter: topic' }, 400);
-      }
-
-      if (topic.length > 1024) {
-        return c.json({ error: 'Topic string must be 1024 characters or less' }, 400);
-      }
 
       if (!peerId || typeof peerId !== 'string') {
         return c.json({ error: 'Missing or invalid required parameter: peerId' }, 400);
@@ -146,14 +94,14 @@ export function createApp(storage: Storage, config: AppConfig) {
         return c.json({ error: 'Missing or invalid required parameter: offer' }, 400);
       }
 
-      const expiresAt = Date.now() + config.sessionTimeout;
-      const code = await storage.createSession(origin, topic, peerId, offer, expiresAt, customCode);
+      const expiresAt = Date.now() + config.offerTimeout;
+      const code = await storage.createOffer(origin, peerId, offer, expiresAt, customCode);
 
       return c.json({ code }, 200);
     } catch (err) {
       console.error('Error creating offer:', err);
 
-      // Check if it's a session code clash error
+      // Check if it's a code clash error
       if (err instanceof Error && err.message.includes('already exists')) {
         return c.json({ error: err.message }, 409);
       }
@@ -189,23 +137,23 @@ export function createApp(storage: Storage, config: AppConfig) {
         return c.json({ error: 'Cannot provide both answer and candidate' }, 400);
       }
 
-      const session = await storage.getSession(code, origin);
+      const offer = await storage.getOffer(code, origin);
 
-      if (!session) {
-        return c.json({ error: 'Session not found, expired, or origin mismatch' }, 404);
+      if (!offer) {
+        return c.json({ error: 'Offer not found, expired, or origin mismatch' }, 404);
       }
 
       if (answer) {
-        await storage.updateSession(code, origin, { answer });
+        await storage.updateOffer(code, origin, { answer });
       }
 
       if (candidate) {
         if (side === 'offerer') {
-          const updatedCandidates = [...session.offerCandidates, candidate];
-          await storage.updateSession(code, origin, { offerCandidates: updatedCandidates });
+          const updatedCandidates = [...offer.offerCandidates, candidate];
+          await storage.updateOffer(code, origin, { offerCandidates: updatedCandidates });
         } else {
-          const updatedCandidates = [...session.answerCandidates, candidate];
-          await storage.updateSession(code, origin, { answerCandidates: updatedCandidates });
+          const updatedCandidates = [...offer.answerCandidates, candidate];
+          await storage.updateOffer(code, origin, { answerCandidates: updatedCandidates });
         }
       }
 
@@ -218,7 +166,7 @@ export function createApp(storage: Storage, config: AppConfig) {
 
   /**
    * POST /poll
-   * Polls for session data (offer, answer, ICE candidates)
+   * Polls for offer data (offer, answer, ICE candidates)
    * Body: { code: string, side: 'offerer' | 'answerer' }
    */
   app.post('/poll', async (c) => {
@@ -235,35 +183,27 @@ export function createApp(storage: Storage, config: AppConfig) {
         return c.json({ error: 'Invalid or missing parameter: side (must be "offerer" or "answerer")' }, 400);
       }
 
-      const session = await storage.getSession(code, origin);
+      const offer = await storage.getOffer(code, origin);
 
-      if (!session) {
-        return c.json({ error: 'Session not found, expired, or origin mismatch' }, 404);
+      if (!offer) {
+        return c.json({ error: 'Offer not found, expired, or origin mismatch' }, 404);
       }
 
       if (side === 'offerer') {
         return c.json({
-          answer: session.answer || null,
-          answerCandidates: session.answerCandidates,
+          answer: offer.answer || null,
+          answerCandidates: offer.answerCandidates,
         });
       } else {
         return c.json({
-          offer: session.offer,
-          offerCandidates: session.offerCandidates,
+          offer: offer.offer,
+          offerCandidates: offer.offerCandidates,
         });
       }
     } catch (err) {
-      console.error('Error polling session:', err);
+      console.error('Error polling offer:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
-  });
-
-  /**
-   * GET /health
-   * Health check endpoint
-   */
-  app.get('/health', (c) => {
-    return c.json({ status: 'ok', timestamp: Date.now() });
   });
 
   return app;

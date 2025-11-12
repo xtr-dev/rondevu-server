@@ -6,7 +6,7 @@ import { D1Storage } from './storage/d1.ts';
  */
 export interface Env {
   DB: D1Database;
-  SESSION_TIMEOUT?: string;
+  OFFER_TIMEOUT?: string;
   CORS_ORIGINS?: string;
   VERSION?: string;
 }
@@ -20,9 +20,9 @@ export default {
     const storage = new D1Storage(env.DB);
 
     // Parse configuration
-    const sessionTimeout = env.SESSION_TIMEOUT
-      ? parseInt(env.SESSION_TIMEOUT, 10)
-      : 300000; // 5 minutes default
+    const offerTimeout = env.OFFER_TIMEOUT
+      ? parseInt(env.OFFER_TIMEOUT, 10)
+      : 60000; // 1 minute default
 
     const corsOrigins = env.CORS_ORIGINS
       ? env.CORS_ORIGINS.split(',').map(o => o.trim())
@@ -30,7 +30,7 @@ export default {
 
     // Create Hono app
     const app = createApp(storage, {
-      sessionTimeout,
+      offerTimeout,
       corsOrigins,
       version: env.VERSION || 'unknown',
     });
@@ -41,19 +41,19 @@ export default {
 
   /**
    * Scheduled handler for cron triggers
-   * Runs every 5 minutes to clean up expired sessions
+   * Runs every minute to clean up expired offers
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const storage = new D1Storage(env.DB);
     const now = Date.now();
 
     try {
-      // Delete expired sessions using the storage method
-      const deletedCount = await storage.cleanupExpiredSessions();
+      // Delete expired offers using the storage method
+      const deletedCount = await storage.cleanupExpiredOffers();
 
-      console.log(`Cleaned up ${deletedCount} expired sessions at ${new Date(now).toISOString()}`);
+      console.log(`Cleaned up ${deletedCount} expired offers at ${new Date(now).toISOString()}`);
     } catch (error) {
-      console.error('Error cleaning up sessions:', error);
+      console.error('Error cleaning up offers:', error);
     }
   },
 };
