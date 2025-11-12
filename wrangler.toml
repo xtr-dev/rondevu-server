@@ -10,7 +10,7 @@ database_id = "b94e3f71-816d-455b-a89d-927fa49532d0"
 
 # Environment variables
 [vars]
-SESSION_TIMEOUT = "300000"  # 5 minutes in milliseconds
+SESSION_TIMEOUT = "60000"  # 1 minute in milliseconds
 CORS_ORIGINS = "*"  # Comma-separated list of allowed origins
 VERSION = "unknown"  # Set to git commit hash before deploying
 
