@@ -1,8 +1,8 @@
 # Rondevu
 
-🎯 **Simple WebRTC peer signaling and discovery**
+🎯 **Simple WebRTC peer signaling**
 
-Meet peers by topic, by peer ID, or by connection ID.
+Direct peer-to-peer connections via offer/answer exchange.
 
 **Related repositories:**
 - [rondevu-client](https://github.com/xtr-dev/rondevu-client) - TypeScript client library
@@ -12,7 +12,7 @@ Meet peers by topic, by peer ID, or by connection ID.
 
 ## Rondevu Server
 
-HTTP signaling server for WebRTC peer discovery and connection establishment. Supports SQLite (Node.js/Docker) and Cloudflare D1 (Workers) storage backends.
+HTTP signaling server for WebRTC peer connection establishment. Supports SQLite (Node.js/Docker) and Cloudflare D1 (Workers) storage backends.
 
 ### Quick Start
 
@@ -35,19 +35,20 @@ npx wrangler deploy
 
 ```bash
 # Create offer
-POST /:topic/offer {"peerId":"alice","offer":"..."}
+POST /offer {"peerId":"alice","offer":"...","code":"my-room"}
 
-# List sessions
-GET /:topic/sessions
-
-# Send answer
-POST /answer {"code":"...","answer":"..."}
+# Send answer/candidates
+POST /answer {"code":"my-room","answer":"...","side":"answerer"}
 
 # Poll for updates
-POST /poll {"code":"...","side":"offerer|answerer"}
-```
+POST /poll {"code":"my-room","side":"offerer"}
 
-See [API.md](./API.md) for details.
+# Health check with version
+GET /health
+
+# Version info
+GET /
+```
 
 ### Configuration
 
@@ -56,9 +57,10 @@ Environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port (Node.js/Docker) |
-| `SESSION_TIMEOUT` | `300000` | Session timeout in milliseconds |
+| `OFFER_TIMEOUT` | `60000` | Offer timeout in milliseconds (1 minute) |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins |
-| `STORAGE_PATH` | `./sessions.db` | SQLite database path (use `:memory:` for in-memory) |
+| `STORAGE_PATH` | `./offers.db` | SQLite database path (use `:memory:` for in-memory) |
+| `VERSION` | `0.0.1` | Server version (semver) |
 
 ### License
 
