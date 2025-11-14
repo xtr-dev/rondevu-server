@@ -12,9 +12,13 @@ export class BloomFilter {
    * Creates a bloom filter from a base64 encoded bit array
    */
   constructor(base64Data: string, numHashes: number = 3) {
-    // Decode base64 to buffer
-    const buffer = Buffer.from(base64Data, 'base64');
-    this.bits = new Uint8Array(buffer);
+    // Decode base64 to Uint8Array (works in both Node.js and Workers)
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    this.bits = bytes;
     this.size = this.bits.length * 8;
     this.numHashes = numHashes;
   }
