@@ -15,7 +15,12 @@ async function main() {
     port: config.port,
     storageType: config.storageType,
     storagePath: config.storagePath,
-    offerTimeout: `${config.offerTimeout}ms`,
+    offerDefaultTtl: `${config.offerDefaultTtl}ms`,
+    offerMaxTtl: `${config.offerMaxTtl}ms`,
+    offerMinTtl: `${config.offerMinTtl}ms`,
+    cleanupInterval: `${config.cleanupInterval}ms`,
+    maxOffersPerRequest: config.maxOffersPerRequest,
+    maxTopicsPerOffer: config.maxTopicsPerOffer,
     corsOrigins: config.corsOrigins,
     version: config.version,
   });
@@ -29,11 +34,20 @@ async function main() {
     throw new Error('Unsupported storage type');
   }
 
-  const app = createApp(storage, {
-    offerTimeout: config.offerTimeout,
-    corsOrigins: config.corsOrigins,
-    version: config.version,
-  });
+  // Start periodic cleanup of expired offers
+  const cleanupInterval = setInterval(async () => {
+    try {
+      const now = Date.now();
+      const deleted = await storage.deleteExpiredOffers(now);
+      if (deleted > 0) {
+        console.log(`Cleanup: Deleted ${deleted} expired offer(s)`);
+      }
+    } catch (err) {
+      console.error('Cleanup error:', err);
+    }
+  }, config.cleanupInterval);
+
+  const app = createApp(storage, config);
 
   const server = serve({
     fetch: app.fetch,
@@ -41,18 +55,18 @@ async function main() {
   });
 
   console.log(`Server running on http://localhost:${config.port}`);
+  console.log('Ready to accept connections');
 
-  process.on('SIGINT', async () => {
+  // Graceful shutdown handler
+  const shutdown = async () => {
     console.log('\nShutting down gracefully...');
+    clearInterval(cleanupInterval);
     await storage.close();
     process.exit(0);
-  });
+  };
 
-  process.on('SIGTERM', async () => {
-    console.log('\nShutting down gracefully...');
-    await storage.close();
-    process.exit(0);
-  });
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 main().catch((err) => {

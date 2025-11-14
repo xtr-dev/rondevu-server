@@ -1,6 +1,7 @@
 name = "rondevu"
 main = "src/worker.ts"
 compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
 
 # D1 Database binding
 [[d1_databases]]
@@ -10,9 +11,17 @@ database_id = "b94e3f71-816d-455b-a89d-927fa49532d0"
 
 # Environment variables
 [vars]
-OFFER_TIMEOUT = "60000"  # 1 minute in milliseconds
+OFFER_DEFAULT_TTL = "60000"  # Default offer TTL: 1 minute
+OFFER_MAX_TTL = "86400000"  # Max offer TTL: 24 hours
+OFFER_MIN_TTL = "60000"  # Min offer TTL: 1 minute
+MAX_OFFERS_PER_REQUEST = "100"  # Max offers per request
+MAX_TOPICS_PER_OFFER = "50"  # Max topics per offer
 CORS_ORIGINS = "*"  # Comma-separated list of allowed origins
-VERSION = "0.0.1"  # Semantic version
+VERSION = "0.1.0"  # Semantic version
+
+# AUTH_SECRET should be set as a secret, not a var
+# Run: npx wrangler secret put AUTH_SECRET
+# Enter a 64-character hex string (32 bytes)
 
 # Build configuration
 [build]

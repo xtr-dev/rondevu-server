@@ -1,7 +1,7 @@
 {
   "name": "@xtr-dev/rondevu-server",
-  "version": "0.0.1",
-  "description": "Open signaling and tracking server for peer discovery in distributed P2P applications",
+  "version": "0.1.0",
+  "description": "Topic-based peer discovery and signaling server for distributed P2P applications",
   "main": "dist/index.js",
   "scripts": {
     "build": "node build.js",
