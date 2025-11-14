@@ -23,6 +23,8 @@ export interface IceCandidate {
   peerId: string;
   role: 'offerer' | 'answerer';
   candidate: string;
+  sdpMid: string | null;
+  sdpMLineIndex: number | null;
   createdAt: number;
 }
 
@@ -125,14 +127,18 @@ export interface Storage {
    * @param offerId Offer identifier
    * @param peerId Peer ID posting the candidates
    * @param role Role of the peer (offerer or answerer)
-   * @param candidates Array of ICE candidate strings
+   * @param candidates Array of ICE candidate objects
    * @returns Number of candidates added
    */
   addIceCandidates(
     offerId: string,
     peerId: string,
     role: 'offerer' | 'answerer',
-    candidates: string[]
+    candidates: Array<{
+      candidate: string;
+      sdpMid?: string | null;
+      sdpMLineIndex?: number | null;
+    }>
   ): Promise<number>;
 
   /**

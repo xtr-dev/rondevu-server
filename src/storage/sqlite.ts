@@ -56,6 +56,8 @@ export class SQLiteStorage implements Storage {
         peer_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
         candidate TEXT NOT NULL,
+        sdp_mid TEXT,
+        sdp_m_line_index INTEGER,
         created_at INTEGER NOT NULL,
         FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
       );
@@ -252,16 +254,28 @@ export class SQLiteStorage implements Storage {
     offerId: string,
     peerId: string,
     role: 'offerer' | 'answerer',
-    candidates: string[]
+    candidates: Array<{
+      candidate: string;
+      sdpMid?: string | null;
+      sdpMLineIndex?: number | null;
+    }>
   ): Promise<number> {
     const stmt = this.db.prepare(`
-      INSERT INTO ice_candidates (offer_id, peer_id, role, candidate, created_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO ice_candidates (offer_id, peer_id, role, candidate, sdp_mid, sdp_m_line_index, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const transaction = this.db.transaction((candidates: string[]) => {
-      for (const candidate of candidates) {
-        stmt.run(offerId, peerId, role, candidate, Date.now());
+    const transaction = this.db.transaction((candidates: typeof candidates) => {
+      for (const cand of candidates) {
+        stmt.run(
+          offerId,
+          peerId,
+          role,
+          cand.candidate,
+          cand.sdpMid ?? null,
+          cand.sdpMLineIndex ?? null,
+          Date.now()
+        );
       }
     });
 
@@ -297,6 +311,8 @@ export class SQLiteStorage implements Storage {
       peerId: row.peer_id,
       role: row.role,
       candidate: row.candidate,
+      sdpMid: row.sdp_mid,
+      sdpMLineIndex: row.sdp_m_line_index,
       createdAt: row.created_at,
     }));
   }
