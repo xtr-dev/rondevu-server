@@ -1,4 +1,4 @@
-import { Storage, Offer, IceCandidate, CreateOfferRequest, TopicInfo } from './types.ts';
+import { Storage, Offer, IceCandidate, CreateOfferRequest, TopicInfo, RTCIceCandidateInit } from './types.ts';
 
 // Generate a UUID v4
 function generateUUID(): string {
@@ -58,9 +58,7 @@ export class D1Storage implements Storage {
         offer_id TEXT NOT NULL,
         peer_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
-        candidate TEXT NOT NULL,
-        sdp_mid TEXT,
-        sdp_m_line_index INTEGER,
+        candidate TEXT NOT NULL, -- JSON: RTCIceCandidateInit object
         created_at INTEGER NOT NULL,
         FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
       );
@@ -244,24 +242,18 @@ export class D1Storage implements Storage {
     offerId: string,
     peerId: string,
     role: 'offerer' | 'answerer',
-    candidates: Array<{
-      candidate: string;
-      sdpMid?: string | null;
-      sdpMLineIndex?: number | null;
-    }>
+    candidates: RTCIceCandidateInit[]
   ): Promise<number> {
     // D1 doesn't have transactions, so insert one by one
     for (const cand of candidates) {
       await this.db.prepare(`
-        INSERT INTO ice_candidates (offer_id, peer_id, role, candidate, sdp_mid, sdp_m_line_index, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO ice_candidates (offer_id, peer_id, role, candidate, created_at)
+        VALUES (?, ?, ?, ?, ?)
       `).bind(
         offerId,
         peerId,
         role,
-        cand.candidate,
-        cand.sdpMid ?? null,
-        cand.sdpMLineIndex ?? null,
+        JSON.stringify(cand), // Store full object as JSON
         Date.now()
       ).run();
     }
@@ -299,9 +291,7 @@ export class D1Storage implements Storage {
       offerId: row.offer_id,
       peerId: row.peer_id,
       role: row.role,
-      candidate: row.candidate,
-      sdpMid: row.sdp_mid,
-      sdpMLineIndex: row.sdp_m_line_index,
+      candidate: JSON.parse(row.candidate), // Parse JSON back to object
       createdAt: row.created_at,
     }));
   }

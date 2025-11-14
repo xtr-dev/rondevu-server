@@ -16,16 +16,25 @@ export interface Offer {
 
 /**
  * Represents an ICE candidate for WebRTC signaling
+ * Stores the complete RTCIceCandidateInit object
  */
 export interface IceCandidate {
   id: number;
   offerId: string;
   peerId: string;
   role: 'offerer' | 'answerer';
-  candidate: string;
-  sdpMid: string | null;
-  sdpMLineIndex: number | null;
+  candidate: RTCIceCandidateInit; // Full candidate object as JSON
   createdAt: number;
+}
+
+/**
+ * RTCIceCandidateInit interface for TypeScript environments without WebRTC
+ */
+export interface RTCIceCandidateInit {
+  candidate?: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
 }
 
 /**
@@ -127,18 +136,14 @@ export interface Storage {
    * @param offerId Offer identifier
    * @param peerId Peer ID posting the candidates
    * @param role Role of the peer (offerer or answerer)
-   * @param candidates Array of ICE candidate objects
+   * @param candidates Array of RTCIceCandidateInit objects
    * @returns Number of candidates added
    */
   addIceCandidates(
     offerId: string,
     peerId: string,
     role: 'offerer' | 'answerer',
-    candidates: Array<{
-      candidate: string;
-      sdpMid?: string | null;
-      sdpMLineIndex?: number | null;
-    }>
+    candidates: RTCIceCandidateInit[]
   ): Promise<number>;
 
   /**
