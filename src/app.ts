@@ -498,14 +498,17 @@ export function createApp(storage: Storage, config: Config) {
       if (offer.peerId === peerId) {
         // Offerer wants answerer's candidates
         targetRole = 'answerer';
+        console.log(`[ICE GET] Offerer ${peerId} requesting answerer ICE candidates for offer ${offerId}, since=${since}, answererPeerId=${offer.answererPeerId}`);
       } else if (offer.answererPeerId === peerId) {
         // Answerer wants offerer's candidates
         targetRole = 'offerer';
+        console.log(`[ICE GET] Answerer ${peerId} requesting offerer ICE candidates for offer ${offerId}, since=${since}, offererPeerId=${offer.peerId}`);
       } else {
         return c.json({ error: 'Not authorized to view ICE candidates for this offer' }, 403);
       }
 
       const candidates = await storage.getIceCandidates(offerId, targetRole, since);
+      console.log(`[ICE GET] Found ${candidates.length} candidates for offer ${offerId}, targetRole=${targetRole}, since=${since}`);
 
       return c.json({
         offerId,

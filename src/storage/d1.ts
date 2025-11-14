@@ -244,6 +244,9 @@ export class D1Storage implements Storage {
     role: 'offerer' | 'answerer',
     candidates: RTCIceCandidateInit[]
   ): Promise<number> {
+    const now = Date.now();
+    console.log(`[D1] addIceCandidates: offerId=${offerId}, peerId=${peerId}, role=${role}, count=${candidates.length}, timestamp=${now}`);
+
     // D1 doesn't have transactions, so insert one by one
     for (const cand of candidates) {
       await this.db.prepare(`
@@ -254,7 +257,7 @@ export class D1Storage implements Storage {
         peerId,
         role,
         JSON.stringify(cand), // Store full object as JSON
-        Date.now()
+        now
       ).run();
     }
 
@@ -280,13 +283,15 @@ export class D1Storage implements Storage {
 
     query += ' ORDER BY created_at ASC';
 
+    console.log(`[D1] getIceCandidates query: offerId=${offerId}, targetRole=${targetRole}, since=${since}`);
     const result = await this.db.prepare(query).bind(...params).all();
+    console.log(`[D1] getIceCandidates result: ${result.results?.length || 0} rows`);
 
     if (!result.results) {
       return [];
     }
 
-    return result.results.map((row: any) => ({
+    const candidates = result.results.map((row: any) => ({
       id: row.id,
       offerId: row.offer_id,
       peerId: row.peer_id,
@@ -294,6 +299,12 @@ export class D1Storage implements Storage {
       candidate: JSON.parse(row.candidate), // Parse JSON back to object
       createdAt: row.created_at,
     }));
+
+    if (candidates.length > 0) {
+      console.log(`[D1] First candidate createdAt: ${candidates[0].createdAt}, since: ${since}`);
+    }
+
+    return candidates;
   }
 
   async getTopics(limit: number, offset: number): Promise<{
