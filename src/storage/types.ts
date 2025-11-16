@@ -81,13 +81,6 @@ export interface Storage {
   getOfferById(offerId: string): Promise<Offer | null>;
 
   /**
-   * Updates the last_seen timestamp for an offer (heartbeat)
-   * @param offerId Offer identifier
-   * @param lastSeen New last_seen timestamp
-   */
-  updateOfferLastSeen(offerId: string, lastSeen: number): Promise<void>;
-
-  /**
    * Deletes an offer (with ownership verification)
    * @param offerId Offer identifier
    * @param ownerPeerId Peer ID of the owner (for verification)

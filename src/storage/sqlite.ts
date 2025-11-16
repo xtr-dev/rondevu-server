@@ -176,16 +176,6 @@ export class SQLiteStorage implements Storage {
     return this.rowToOffer(row);
   }
 
-  async updateOfferLastSeen(offerId: string, lastSeen: number): Promise<void> {
-    const stmt = this.db.prepare(`
-      UPDATE offers
-      SET last_seen = ?
-      WHERE id = ? AND expires_at > ?
-    `);
-
-    stmt.run(lastSeen, offerId, Date.now());
-  }
-
   async deleteOffer(offerId: string, ownerPeerId: string): Promise<boolean> {
     const stmt = this.db.prepare(`
       DELETE FROM offers

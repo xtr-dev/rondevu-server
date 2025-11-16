@@ -315,39 +315,6 @@ export function createApp(storage: Storage, config: Config) {
   });
 
   /**
-   * PUT /offers/:offerId/heartbeat
-   * Update last_seen timestamp for an offer
-   * Requires authentication and ownership
-   */
-  app.put('/offers/:offerId/heartbeat', authMiddleware, async (c) => {
-    try {
-      const offerId = c.req.param('offerId');
-      const peerId = getAuthenticatedPeerId(c);
-
-      // Verify ownership
-      const offer = await storage.getOfferById(offerId);
-      if (!offer) {
-        return c.json({ error: 'Offer not found or expired' }, 404);
-      }
-
-      if (offer.peerId !== peerId) {
-        return c.json({ error: 'Not authorized to update this offer' }, 403);
-      }
-
-      const now = Date.now();
-      await storage.updateOfferLastSeen(offerId, now);
-
-      return c.json({
-        id: offerId,
-        lastSeen: now
-      }, 200);
-    } catch (err) {
-      console.error('Error updating offer heartbeat:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  /**
    * DELETE /offers/:offerId
    * Delete a specific offer
    * Requires authentication and ownership

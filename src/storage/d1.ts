@@ -155,14 +155,6 @@ export class D1Storage implements Storage {
     return this.rowToOffer(result as any);
   }
 
-  async updateOfferLastSeen(offerId: string, lastSeen: number): Promise<void> {
-    await this.db.prepare(`
-      UPDATE offers
-      SET last_seen = ?
-      WHERE id = ? AND expires_at > ?
-    `).bind(lastSeen, offerId, Date.now()).run();
-  }
-
   async deleteOffer(offerId: string, ownerPeerId: string): Promise<boolean> {
     const result = await this.db.prepare(`
       DELETE FROM offers
