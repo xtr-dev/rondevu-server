@@ -1,0 +1,45 @@
+name = "rondevu"
+main = "src/worker.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "rondevu-offers"
+database_id = "b94e3f71-816d-455b-a89d-927fa49532d0"
+
+# Environment variables
+[vars]
+OFFER_DEFAULT_TTL = "60000"  # Default offer TTL: 1 minute
+OFFER_MAX_TTL = "86400000"  # Max offer TTL: 24 hours
+OFFER_MIN_TTL = "60000"  # Min offer TTL: 1 minute
+MAX_OFFERS_PER_REQUEST = "100"  # Max offers per request
+MAX_TOPICS_PER_OFFER = "50"  # Max topics per offer
+CORS_ORIGINS = "*"  # Comma-separated list of allowed origins
+VERSION = "0.1.0"  # Semantic version
+
+# AUTH_SECRET should be set as a secret, not a var
+# Run: npx wrangler secret put AUTH_SECRET
+# Enter a 64-character hex string (32 bytes)
+
+# Build configuration
+[build]
+command = ""
+
+# For local development:
+# Run: npx wrangler dev
+# The local D1 database will be created automatically
+
+# For production deployment:
+# 1. Create D1 database: npx wrangler d1 create rondevu-sessions
+# 2. Update the 'database_id' field above with the returned ID
+# 3. Initialize schema: npx wrangler d1 execute rondevu-sessions --remote --file=./migrations/schema.sql
+# 4. Deploy: npx wrangler deploy
+
+[observability]
+[observability.logs]
+enabled = false
+head_sampling_rate = 1
+invocation_logs = true
+persist = true

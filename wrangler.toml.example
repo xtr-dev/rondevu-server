@@ -1,0 +1,26 @@
+name = "rondevu"
+main = "src/worker.ts"
+compatibility_date = "2024-01-01"
+
+# KV Namespace binding
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = ""  # Replace with your KV namespace ID
+
+# Environment variables
+[vars]
+SESSION_TIMEOUT = "300000"  # 5 minutes in milliseconds
+CORS_ORIGINS = "*"  # Comma-separated list of allowed origins
+
+# Build configuration
+[build]
+command = ""
+
+# For local development
+# Run: npx wrangler dev
+# The local KV will be created automatically
+
+# For production deployment:
+# 1. Create KV namespace: npx wrangler kv:namespace create SESSIONS
+# 2. Update the 'id' field above with the returned namespace ID
+# 3. Deploy: npx wrangler deploy
