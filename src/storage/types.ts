@@ -146,9 +146,10 @@ export interface Storage {
    * Retrieves topics with active peer counts (paginated)
    * @param limit Maximum number of topics to return
    * @param offset Number of topics to skip
+   * @param startsWith Optional prefix filter - only return topics starting with this string
    * @returns Object with topics array and total count
    */
-  getTopics(limit: number, offset: number): Promise<{
+  getTopics(limit: number, offset: number, startsWith?: string): Promise<{
     topics: TopicInfo[];
     total: number;
   }>;

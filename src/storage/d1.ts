@@ -296,32 +296,51 @@ export class D1Storage implements Storage {
     return candidates;
   }
 
-  async getTopics(limit: number, offset: number): Promise<{
+  async getTopics(limit: number, offset: number, startsWith?: string): Promise<{
     topics: TopicInfo[];
     total: number;
   }> {
+    const now = Date.now();
+
+    // Build WHERE clause for startsWith filter
+    const whereClause = startsWith
+      ? 'o.expires_at > ? AND ot.topic LIKE ?'
+      : 'o.expires_at > ?';
+
+    const startsWithPattern = startsWith ? `${startsWith}%` : null;
+
     // Get total count of topics with active offers
-    const countResult = await this.db.prepare(`
+    const countQuery = `
       SELECT COUNT(DISTINCT ot.topic) as count
       FROM offer_topics ot
       INNER JOIN offers o ON ot.offer_id = o.id
-      WHERE o.expires_at > ?
-    `).bind(Date.now()).first();
+      WHERE ${whereClause}
+    `;
+
+    const countStmt = this.db.prepare(countQuery);
+    const countResult = startsWith
+      ? await countStmt.bind(now, startsWithPattern).first()
+      : await countStmt.bind(now).first();
 
     const total = (countResult as any)?.count || 0;
 
     // Get topics with peer counts (paginated)
-    const topicsResult = await this.db.prepare(`
+    const topicsQuery = `
       SELECT
         ot.topic,
         COUNT(DISTINCT o.peer_id) as active_peers
       FROM offer_topics ot
       INNER JOIN offers o ON ot.offer_id = o.id
-      WHERE o.expires_at > ?
+      WHERE ${whereClause}
       GROUP BY ot.topic
       ORDER BY active_peers DESC, ot.topic ASC
       LIMIT ? OFFSET ?
-    `).bind(Date.now(), limit, offset).all();
+    `;
+
+    const topicsStmt = this.db.prepare(topicsQuery);
+    const topicsResult = startsWith
+      ? await topicsStmt.bind(now, startsWithPattern, limit, offset).all()
+      : await topicsStmt.bind(now, limit, offset).all();
 
     const topics = (topicsResult.results || []).map((row: any) => ({
       topic: row.topic,

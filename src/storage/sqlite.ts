@@ -305,35 +305,50 @@ export class SQLiteStorage implements Storage {
     }));
   }
 
-  async getTopics(limit: number, offset: number): Promise<{
+  async getTopics(limit: number, offset: number, startsWith?: string): Promise<{
     topics: TopicInfo[];
     total: number;
   }> {
+    const now = Date.now();
+
+    // Build WHERE clause for startsWith filter
+    const whereClause = startsWith
+      ? 'o.expires_at > ? AND ot.topic LIKE ?'
+      : 'o.expires_at > ?';
+
+    const startsWithPattern = startsWith ? `${startsWith}%` : null;
+
     // Get total count of topics with active offers
-    const countStmt = this.db.prepare(`
+    const countQuery = `
       SELECT COUNT(DISTINCT ot.topic) as count
       FROM offer_topics ot
       INNER JOIN offers o ON ot.offer_id = o.id
-      WHERE o.expires_at > ?
-    `);
+      WHERE ${whereClause}
+    `;
 
-    const countRow = countStmt.get(Date.now()) as any;
+    const countStmt = this.db.prepare(countQuery);
+    const countParams = startsWith ? [now, startsWithPattern] : [now];
+    const countRow = countStmt.get(...countParams) as any;
     const total = countRow.count;
 
     // Get topics with peer counts (paginated)
-    const topicsStmt = this.db.prepare(`
+    const topicsQuery = `
       SELECT
         ot.topic,
         COUNT(DISTINCT o.peer_id) as active_peers
       FROM offer_topics ot
       INNER JOIN offers o ON ot.offer_id = o.id
-      WHERE o.expires_at > ?
+      WHERE ${whereClause}
       GROUP BY ot.topic
       ORDER BY active_peers DESC, ot.topic ASC
       LIMIT ? OFFSET ?
-    `);
+    `;
 
-    const rows = topicsStmt.all(Date.now(), limit, offset) as any[];
+    const topicsStmt = this.db.prepare(topicsQuery);
+    const topicsParams = startsWith
+      ? [now, startsWithPattern, limit, offset]
+      : [now, limit, offset];
+    const rows = topicsStmt.all(...topicsParams) as any[];
 
     const topics = rows.map(row => ({
       topic: row.topic,

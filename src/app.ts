@@ -231,22 +231,29 @@ export function createApp(storage: Storage, config: Config) {
    * GET /topics
    * List all topics with active peer counts (paginated)
    * Public endpoint (no auth required)
+   * Query params:
+   *   - limit: Max topics to return (default 50, max 200)
+   *   - offset: Number of topics to skip (default 0)
+   *   - startsWith: Filter topics starting with this prefix (optional)
    */
   app.get('/topics', async (c) => {
     try {
       const limitParam = c.req.query('limit');
       const offsetParam = c.req.query('offset');
+      const startsWithParam = c.req.query('startsWith');
 
       const limit = limitParam ? Math.min(parseInt(limitParam, 10), 200) : 50;
       const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+      const startsWith = startsWithParam || undefined;
 
-      const result = await storage.getTopics(limit, offset);
+      const result = await storage.getTopics(limit, offset, startsWith);
 
       return c.json({
         topics: result.topics,
         total: result.total,
         limit,
-        offset
+        offset,
+        ...(startsWith && { startsWith })
       }, 200);
     } catch (err) {
       console.error('Error fetching topics:', err);
