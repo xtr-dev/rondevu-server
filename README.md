@@ -14,6 +14,7 @@ Scalable peer-to-peer connection establishment with topic-based discovery, state
 
 - **Topic-Based Discovery**: Tag offers with topics (e.g., torrent infohashes) for efficient peer finding
 - **Stateless Authentication**: AES-256-GCM encrypted credentials, no server-side sessions
+- **Protected Offers**: Optional secret field for access-controlled peer connections
 - **Bloom Filters**: Client-side peer exclusion for efficient discovery
 - **Multi-Offer Support**: Create multiple offers per peer simultaneously
 - **Complete WebRTC Signaling**: Offer/answer exchange and ICE candidate relay
@@ -95,13 +96,17 @@ Find offers by topic with optional bloom filter exclusion
       "sdp": "v=0...",
       "topics": ["movie-xyz", "hd-content"],
       "expiresAt": 1234567890,
-      "lastSeen": 1234567890
+      "lastSeen": 1234567890,
+      "hasSecret": true  // Indicates if secret is required to answer
     }
   ],
   "total": 42,
   "returned": 10
 }
 ```
+
+**Notes:**
+- `hasSecret`: Boolean flag indicating whether a secret is required to answer this offer. The actual secret is never exposed in public endpoints.
 
 #### `GET /peers/:peerId/offers`
 View all offers from a specific peer
@@ -120,11 +125,15 @@ Create one or more offers
     {
       "sdp": "v=0...",
       "topics": ["movie-xyz", "hd-content"],
-      "ttl": 300000
+      "ttl": 300000,
+      "secret": "my-secret-password"  // Optional: protect offer (max 128 chars)
     }
   ]
 }
 ```
+
+**Notes:**
+- `secret` (optional): Protect the offer with a secret. Answerers must provide the correct secret to connect.
 
 #### `GET /offers/mine`
 List all offers owned by authenticated peer
@@ -141,9 +150,13 @@ Answer an offer (locks it to answerer)
 **Request:**
 ```json
 {
-  "sdp": "v=0..."
+  "sdp": "v=0...",
+  "secret": "my-secret-password"  // Required if offer is protected
 }
 ```
+
+**Notes:**
+- `secret` (optional): Required if the offer was created with a secret. Must match the offer's secret.
 
 #### `GET /offers/answers`
 Poll for answers to your offers
