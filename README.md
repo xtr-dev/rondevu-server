@@ -5,8 +5,9 @@
 Scalable peer-to-peer connection establishment with topic-based discovery, stateless authentication, and complete WebRTC signaling.
 
 **Related repositories:**
-- [@xtr-dev/rondevu-client](https://www.npmjs.com/package/@xtr-dev/rondevu-client) - TypeScript client library
-- [rondevu-demo](https://rondevu-demo.pages.dev) - Interactive demo
+- [@xtr-dev/rondevu-client](https://github.com/xtr-dev/rondevu-client) - TypeScript client library ([npm](https://www.npmjs.com/package/@xtr-dev/rondevu-client))
+- [@xtr-dev/rondevu-server](https://github.com/xtr-dev/rondevu-server) - HTTP signaling server ([npm](https://www.npmjs.com/package/@xtr-dev/rondevu-server))
+- [@xtr-dev/rondevu-demo](https://github.com/xtr-dev/rondevu-demo) - Interactive demo ([live](https://rondevu-demo.pages.dev))
 
 ---
 

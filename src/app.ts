@@ -115,6 +115,16 @@ export function createApp(storage: Storage, config: Config) {
           return c.json({ error: 'SDP must be 64KB or less' }, 400);
         }
 
+        // Validate secret if provided
+        if (offer.secret !== undefined) {
+          if (typeof offer.secret !== 'string') {
+            return c.json({ error: 'Secret must be a string' }, 400);
+          }
+          if (offer.secret.length > 128) {
+            return c.json({ error: 'Secret must be 128 characters or less' }, 400);
+          }
+        }
+
         // Validate topics
         if (!Array.isArray(offer.topics) || offer.topics.length === 0) {
           return c.json({ error: 'Each offer must have a non-empty topics array' }, 400);
@@ -145,6 +155,7 @@ export function createApp(storage: Storage, config: Config) {
           sdp: offer.sdp,
           topics: offer.topics,
           expiresAt: Date.now() + ttl,
+          secret: offer.secret,
         });
       }
 
@@ -216,7 +227,8 @@ export function createApp(storage: Storage, config: Config) {
           sdp: o.sdp,
           topics: o.topics,
           expiresAt: o.expiresAt,
-          lastSeen: o.lastSeen
+          lastSeen: o.lastSeen,
+          hasSecret: !!o.secret  // Indicate if secret is required without exposing it
         })),
         total: bloomParam ? total + excludePeerIds.length : total,
         returned: offers.length
@@ -282,7 +294,8 @@ export function createApp(storage: Storage, config: Config) {
           sdp: o.sdp,
           topics: o.topics,
           expiresAt: o.expiresAt,
-          lastSeen: o.lastSeen
+          lastSeen: o.lastSeen,
+          hasSecret: !!o.secret  // Indicate if secret is required without exposing it
         })),
         topics: Array.from(topicsSet)
       }, 200);
@@ -311,6 +324,7 @@ export function createApp(storage: Storage, config: Config) {
           createdAt: o.createdAt,
           expiresAt: o.expiresAt,
           lastSeen: o.lastSeen,
+          secret: o.secret,  // Owner can see the secret
           answererPeerId: o.answererPeerId,
           answeredAt: o.answeredAt
         }))
@@ -354,7 +368,7 @@ export function createApp(storage: Storage, config: Config) {
       const offerId = c.req.param('offerId');
       const peerId = getAuthenticatedPeerId(c);
       const body = await c.req.json();
-      const { sdp } = body;
+      const { sdp, secret } = body;
 
       if (!sdp || typeof sdp !== 'string') {
         return c.json({ error: 'Missing or invalid required parameter: sdp' }, 400);
@@ -364,7 +378,12 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'SDP must be 64KB or less' }, 400);
       }
 
-      const result = await storage.answerOffer(offerId, peerId, sdp);
+      // Validate secret if provided
+      if (secret !== undefined && typeof secret !== 'string') {
+        return c.json({ error: 'Secret must be a string' }, 400);
+      }
+
+      const result = await storage.answerOffer(offerId, peerId, sdp, secret);
 
       if (!result.success) {
         return c.json({ error: result.error }, 400);

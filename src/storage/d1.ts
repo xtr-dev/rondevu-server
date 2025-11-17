@@ -29,6 +29,7 @@ export class D1Storage implements Storage {
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         last_seen INTEGER NOT NULL,
+        secret TEXT,
         answerer_peer_id TEXT,
         answer_sdp TEXT,
         answered_at INTEGER
@@ -75,9 +76,9 @@ export class D1Storage implements Storage {
 
       // Insert offer
       await this.db.prepare(`
-        INSERT INTO offers (id, peer_id, sdp, created_at, expires_at, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(id, offer.peerId, offer.sdp, now, offer.expiresAt, now).run();
+        INSERT INTO offers (id, peer_id, sdp, created_at, expires_at, last_seen, secret)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(id, offer.peerId, offer.sdp, now, offer.expiresAt, now, offer.secret || null).run();
 
       // Insert topics
       for (const topic of offer.topics) {
@@ -95,6 +96,7 @@ export class D1Storage implements Storage {
         createdAt: now,
         expiresAt: offer.expiresAt,
         lastSeen: now,
+        secret: offer.secret,
       });
     }
 
@@ -175,7 +177,8 @@ export class D1Storage implements Storage {
   async answerOffer(
     offerId: string,
     answererPeerId: string,
-    answerSdp: string
+    answerSdp: string,
+    secret?: string
   ): Promise<{ success: boolean; error?: string }> {
     // Check if offer exists and is not expired
     const offer = await this.getOfferById(offerId);
@@ -184,6 +187,14 @@ export class D1Storage implements Storage {
       return {
         success: false,
         error: 'Offer not found or expired'
+      };
+    }
+
+    // Verify secret if offer is protected
+    if (offer.secret && offer.secret !== secret) {
+      return {
+        success: false,
+        error: 'Invalid or missing secret'
       };
     }
 
@@ -374,6 +385,7 @@ export class D1Storage implements Storage {
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastSeen: row.last_seen,
+      secret: row.secret || undefined,
       answererPeerId: row.answerer_peer_id || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at || undefined,

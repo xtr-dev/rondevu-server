@@ -9,6 +9,7 @@ export interface Offer {
   createdAt: number;
   expiresAt: number;
   lastSeen: number;
+  secret?: string;
   answererPeerId?: string;
   answerSdp?: string;
   answeredAt?: number;
@@ -44,6 +45,7 @@ export interface CreateOfferRequest {
   sdp: string;
   topics: string[];
   expiresAt: number;
+  secret?: string;
 }
 
 /**
@@ -100,9 +102,10 @@ export interface Storage {
    * @param offerId Offer identifier
    * @param answererPeerId Answerer's peer ID
    * @param answerSdp WebRTC answer SDP
+   * @param secret Optional secret for protected offers
    * @returns Success status and optional error message
    */
-  answerOffer(offerId: string, answererPeerId: string, answerSdp: string): Promise<{
+  answerOffer(offerId: string, answererPeerId: string, answerSdp: string, secret?: string): Promise<{
     success: boolean;
     error?: string;
   }>;
