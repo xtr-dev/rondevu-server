@@ -1,5 +1,7 @@
 # Rondevu Server
 
+[![npm version](https://img.shields.io/npm/v/@xtr-dev/rondevu-server)](https://www.npmjs.com/package/@xtr-dev/rondevu-server)
+
 🌐 **Topic-based peer discovery and WebRTC signaling**
 
 Scalable peer-to-peer connection establishment with topic-based discovery, stateless authentication, and complete WebRTC signaling.
