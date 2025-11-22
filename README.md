@@ -53,6 +53,17 @@ Health check endpoint with version
 #### `POST /register`
 Register a new peer and receive credentials (peerId + secret)
 
+**Request (optional):**
+```json
+{
+  "peerId": "my-custom-peer-id"
+}
+```
+
+**Notes:**
+- `peerId` (optional): Custom peer ID (1-128 characters). If not provided, a random ID will be generated.
+- Returns 409 Conflict if the custom peer ID is already in use.
+
 **Response:**
 ```json
 {
