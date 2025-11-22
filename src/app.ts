@@ -151,6 +151,16 @@ export function createApp(storage: Storage, config: Config) {
           }
         }
 
+        // Validate info if provided
+        if (offer.info !== undefined) {
+          if (typeof offer.info !== 'string') {
+            return c.json({ error: 'Info must be a string' }, 400);
+          }
+          if (offer.info.length > 128) {
+            return c.json({ error: 'Info must be 128 characters or less' }, 400);
+          }
+        }
+
         // Validate topics
         if (!Array.isArray(offer.topics) || offer.topics.length === 0) {
           return c.json({ error: 'Each offer must have a non-empty topics array' }, 400);
@@ -182,6 +192,7 @@ export function createApp(storage: Storage, config: Config) {
           topics: offer.topics,
           expiresAt: Date.now() + ttl,
           secret: offer.secret,
+          info: offer.info,
         });
       }
 
@@ -254,7 +265,8 @@ export function createApp(storage: Storage, config: Config) {
           topics: o.topics,
           expiresAt: o.expiresAt,
           lastSeen: o.lastSeen,
-          hasSecret: !!o.secret  // Indicate if secret is required without exposing it
+          hasSecret: !!o.secret,  // Indicate if secret is required without exposing it
+          info: o.info  // Public info field
         })),
         total: bloomParam ? total + excludePeerIds.length : total,
         returned: offers.length
@@ -321,7 +333,8 @@ export function createApp(storage: Storage, config: Config) {
           topics: o.topics,
           expiresAt: o.expiresAt,
           lastSeen: o.lastSeen,
-          hasSecret: !!o.secret  // Indicate if secret is required without exposing it
+          hasSecret: !!o.secret,  // Indicate if secret is required without exposing it
+          info: o.info  // Public info field
         })),
         topics: Array.from(topicsSet)
       }, 200);
@@ -351,6 +364,7 @@ export function createApp(storage: Storage, config: Config) {
           expiresAt: o.expiresAt,
           lastSeen: o.lastSeen,
           secret: o.secret,  // Owner can see the secret
+          info: o.info,  // Owner can see the info
           answererPeerId: o.answererPeerId,
           answeredAt: o.answeredAt
         }))

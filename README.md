@@ -111,7 +111,8 @@ Find offers by topic with optional bloom filter exclusion
       "topics": ["movie-xyz", "hd-content"],
       "expiresAt": 1234567890,
       "lastSeen": 1234567890,
-      "hasSecret": true  // Indicates if secret is required to answer
+      "hasSecret": true,  // Indicates if secret is required to answer
+      "info": "Looking for peers in EU region"  // Public info field (optional)
     }
   ],
   "total": 42,
@@ -121,6 +122,7 @@ Find offers by topic with optional bloom filter exclusion
 
 **Notes:**
 - `hasSecret`: Boolean flag indicating whether a secret is required to answer this offer. The actual secret is never exposed in public endpoints.
+- `info`: Optional public metadata field (max 128 characters) visible to all peers.
 
 #### `GET /peers/:peerId/offers`
 View all offers from a specific peer
@@ -140,7 +142,8 @@ Create one or more offers
       "sdp": "v=0...",
       "topics": ["movie-xyz", "hd-content"],
       "ttl": 300000,
-      "secret": "my-secret-password"  // Optional: protect offer (max 128 chars)
+      "secret": "my-secret-password",  // Optional: protect offer (max 128 chars)
+      "info": "Looking for peers in EU region"  // Optional: public info (max 128 chars)
     }
   ]
 }
@@ -148,6 +151,7 @@ Create one or more offers
 
 **Notes:**
 - `secret` (optional): Protect the offer with a secret. Answerers must provide the correct secret to connect.
+- `info` (optional): Public metadata visible to all peers (max 128 characters). Useful for describing the offer or connection requirements.
 
 #### `GET /offers/mine`
 List all offers owned by authenticated peer
