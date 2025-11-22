@@ -64,37 +64,12 @@ export function createApp(storage: Storage, config: Config) {
   /**
    * POST /register
    * Register a new peer and receive credentials
-   * Accepts optional peerId in request body for custom peer IDs
+   * Generates a cryptographically random peer ID (128-bit)
    */
   app.post('/register', async (c) => {
     try {
-      let peerId: string;
-
-      // Check if custom peer ID is provided
-      const body = await c.req.json().catch(() => ({}));
-      const customPeerId = body.peerId;
-
-      if (customPeerId !== undefined) {
-        // Validate custom peer ID
-        if (typeof customPeerId !== 'string' || customPeerId.length === 0) {
-          return c.json({ error: 'Peer ID must be a non-empty string' }, 400);
-        }
-
-        if (customPeerId.length > 128) {
-          return c.json({ error: 'Peer ID must be 128 characters or less' }, 400);
-        }
-
-        // Check if peer ID is already in use by checking for active offers
-        const existingOffers = await storage.getOffersByPeerId(customPeerId);
-        if (existingOffers.length > 0) {
-          return c.json({ error: 'Peer ID is already in use' }, 409);
-        }
-
-        peerId = customPeerId;
-      } else {
-        // Generate new peer ID
-        peerId = generatePeerId();
-      }
+      // Always generate a random peer ID
+      const peerId = generatePeerId();
 
       // Encrypt peer ID with server secret (async operation)
       const secret = await encryptPeerId(peerId, config.authSecret);

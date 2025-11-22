@@ -1,6 +1,6 @@
 {
   "name": "@xtr-dev/rondevu-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Topic-based peer discovery and signaling server for distributed P2P applications",
   "main": "dist/index.js",
   "scripts": {
