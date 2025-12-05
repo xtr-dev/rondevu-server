@@ -6,6 +6,12 @@
 
 import * as ed25519 from '@noble/ed25519';
 
+// Set SHA-512 hash function for ed25519 (required in @noble/ed25519 v3+)
+// Uses Web Crypto API (compatible with both Node.js and Cloudflare Workers)
+ed25519.hashes.sha512Async = async (message: Uint8Array) => {
+  return new Uint8Array(await crypto.subtle.digest('SHA-512', message as BufferSource));
+};
+
 const ALGORITHM = 'AES-GCM';
 const IV_LENGTH = 12; // 96 bits for GCM
 const KEY_LENGTH = 32; // 256 bits
