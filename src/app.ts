@@ -182,9 +182,14 @@ export function createApp(storage: Storage, config: Config) {
    * Publish a service
    */
   app.post('/services', authMiddleware, async (c) => {
+    let username: string | undefined;
+    let serviceFqn: string | undefined;
+    let offers: any[] = [];
+
     try {
       const body = await c.req.json();
-      const { username, serviceFqn, sdp, ttl, isPublic, metadata, signature, message } = body;
+      ({ username, serviceFqn } = body);
+      const { sdp, ttl, isPublic, metadata, signature, message } = body;
 
       if (!username || !serviceFqn || !sdp) {
         return c.json({ error: 'Missing required parameters: username, serviceFqn, sdp' }, 400);
@@ -230,7 +235,7 @@ export function createApp(storage: Storage, config: Config) {
       const expiresAt = Date.now() + offerTtl;
 
       // Create offer first
-      const offers = await storage.createOffers([{
+      offers = await storage.createOffers([{
         peerId,
         sdp,
         expiresAt
