@@ -267,8 +267,8 @@ export async function verifyEd25519Signature(
     const encoder = new TextEncoder();
     const messageBytes = encoder.encode(message);
 
-    // Verify signature using @noble/ed25519
-    const isValid = await ed25519.verify(signatureBytes, messageBytes, publicKeyBytes);
+    // Verify signature using @noble/ed25519 (async version)
+    const isValid = await ed25519.verifyAsync(signatureBytes, messageBytes, publicKeyBytes);
     return isValid;
   } catch (err) {
     console.error('Ed25519 signature verification failed:', err);
