@@ -260,7 +260,17 @@ export function createApp(storage: Storage, config: Config) {
       }, 201);
     } catch (err) {
       console.error('Error creating service:', err);
-      return c.json({ error: 'Internal server error' }, 500);
+      console.error('Error details:', {
+        message: (err as Error).message,
+        stack: (err as Error).stack,
+        username,
+        serviceFqn,
+        offerId: offers[0]?.id
+      });
+      return c.json({
+        error: 'Internal server error',
+        details: (err as Error).message
+      }, 500);
     }
   });
 
