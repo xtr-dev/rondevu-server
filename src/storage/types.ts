@@ -1,11 +1,10 @@
 /**
- * Represents a WebRTC signaling offer with topic-based discovery
+ * Represents a WebRTC signaling offer (no topics)
  */
 export interface Offer {
   id: string;
   peerId: string;
   sdp: string;
-  topics: string[];
   createdAt: number;
   expiresAt: number;
   lastSeen: number;
@@ -30,45 +29,100 @@ export interface IceCandidate {
 }
 
 /**
- * Represents a topic with active peer count
- */
-export interface TopicInfo {
-  topic: string;
-  activePeers: number;
-}
-
-/**
  * Request to create a new offer
  */
 export interface CreateOfferRequest {
   id?: string;
   peerId: string;
   sdp: string;
-  topics: string[];
   expiresAt: number;
   secret?: string;
   info?: string;
 }
 
 /**
- * Storage interface for offer management with topic-based discovery
- * Implementations can use different backends (SQLite, D1, Memory, etc.)
+ * Represents a claimed username with cryptographic proof
+ */
+export interface Username {
+  username: string;
+  publicKey: string; // Base64-encoded Ed25519 public key
+  claimedAt: number;
+  expiresAt: number; // 365 days from claim/last use
+  lastUsed: number;
+  metadata?: string; // JSON optional user metadata
+}
+
+/**
+ * Request to claim a username
+ */
+export interface ClaimUsernameRequest {
+  username: string;
+  publicKey: string;
+  signature: string;
+  message: string; // "claim:{username}:{timestamp}"
+}
+
+/**
+ * Represents a published service
+ */
+export interface Service {
+  id: string; // UUID v4
+  username: string;
+  serviceFqn: string; // com.example.chat@1.0.0
+  offerId: string; // Links to offers table
+  createdAt: number;
+  expiresAt: number;
+  isPublic: boolean;
+  metadata?: string; // JSON service description
+}
+
+/**
+ * Request to create a service
+ */
+export interface CreateServiceRequest {
+  username: string;
+  serviceFqn: string;
+  offerId: string;
+  expiresAt: number;
+  isPublic?: boolean;
+  metadata?: string;
+}
+
+/**
+ * Represents a service index entry (privacy layer)
+ */
+export interface ServiceIndex {
+  uuid: string; // Random UUID for privacy
+  serviceId: string;
+  username: string;
+  serviceFqn: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/**
+ * Service info for discovery (privacy-aware)
+ */
+export interface ServiceInfo {
+  uuid: string;
+  isPublic: boolean;
+  serviceFqn?: string; // Only present if public
+  metadata?: string; // Only present if public
+}
+
+/**
+ * Storage interface for rondevu DNS-like system
+ * Implementations can use different backends (SQLite, D1, etc.)
  */
 export interface Storage {
+  // ===== Offer Management =====
+
   /**
    * Creates one or more offers
    * @param offers Array of offer creation requests
    * @returns Array of created offers with IDs
    */
   createOffers(offers: CreateOfferRequest[]): Promise<Offer[]>;
-
-  /**
-   * Retrieves offers by topic with optional peer ID exclusion
-   * @param topic Topic to search for
-   * @param excludePeerIds Optional array of peer IDs to exclude
-   * @returns Array of offers matching the topic
-   */
-  getOffersByTopic(topic: string, excludePeerIds?: string[]): Promise<Offer[]>;
 
   /**
    * Retrieves all offers from a specific peer
@@ -119,6 +173,8 @@ export interface Storage {
    */
   getAnsweredOffers(offererPeerId: string): Promise<Offer[]>;
 
+  // ===== ICE Candidate Management =====
+
   /**
    * Adds ICE candidates for an offer
    * @param offerId Offer identifier
@@ -147,17 +203,91 @@ export interface Storage {
     since?: number
   ): Promise<IceCandidate[]>;
 
+  // ===== Username Management =====
+
   /**
-   * Retrieves topics with active peer counts (paginated)
-   * @param limit Maximum number of topics to return
-   * @param offset Number of topics to skip
-   * @param startsWith Optional prefix filter - only return topics starting with this string
-   * @returns Object with topics array and total count
+   * Claims a username (or refreshes expiry if already owned)
+   * @param request Username claim request with signature
+   * @returns Created/updated username record
    */
-  getTopics(limit: number, offset: number, startsWith?: string): Promise<{
-    topics: TopicInfo[];
-    total: number;
+  claimUsername(request: ClaimUsernameRequest): Promise<Username>;
+
+  /**
+   * Gets a username record
+   * @param username Username to look up
+   * @returns Username record if claimed, null otherwise
+   */
+  getUsername(username: string): Promise<Username | null>;
+
+  /**
+   * Updates the last_used timestamp for a username (extends expiry)
+   * @param username Username to update
+   * @returns true if updated, false if not found
+   */
+  touchUsername(username: string): Promise<boolean>;
+
+  /**
+   * Deletes all expired usernames
+   * @param now Current timestamp
+   * @returns Number of usernames deleted
+   */
+  deleteExpiredUsernames(now: number): Promise<number>;
+
+  // ===== Service Management =====
+
+  /**
+   * Creates a new service
+   * @param request Service creation request
+   * @returns Created service with generated ID and index UUID
+   */
+  createService(request: CreateServiceRequest): Promise<{
+    service: Service;
+    indexUuid: string;
   }>;
+
+  /**
+   * Gets a service by its service ID
+   * @param serviceId Service ID
+   * @returns Service if found, null otherwise
+   */
+  getServiceById(serviceId: string): Promise<Service | null>;
+
+  /**
+   * Gets a service by its index UUID
+   * @param uuid Index UUID
+   * @returns Service if found, null otherwise
+   */
+  getServiceByUuid(uuid: string): Promise<Service | null>;
+
+  /**
+   * Lists all services for a username (with privacy filtering)
+   * @param username Username to query
+   * @returns Array of service info (UUIDs only for private services)
+   */
+  listServicesForUsername(username: string): Promise<ServiceInfo[]>;
+
+  /**
+   * Queries a service by username and FQN
+   * @param username Username
+   * @param serviceFqn Service FQN
+   * @returns Service index UUID if found, null otherwise
+   */
+  queryService(username: string, serviceFqn: string): Promise<string | null>;
+
+  /**
+   * Deletes a service (with ownership verification)
+   * @param serviceId Service ID
+   * @param username Owner username (for verification)
+   * @returns true if deleted, false if not found or not owned
+   */
+  deleteService(serviceId: string, username: string): Promise<boolean>;
+
+  /**
+   * Deletes all expired services
+   * @param now Current timestamp
+   * @returns Number of services deleted
+   */
+  deleteExpiredServices(now: number): Promise<number>;
 
   /**
    * Closes the storage connection and releases resources

@@ -3,12 +3,11 @@ import { cors } from 'hono/cors';
 import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import { createAuthMiddleware, getAuthenticatedPeerId } from './middleware/auth.ts';
-import { generatePeerId, encryptPeerId } from './crypto.ts';
-import { parseBloomFilter } from './bloom.ts';
+import { generatePeerId, encryptPeerId, validateUsernameClaim, validateServiceFqn } from './crypto.ts';
 import type { Context } from 'hono';
 
 /**
- * Creates the Hono application with topic-based WebRTC signaling endpoints
+ * Creates the Hono application with username and service-based WebRTC signaling
  */
 export function createApp(storage: Storage, config: Config) {
   const app = new Hono();
@@ -16,18 +15,15 @@ export function createApp(storage: Storage, config: Config) {
   // Create auth middleware
   const authMiddleware = createAuthMiddleware(config.authSecret);
 
-  // Enable CORS with dynamic origin handling
+  // Enable CORS
   app.use('/*', cors({
     origin: (origin) => {
-      // If no origin restrictions (wildcard), allow any origin
       if (config.corsOrigins.length === 1 && config.corsOrigins[0] === '*') {
         return origin;
       }
-      // Otherwise check if origin is in allowed list
       if (config.corsOrigins.includes(origin)) {
         return origin;
       }
-      // Default to first allowed origin
       return config.corsOrigins[0];
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -37,21 +33,23 @@ export function createApp(storage: Storage, config: Config) {
     credentials: true,
   }));
 
+  // ===== General Endpoints =====
+
   /**
    * GET /
-   * Returns server version information
+   * Returns server information
    */
   app.get('/', (c) => {
     return c.json({
       version: config.version,
       name: 'Rondevu',
-      description: 'Topic-based peer discovery and signaling server'
+      description: 'DNS-like WebRTC signaling with username claiming and service discovery'
     });
   });
 
   /**
    * GET /health
-   * Health check endpoint with version
+   * Health check endpoint
    */
   app.get('/health', (c) => {
     return c.json({
@@ -63,15 +61,11 @@ export function createApp(storage: Storage, config: Config) {
 
   /**
    * POST /register
-   * Register a new peer and receive credentials
-   * Generates a cryptographically random peer ID (128-bit)
+   * Register a new peer (still needed for peer ID generation)
    */
   app.post('/register', async (c) => {
     try {
-      // Always generate a random peer ID
       const peerId = generatePeerId();
-
-      // Encrypt peer ID with server secret (async operation)
       const secret = await encryptPeerId(peerId, config.authSecret);
 
       return c.json({
@@ -84,10 +78,292 @@ export function createApp(storage: Storage, config: Config) {
     }
   });
 
+  // ===== Username Management =====
+
+  /**
+   * POST /usernames/claim
+   * Claim a username with cryptographic proof
+   */
+  app.post('/usernames/claim', async (c) => {
+    try {
+      const body = await c.req.json();
+      const { username, publicKey, signature, message } = body;
+
+      if (!username || !publicKey || !signature || !message) {
+        return c.json({ error: 'Missing required parameters: username, publicKey, signature, message' }, 400);
+      }
+
+      // Validate claim
+      const validation = await validateUsernameClaim(username, publicKey, signature, message);
+      if (!validation.valid) {
+        return c.json({ error: validation.error }, 400);
+      }
+
+      // Attempt to claim username
+      try {
+        const claimed = await storage.claimUsername({
+          username,
+          publicKey,
+          signature,
+          message
+        });
+
+        return c.json({
+          username: claimed.username,
+          claimedAt: claimed.claimedAt,
+          expiresAt: claimed.expiresAt
+        }, 200);
+      } catch (err: any) {
+        if (err.message?.includes('already claimed')) {
+          return c.json({ error: 'Username already claimed by different public key' }, 409);
+        }
+        throw err;
+      }
+    } catch (err) {
+      console.error('Error claiming username:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  /**
+   * GET /usernames/:username
+   * Check if username is available or get claim info
+   */
+  app.get('/usernames/:username', async (c) => {
+    try {
+      const username = c.req.param('username');
+
+      const claimed = await storage.getUsername(username);
+
+      if (!claimed) {
+        return c.json({
+          username,
+          available: true
+        }, 200);
+      }
+
+      return c.json({
+        username: claimed.username,
+        available: false,
+        claimedAt: claimed.claimedAt,
+        expiresAt: claimed.expiresAt,
+        publicKey: claimed.publicKey
+      }, 200);
+    } catch (err) {
+      console.error('Error checking username:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  /**
+   * GET /usernames/:username/services
+   * List services for a username (privacy-preserving)
+   */
+  app.get('/usernames/:username/services', async (c) => {
+    try {
+      const username = c.req.param('username');
+
+      const services = await storage.listServicesForUsername(username);
+
+      return c.json({
+        username,
+        services
+      }, 200);
+    } catch (err) {
+      console.error('Error listing services:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  // ===== Service Management =====
+
+  /**
+   * POST /services
+   * Publish a service
+   */
+  app.post('/services', authMiddleware, async (c) => {
+    try {
+      const body = await c.req.json();
+      const { username, serviceFqn, sdp, ttl, isPublic, metadata, signature, message } = body;
+
+      if (!username || !serviceFqn || !sdp) {
+        return c.json({ error: 'Missing required parameters: username, serviceFqn, sdp' }, 400);
+      }
+
+      // Validate service FQN
+      const fqnValidation = validateServiceFqn(serviceFqn);
+      if (!fqnValidation.valid) {
+        return c.json({ error: fqnValidation.error }, 400);
+      }
+
+      // Verify username ownership (signature required)
+      if (!signature || !message) {
+        return c.json({ error: 'Missing signature or message for username verification' }, 400);
+      }
+
+      const usernameRecord = await storage.getUsername(username);
+      if (!usernameRecord) {
+        return c.json({ error: 'Username not claimed' }, 404);
+      }
+
+      // Verify signature matches username's public key
+      const signatureValidation = await validateUsernameClaim(username, usernameRecord.publicKey, signature, message);
+      if (!signatureValidation.valid) {
+        return c.json({ error: 'Invalid signature for username' }, 403);
+      }
+
+      // Validate SDP
+      if (typeof sdp !== 'string' || sdp.length === 0) {
+        return c.json({ error: 'Invalid SDP' }, 400);
+      }
+
+      if (sdp.length > 64 * 1024) {
+        return c.json({ error: 'SDP too large (max 64KB)' }, 400);
+      }
+
+      // Calculate expiry
+      const peerId = getAuthenticatedPeerId(c);
+      const offerTtl = Math.min(
+        Math.max(ttl || config.offerDefaultTtl, config.offerMinTtl),
+        config.offerMaxTtl
+      );
+      const expiresAt = Date.now() + offerTtl;
+
+      // Create offer first
+      const offers = await storage.createOffers([{
+        peerId,
+        sdp,
+        expiresAt
+      }]);
+
+      if (offers.length === 0) {
+        return c.json({ error: 'Failed to create offer' }, 500);
+      }
+
+      const offer = offers[0];
+
+      // Create service
+      const result = await storage.createService({
+        username,
+        serviceFqn,
+        offerId: offer.id,
+        expiresAt,
+        isPublic: isPublic || false,
+        metadata: metadata ? JSON.stringify(metadata) : undefined
+      });
+
+      return c.json({
+        serviceId: result.service.id,
+        uuid: result.indexUuid,
+        offerId: offer.id,
+        expiresAt: result.service.expiresAt
+      }, 201);
+    } catch (err) {
+      console.error('Error creating service:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  /**
+   * GET /services/:uuid
+   * Get service details by index UUID
+   */
+  app.get('/services/:uuid', async (c) => {
+    try {
+      const uuid = c.req.param('uuid');
+
+      const service = await storage.getServiceByUuid(uuid);
+
+      if (!service) {
+        return c.json({ error: 'Service not found' }, 404);
+      }
+
+      // Get associated offer
+      const offer = await storage.getOfferById(service.offerId);
+
+      if (!offer) {
+        return c.json({ error: 'Associated offer not found' }, 404);
+      }
+
+      return c.json({
+        serviceId: service.id,
+        username: service.username,
+        serviceFqn: service.serviceFqn,
+        offerId: service.offerId,
+        sdp: offer.sdp,
+        isPublic: service.isPublic,
+        metadata: service.metadata ? JSON.parse(service.metadata) : undefined,
+        createdAt: service.createdAt,
+        expiresAt: service.expiresAt
+      }, 200);
+    } catch (err) {
+      console.error('Error getting service:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  /**
+   * DELETE /services/:serviceId
+   * Delete a service (requires ownership)
+   */
+  app.delete('/services/:serviceId', authMiddleware, async (c) => {
+    try {
+      const serviceId = c.req.param('serviceId');
+      const body = await c.req.json();
+      const { username } = body;
+
+      if (!username) {
+        return c.json({ error: 'Missing required parameter: username' }, 400);
+      }
+
+      const deleted = await storage.deleteService(serviceId, username);
+
+      if (!deleted) {
+        return c.json({ error: 'Service not found or not owned by this username' }, 404);
+      }
+
+      return c.json({ success: true }, 200);
+    } catch (err) {
+      console.error('Error deleting service:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  /**
+   * POST /index/:username/query
+   * Query service by FQN (returns UUID)
+   */
+  app.post('/index/:username/query', async (c) => {
+    try {
+      const username = c.req.param('username');
+      const body = await c.req.json();
+      const { serviceFqn } = body;
+
+      if (!serviceFqn) {
+        return c.json({ error: 'Missing required parameter: serviceFqn' }, 400);
+      }
+
+      const uuid = await storage.queryService(username, serviceFqn);
+
+      if (!uuid) {
+        return c.json({ error: 'Service not found' }, 404);
+      }
+
+      return c.json({
+        uuid,
+        allowed: true
+      }, 200);
+    } catch (err) {
+      console.error('Error querying service:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  // ===== Offer Management (Core WebRTC) =====
+
   /**
    * POST /offers
-   * Creates one or more offers with topics
-   * Requires authentication
+   * Create offers (direct, no service - for testing/advanced users)
    */
   app.post('/offers', authMiddleware, async (c) => {
     try {
@@ -99,230 +375,56 @@ export function createApp(storage: Storage, config: Config) {
       }
 
       if (offers.length > config.maxOffersPerRequest) {
-        return c.json({ error: `Too many offers. Maximum ${config.maxOffersPerRequest} per request` }, 400);
+        return c.json({ error: `Too many offers (max ${config.maxOffersPerRequest})` }, 400);
       }
 
       const peerId = getAuthenticatedPeerId(c);
 
       // Validate and prepare offers
-      const offerRequests = [];
-      for (const offer of offers) {
-        // Validate SDP
-        if (!offer.sdp || typeof offer.sdp !== 'string') {
-          return c.json({ error: 'Each offer must have an sdp field' }, 400);
+      const validated = offers.map((offer: any) => {
+        const { sdp, ttl, secret } = offer;
+
+        if (typeof sdp !== 'string' || sdp.length === 0) {
+          throw new Error('Invalid SDP in offer');
         }
 
-        if (offer.sdp.length > 65536) {
-          return c.json({ error: 'SDP must be 64KB or less' }, 400);
+        if (sdp.length > 64 * 1024) {
+          throw new Error('SDP too large (max 64KB)');
         }
 
-        // Validate secret if provided
-        if (offer.secret !== undefined) {
-          if (typeof offer.secret !== 'string') {
-            return c.json({ error: 'Secret must be a string' }, 400);
-          }
-          if (offer.secret.length > 128) {
-            return c.json({ error: 'Secret must be 128 characters or less' }, 400);
-          }
-        }
+        const offerTtl = Math.min(
+          Math.max(ttl || config.offerDefaultTtl, config.offerMinTtl),
+          config.offerMaxTtl
+        );
 
-        // Validate info if provided
-        if (offer.info !== undefined) {
-          if (typeof offer.info !== 'string') {
-            return c.json({ error: 'Info must be a string' }, 400);
-          }
-          if (offer.info.length > 128) {
-            return c.json({ error: 'Info must be 128 characters or less' }, 400);
-          }
-        }
-
-        // Validate topics
-        if (!Array.isArray(offer.topics) || offer.topics.length === 0) {
-          return c.json({ error: 'Each offer must have a non-empty topics array' }, 400);
-        }
-
-        if (offer.topics.length > config.maxTopicsPerOffer) {
-          return c.json({ error: `Too many topics. Maximum ${config.maxTopicsPerOffer} per offer` }, 400);
-        }
-
-        for (const topic of offer.topics) {
-          if (typeof topic !== 'string' || topic.length === 0 || topic.length > 256) {
-            return c.json({ error: 'Each topic must be a string between 1 and 256 characters' }, 400);
-          }
-        }
-
-        // Validate and clamp TTL
-        let ttl = offer.ttl || config.offerDefaultTtl;
-        if (ttl < config.offerMinTtl) {
-          ttl = config.offerMinTtl;
-        }
-        if (ttl > config.offerMaxTtl) {
-          ttl = config.offerMaxTtl;
-        }
-
-        offerRequests.push({
-          id: offer.id,
+        return {
           peerId,
-          sdp: offer.sdp,
-          topics: offer.topics,
-          expiresAt: Date.now() + ttl,
-          secret: offer.secret,
-          info: offer.info,
-        });
-      }
+          sdp,
+          expiresAt: Date.now() + offerTtl,
+          secret: secret ? String(secret).substring(0, 128) : undefined
+        };
+      });
 
-      // Create offers
-      const createdOffers = await storage.createOffers(offerRequests);
+      const created = await storage.createOffers(validated);
 
-      // Return simplified response
       return c.json({
-        offers: createdOffers.map(o => ({
-          id: o.id,
-          peerId: o.peerId,
-          topics: o.topics,
-          expiresAt: o.expiresAt
+        offers: created.map(offer => ({
+          id: offer.id,
+          peerId: offer.peerId,
+          expiresAt: offer.expiresAt,
+          createdAt: offer.createdAt,
+          hasSecret: !!offer.secret
         }))
-      }, 200);
-    } catch (err) {
+      }, 201);
+    } catch (err: any) {
       console.error('Error creating offers:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  /**
-   * GET /offers/by-topic/:topic
-   * Find offers by topic with optional bloom filter exclusion
-   * Public endpoint (no auth required)
-   */
-  app.get('/offers/by-topic/:topic', async (c) => {
-    try {
-      const topic = c.req.param('topic');
-      const bloomParam = c.req.query('bloom');
-      const limitParam = c.req.query('limit');
-
-      const limit = limitParam ? Math.min(parseInt(limitParam, 10), 200) : 50;
-
-      // Parse bloom filter if provided
-      let excludePeerIds: string[] = [];
-      if (bloomParam) {
-        const bloom = parseBloomFilter(bloomParam);
-        if (!bloom) {
-          return c.json({ error: 'Invalid bloom filter format' }, 400);
-        }
-
-        // Get all offers for topic first
-        const allOffers = await storage.getOffersByTopic(topic);
-
-        // Test each peer ID against bloom filter
-        const excludeSet = new Set<string>();
-        for (const offer of allOffers) {
-          if (bloom.test(offer.peerId)) {
-            excludeSet.add(offer.peerId);
-          }
-        }
-
-        excludePeerIds = Array.from(excludeSet);
-      }
-
-      // Get filtered offers
-      let offers = await storage.getOffersByTopic(topic, excludePeerIds.length > 0 ? excludePeerIds : undefined);
-
-      // Apply limit
-      const total = offers.length;
-      offers = offers.slice(0, limit);
-
-      return c.json({
-        topic,
-        offers: offers.map(o => ({
-          id: o.id,
-          peerId: o.peerId,
-          sdp: o.sdp,
-          topics: o.topics,
-          expiresAt: o.expiresAt,
-          lastSeen: o.lastSeen,
-          hasSecret: !!o.secret,  // Indicate if secret is required without exposing it
-          info: o.info  // Public info field
-        })),
-        total: bloomParam ? total + excludePeerIds.length : total,
-        returned: offers.length
-      }, 200);
-    } catch (err) {
-      console.error('Error fetching offers by topic:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  /**
-   * GET /topics
-   * List all topics with active peer counts (paginated)
-   * Public endpoint (no auth required)
-   * Query params:
-   *   - limit: Max topics to return (default 50, max 200)
-   *   - offset: Number of topics to skip (default 0)
-   *   - startsWith: Filter topics starting with this prefix (optional)
-   */
-  app.get('/topics', async (c) => {
-    try {
-      const limitParam = c.req.query('limit');
-      const offsetParam = c.req.query('offset');
-      const startsWithParam = c.req.query('startsWith');
-
-      const limit = limitParam ? Math.min(parseInt(limitParam, 10), 200) : 50;
-      const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
-      const startsWith = startsWithParam || undefined;
-
-      const result = await storage.getTopics(limit, offset, startsWith);
-
-      return c.json({
-        topics: result.topics,
-        total: result.total,
-        limit,
-        offset,
-        ...(startsWith && { startsWith })
-      }, 200);
-    } catch (err) {
-      console.error('Error fetching topics:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  /**
-   * GET /peers/:peerId/offers
-   * View all offers from a specific peer
-   * Public endpoint
-   */
-  app.get('/peers/:peerId/offers', async (c) => {
-    try {
-      const peerId = c.req.param('peerId');
-      const offers = await storage.getOffersByPeerId(peerId);
-
-      // Collect unique topics
-      const topicsSet = new Set<string>();
-      offers.forEach(o => o.topics.forEach(t => topicsSet.add(t)));
-
-      return c.json({
-        peerId,
-        offers: offers.map(o => ({
-          id: o.id,
-          sdp: o.sdp,
-          topics: o.topics,
-          expiresAt: o.expiresAt,
-          lastSeen: o.lastSeen,
-          hasSecret: !!o.secret,  // Indicate if secret is required without exposing it
-          info: o.info  // Public info field
-        })),
-        topics: Array.from(topicsSet)
-      }, 200);
-    } catch (err) {
-      console.error('Error fetching peer offers:', err);
-      return c.json({ error: 'Internal server error' }, 500);
+      return c.json({ error: err.message || 'Internal server error' }, 500);
     }
   });
 
   /**
    * GET /offers/mine
-   * List all offers owned by authenticated peer
-   * Requires authentication
+   * Get authenticated peer's offers
    */
   app.get('/offers/mine', authMiddleware, async (c) => {
     try {
@@ -330,30 +432,26 @@ export function createApp(storage: Storage, config: Config) {
       const offers = await storage.getOffersByPeerId(peerId);
 
       return c.json({
-        peerId,
-        offers: offers.map(o => ({
-          id: o.id,
-          sdp: o.sdp,
-          topics: o.topics,
-          createdAt: o.createdAt,
-          expiresAt: o.expiresAt,
-          lastSeen: o.lastSeen,
-          secret: o.secret,  // Owner can see the secret
-          info: o.info,  // Owner can see the info
-          answererPeerId: o.answererPeerId,
-          answeredAt: o.answeredAt
+        offers: offers.map(offer => ({
+          id: offer.id,
+          sdp: offer.sdp,
+          createdAt: offer.createdAt,
+          expiresAt: offer.expiresAt,
+          lastSeen: offer.lastSeen,
+          hasSecret: !!offer.secret,
+          answererPeerId: offer.answererPeerId,
+          answered: !!offer.answererPeerId
         }))
       }, 200);
     } catch (err) {
-      console.error('Error fetching own offers:', err);
+      console.error('Error getting offers:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
   });
 
   /**
    * DELETE /offers/:offerId
-   * Delete a specific offer
-   * Requires authentication and ownership
+   * Delete an offer
    */
   app.delete('/offers/:offerId', authMiddleware, async (c) => {
     try {
@@ -363,10 +461,10 @@ export function createApp(storage: Storage, config: Config) {
       const deleted = await storage.deleteOffer(offerId, peerId);
 
       if (!deleted) {
-        return c.json({ error: 'Offer not found or not authorized' }, 404);
+        return c.json({ error: 'Offer not found or not owned by this peer' }, 404);
       }
 
-      return c.json({ deleted: true }, 200);
+      return c.json({ success: true }, 200);
     } catch (err) {
       console.error('Error deleting offer:', err);
       return c.json({ error: 'Internal server error' }, 500);
@@ -375,40 +473,35 @@ export function createApp(storage: Storage, config: Config) {
 
   /**
    * POST /offers/:offerId/answer
-   * Answer a specific offer (locks it to answerer)
-   * Requires authentication
+   * Answer an offer
    */
   app.post('/offers/:offerId/answer', authMiddleware, async (c) => {
     try {
       const offerId = c.req.param('offerId');
-      const peerId = getAuthenticatedPeerId(c);
       const body = await c.req.json();
       const { sdp, secret } = body;
 
-      if (!sdp || typeof sdp !== 'string') {
-        return c.json({ error: 'Missing or invalid required parameter: sdp' }, 400);
+      if (!sdp) {
+        return c.json({ error: 'Missing required parameter: sdp' }, 400);
       }
 
-      if (sdp.length > 65536) {
-        return c.json({ error: 'SDP must be 64KB or less' }, 400);
+      if (typeof sdp !== 'string' || sdp.length === 0) {
+        return c.json({ error: 'Invalid SDP' }, 400);
       }
 
-      // Validate secret if provided
-      if (secret !== undefined && typeof secret !== 'string') {
-        return c.json({ error: 'Secret must be a string' }, 400);
+      if (sdp.length > 64 * 1024) {
+        return c.json({ error: 'SDP too large (max 64KB)' }, 400);
       }
 
-      const result = await storage.answerOffer(offerId, peerId, sdp, secret);
+      const answererPeerId = getAuthenticatedPeerId(c);
+
+      const result = await storage.answerOffer(offerId, answererPeerId, sdp, secret);
 
       if (!result.success) {
         return c.json({ error: result.error }, 400);
       }
 
-      return c.json({
-        offerId,
-        answererId: peerId,
-        answeredAt: Date.now()
-      }, 200);
+      return c.json({ success: true }, 200);
     } catch (err) {
       console.error('Error answering offer:', err);
       return c.json({ error: 'Internal server error' }, 500);
@@ -417,8 +510,7 @@ export function createApp(storage: Storage, config: Config) {
 
   /**
    * GET /offers/answers
-   * Poll for answers to all of authenticated peer's offers
-   * Requires authentication (offerer)
+   * Get answers for authenticated peer's offers
    */
   app.get('/offers/answers', authMiddleware, async (c) => {
     try {
@@ -426,57 +518,49 @@ export function createApp(storage: Storage, config: Config) {
       const offers = await storage.getAnsweredOffers(peerId);
 
       return c.json({
-        answers: offers.map(o => ({
-          offerId: o.id,
-          answererId: o.answererPeerId,
-          sdp: o.answerSdp,
-          answeredAt: o.answeredAt,
-          topics: o.topics
+        answers: offers.map(offer => ({
+          offerId: offer.id,
+          answererPeerId: offer.answererPeerId,
+          answerSdp: offer.answerSdp,
+          answeredAt: offer.answeredAt
         }))
       }, 200);
     } catch (err) {
-      console.error('Error fetching answers:', err);
+      console.error('Error getting answers:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
   });
 
+  // ===== ICE Candidate Exchange =====
+
   /**
    * POST /offers/:offerId/ice-candidates
-   * Post ICE candidates for an offer
-   * Requires authentication (must be offerer or answerer)
+   * Add ICE candidates for an offer
    */
   app.post('/offers/:offerId/ice-candidates', authMiddleware, async (c) => {
     try {
       const offerId = c.req.param('offerId');
-      const peerId = getAuthenticatedPeerId(c);
       const body = await c.req.json();
       const { candidates } = body;
 
       if (!Array.isArray(candidates) || candidates.length === 0) {
-        return c.json({ error: 'Missing or invalid required parameter: candidates (must be non-empty array)' }, 400);
+        return c.json({ error: 'Missing or invalid required parameter: candidates' }, 400);
       }
 
-      // Verify offer exists and caller is offerer or answerer
+      const peerId = getAuthenticatedPeerId(c);
+
+      // Get offer to determine role
       const offer = await storage.getOfferById(offerId);
       if (!offer) {
-        return c.json({ error: 'Offer not found or expired' }, 404);
+        return c.json({ error: 'Offer not found' }, 404);
       }
 
-      let role: 'offerer' | 'answerer';
-      if (offer.peerId === peerId) {
-        role = 'offerer';
-      } else if (offer.answererPeerId === peerId) {
-        role = 'answerer';
-      } else {
-        return c.json({ error: 'Not authorized to post ICE candidates for this offer' }, 403);
-      }
+      // Determine role
+      const role = offer.peerId === peerId ? 'offerer' : 'answerer';
 
-      const added = await storage.addIceCandidates(offerId, peerId, role, candidates);
+      const count = await storage.addIceCandidates(offerId, peerId, role, candidates);
 
-      return c.json({
-        offerId,
-        candidatesAdded: added
-      }, 200);
+      return c.json({ count }, 200);
     } catch (err) {
       console.error('Error adding ICE candidates:', err);
       return c.json({ error: 'Internal server error' }, 500);
@@ -485,50 +569,34 @@ export function createApp(storage: Storage, config: Config) {
 
   /**
    * GET /offers/:offerId/ice-candidates
-   * Poll for ICE candidates from the other peer
-   * Requires authentication (must be offerer or answerer)
+   * Get ICE candidates for an offer
    */
   app.get('/offers/:offerId/ice-candidates', authMiddleware, async (c) => {
     try {
       const offerId = c.req.param('offerId');
+      const since = c.req.query('since');
       const peerId = getAuthenticatedPeerId(c);
-      const sinceParam = c.req.query('since');
 
-      const since = sinceParam ? parseInt(sinceParam, 10) : undefined;
-
-      // Verify offer exists and caller is offerer or answerer
+      // Get offer to determine role
       const offer = await storage.getOfferById(offerId);
       if (!offer) {
-        return c.json({ error: 'Offer not found or expired' }, 404);
+        return c.json({ error: 'Offer not found' }, 404);
       }
 
-      let targetRole: 'offerer' | 'answerer';
-      if (offer.peerId === peerId) {
-        // Offerer wants answerer's candidates
-        targetRole = 'answerer';
-        console.log(`[ICE GET] Offerer ${peerId} requesting answerer ICE candidates for offer ${offerId}, since=${since}, answererPeerId=${offer.answererPeerId}`);
-      } else if (offer.answererPeerId === peerId) {
-        // Answerer wants offerer's candidates
-        targetRole = 'offerer';
-        console.log(`[ICE GET] Answerer ${peerId} requesting offerer ICE candidates for offer ${offerId}, since=${since}, offererPeerId=${offer.peerId}`);
-      } else {
-        return c.json({ error: 'Not authorized to view ICE candidates for this offer' }, 403);
-      }
+      // Get candidates for opposite role
+      const targetRole = offer.peerId === peerId ? 'answerer' : 'offerer';
+      const sinceTimestamp = since ? parseInt(since, 10) : undefined;
 
-      const candidates = await storage.getIceCandidates(offerId, targetRole, since);
-      console.log(`[ICE GET] Found ${candidates.length} candidates for offer ${offerId}, targetRole=${targetRole}, since=${since}`);
+      const candidates = await storage.getIceCandidates(offerId, targetRole, sinceTimestamp);
 
       return c.json({
-        offerId,
         candidates: candidates.map(c => ({
           candidate: c.candidate,
-          peerId: c.peerId,
-          role: c.role,
           createdAt: c.createdAt
         }))
       }, 200);
     } catch (err) {
-      console.error('Error fetching ICE candidates:', err);
+      console.error('Error getting ICE candidates:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
   });

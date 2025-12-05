@@ -1,9 +1,21 @@
-import { Storage, Offer, IceCandidate, CreateOfferRequest, TopicInfo } from './types.ts';
+import { randomUUID } from 'crypto';
+import {
+  Storage,
+  Offer,
+  IceCandidate,
+  CreateOfferRequest,
+  Username,
+  ClaimUsernameRequest,
+  Service,
+  CreateServiceRequest,
+  ServiceInfo,
+} from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 
+const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
+
 /**
- * D1 storage adapter for topic-based offer management using Cloudflare D1
- * NOTE: This implementation is a placeholder and needs to be fully tested
+ * D1 storage adapter for rondevu DNS-like system using Cloudflare D1
  */
 export class D1Storage implements Storage {
   private db: D1Database;
@@ -17,11 +29,12 @@ export class D1Storage implements Storage {
   }
 
   /**
-   * Initializes database schema with new topic-based structure
+   * Initializes database schema with username and service-based structure
    * This should be run once during setup, not on every request
    */
   async initializeDatabase(): Promise<void> {
     await this.db.exec(`
+      -- Offers table (no topics)
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
         peer_id TEXT NOT NULL,
@@ -40,22 +53,13 @@ export class D1Storage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_offers_last_seen ON offers(last_seen);
       CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_peer_id);
 
-      CREATE TABLE IF NOT EXISTS offer_topics (
-        offer_id TEXT NOT NULL,
-        topic TEXT NOT NULL,
-        PRIMARY KEY (offer_id, topic),
-        FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_topics_topic ON offer_topics(topic);
-      CREATE INDEX IF NOT EXISTS idx_topics_offer ON offer_topics(offer_id);
-
+      -- ICE candidates table
       CREATE TABLE IF NOT EXISTS ice_candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         offer_id TEXT NOT NULL,
         peer_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
-        candidate TEXT NOT NULL, -- JSON: RTCIceCandidateInit object
+        candidate TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
       );
@@ -63,36 +67,76 @@ export class D1Storage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_ice_offer ON ice_candidates(offer_id);
       CREATE INDEX IF NOT EXISTS idx_ice_peer ON ice_candidates(peer_id);
       CREATE INDEX IF NOT EXISTS idx_ice_created ON ice_candidates(created_at);
+
+      -- Usernames table
+      CREATE TABLE IF NOT EXISTS usernames (
+        username TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL UNIQUE,
+        claimed_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_used INTEGER NOT NULL,
+        metadata TEXT,
+        CHECK(length(username) >= 3 AND length(username) <= 32)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_usernames_expires ON usernames(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_usernames_public_key ON usernames(public_key);
+
+      -- Services table
+      CREATE TABLE IF NOT EXISTS services (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        service_fqn TEXT NOT NULL,
+        offer_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        is_public INTEGER NOT NULL DEFAULT 0,
+        metadata TEXT,
+        FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
+        FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE,
+        UNIQUE(username, service_fqn)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_services_username ON services(username);
+      CREATE INDEX IF NOT EXISTS idx_services_fqn ON services(service_fqn);
+      CREATE INDEX IF NOT EXISTS idx_services_expires ON services(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_services_offer ON services(offer_id);
+
+      -- Service index table (privacy layer)
+      CREATE TABLE IF NOT EXISTS service_index (
+        uuid TEXT PRIMARY KEY,
+        service_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        service_fqn TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_service_index_username ON service_index(username);
+      CREATE INDEX IF NOT EXISTS idx_service_index_expires ON service_index(expires_at);
     `);
   }
+
+  // ===== Offer Management =====
 
   async createOffers(offers: CreateOfferRequest[]): Promise<Offer[]> {
     const created: Offer[] = [];
 
     // D1 doesn't support true transactions yet, so we do this sequentially
     for (const offer of offers) {
-      const id = offer.id || await generateOfferHash(offer.sdp, offer.topics);
+      const id = offer.id || await generateOfferHash(offer.sdp, []);
       const now = Date.now();
 
-      // Insert offer
       await this.db.prepare(`
         INSERT INTO offers (id, peer_id, sdp, created_at, expires_at, last_seen, secret)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).bind(id, offer.peerId, offer.sdp, now, offer.expiresAt, now, offer.secret || null).run();
 
-      // Insert topics
-      for (const topic of offer.topics) {
-        await this.db.prepare(`
-          INSERT INTO offer_topics (offer_id, topic)
-          VALUES (?, ?)
-        `).bind(id, topic).run();
-      }
-
       created.push({
         id,
         peerId: offer.peerId,
         sdp: offer.sdp,
-        topics: offer.topics,
         createdAt: now,
         expiresAt: offer.expiresAt,
         lastSeen: now,
@@ -101,33 +145,6 @@ export class D1Storage implements Storage {
     }
 
     return created;
-  }
-
-  async getOffersByTopic(topic: string, excludePeerIds?: string[]): Promise<Offer[]> {
-    let query = `
-      SELECT DISTINCT o.*
-      FROM offers o
-      INNER JOIN offer_topics ot ON o.id = ot.offer_id
-      WHERE ot.topic = ? AND o.expires_at > ?
-    `;
-
-    const params: any[] = [topic, Date.now()];
-
-    if (excludePeerIds && excludePeerIds.length > 0) {
-      const placeholders = excludePeerIds.map(() => '?').join(',');
-      query += ` AND o.peer_id NOT IN (${placeholders})`;
-      params.push(...excludePeerIds);
-    }
-
-    query += ' ORDER BY o.last_seen DESC';
-
-    const result = await this.db.prepare(query).bind(...params).all();
-
-    if (!result.results) {
-      return [];
-    }
-
-    return Promise.all(result.results.map(row => this.rowToOffer(row as any)));
   }
 
   async getOffersByPeerId(peerId: string): Promise<Offer[]> {
@@ -141,7 +158,7 @@ export class D1Storage implements Storage {
       return [];
     }
 
-    return Promise.all(result.results.map(row => this.rowToOffer(row as any)));
+    return result.results.map(row => this.rowToOffer(row as any));
   }
 
   async getOfferById(offerId: string): Promise<Offer | null> {
@@ -234,8 +251,10 @@ export class D1Storage implements Storage {
       return [];
     }
 
-    return Promise.all(result.results.map(row => this.rowToOffer(row as any)));
+    return result.results.map(row => this.rowToOffer(row as any));
   }
+
+  // ===== ICE Candidate Management =====
 
   async addIceCandidates(
     offerId: string,
@@ -243,12 +262,9 @@ export class D1Storage implements Storage {
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number> {
-    console.log(`[D1] addIceCandidates: offerId=${offerId}, peerId=${peerId}, role=${role}, count=${candidates.length}`);
-
-    // Give each candidate a unique timestamp to avoid "since" filtering issues
     // D1 doesn't have transactions, so insert one by one
     for (let i = 0; i < candidates.length; i++) {
-      const timestamp = Date.now() + i; // Ensure unique timestamps
+      const timestamp = Date.now() + i;
       await this.db.prepare(`
         INSERT INTO ice_candidates (offer_id, peer_id, role, candidate, created_at)
         VALUES (?, ?, ?, ?, ?)
@@ -256,7 +272,7 @@ export class D1Storage implements Storage {
         offerId,
         peerId,
         role,
-        JSON.stringify(candidates[i]), // Store full object as JSON
+        JSON.stringify(candidates[i]),
         timestamp
       ).run();
     }
@@ -283,82 +299,232 @@ export class D1Storage implements Storage {
 
     query += ' ORDER BY created_at ASC';
 
-    console.log(`[D1] getIceCandidates query: offerId=${offerId}, targetRole=${targetRole}, since=${since}`);
     const result = await this.db.prepare(query).bind(...params).all();
-    console.log(`[D1] getIceCandidates result: ${result.results?.length || 0} rows`);
 
     if (!result.results) {
       return [];
     }
 
-    const candidates = result.results.map((row: any) => ({
+    return result.results.map((row: any) => ({
       id: row.id,
       offerId: row.offer_id,
       peerId: row.peer_id,
       role: row.role,
-      candidate: JSON.parse(row.candidate), // Parse JSON back to object
+      candidate: JSON.parse(row.candidate),
       createdAt: row.created_at,
     }));
-
-    if (candidates.length > 0) {
-      console.log(`[D1] First candidate createdAt: ${candidates[0].createdAt}, since: ${since}`);
-    }
-
-    return candidates;
   }
 
-  async getTopics(limit: number, offset: number, startsWith?: string): Promise<{
-    topics: TopicInfo[];
-    total: number;
+  // ===== Username Management =====
+
+  async claimUsername(request: ClaimUsernameRequest): Promise<Username> {
+    const now = Date.now();
+    const expiresAt = now + YEAR_IN_MS;
+
+    // Try to insert or update
+    const result = await this.db.prepare(`
+      INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
+      VALUES (?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(username) DO UPDATE SET
+        expires_at = ?,
+        last_used = ?
+      WHERE public_key = ?
+    `).bind(
+      request.username,
+      request.publicKey,
+      now,
+      expiresAt,
+      now,
+      expiresAt,
+      now,
+      request.publicKey
+    ).run();
+
+    if ((result.meta.changes || 0) === 0) {
+      throw new Error('Username already claimed by different public key');
+    }
+
+    return {
+      username: request.username,
+      publicKey: request.publicKey,
+      claimedAt: now,
+      expiresAt,
+      lastUsed: now,
+    };
+  }
+
+  async getUsername(username: string): Promise<Username | null> {
+    const result = await this.db.prepare(`
+      SELECT * FROM usernames
+      WHERE username = ? AND expires_at > ?
+    `).bind(username, Date.now()).first();
+
+    if (!result) {
+      return null;
+    }
+
+    const row = result as any;
+
+    return {
+      username: row.username,
+      publicKey: row.public_key,
+      claimedAt: row.claimed_at,
+      expiresAt: row.expires_at,
+      lastUsed: row.last_used,
+      metadata: row.metadata || undefined,
+    };
+  }
+
+  async touchUsername(username: string): Promise<boolean> {
+    const now = Date.now();
+    const expiresAt = now + YEAR_IN_MS;
+
+    const result = await this.db.prepare(`
+      UPDATE usernames
+      SET last_used = ?, expires_at = ?
+      WHERE username = ? AND expires_at > ?
+    `).bind(now, expiresAt, username, now).run();
+
+    return (result.meta.changes || 0) > 0;
+  }
+
+  async deleteExpiredUsernames(now: number): Promise<number> {
+    const result = await this.db.prepare(`
+      DELETE FROM usernames WHERE expires_at < ?
+    `).bind(now).run();
+
+    return result.meta.changes || 0;
+  }
+
+  // ===== Service Management =====
+
+  async createService(request: CreateServiceRequest): Promise<{
+    service: Service;
+    indexUuid: string;
   }> {
+    const serviceId = randomUUID();
+    const indexUuid = randomUUID();
     const now = Date.now();
 
-    // Build WHERE clause for startsWith filter
-    const whereClause = startsWith
-      ? 'o.expires_at > ? AND ot.topic LIKE ?'
-      : 'o.expires_at > ?';
+    // Insert service
+    await this.db.prepare(`
+      INSERT INTO services (id, username, service_fqn, offer_id, created_at, expires_at, is_public, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      serviceId,
+      request.username,
+      request.serviceFqn,
+      request.offerId,
+      now,
+      request.expiresAt,
+      request.isPublic ? 1 : 0,
+      request.metadata || null
+    ).run();
 
-    const startsWithPattern = startsWith ? `${startsWith}%` : null;
+    // Insert service index
+    await this.db.prepare(`
+      INSERT INTO service_index (uuid, service_id, username, service_fqn, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      indexUuid,
+      serviceId,
+      request.username,
+      request.serviceFqn,
+      now,
+      request.expiresAt
+    ).run();
 
-    // Get total count of topics with active offers
-    const countQuery = `
-      SELECT COUNT(DISTINCT ot.topic) as count
-      FROM offer_topics ot
-      INNER JOIN offers o ON ot.offer_id = o.id
-      WHERE ${whereClause}
-    `;
+    // Touch username to extend expiry
+    await this.touchUsername(request.username);
 
-    const countStmt = this.db.prepare(countQuery);
-    const countResult = startsWith
-      ? await countStmt.bind(now, startsWithPattern).first()
-      : await countStmt.bind(now).first();
+    return {
+      service: {
+        id: serviceId,
+        username: request.username,
+        serviceFqn: request.serviceFqn,
+        offerId: request.offerId,
+        createdAt: now,
+        expiresAt: request.expiresAt,
+        isPublic: request.isPublic || false,
+        metadata: request.metadata,
+      },
+      indexUuid,
+    };
+  }
 
-    const total = (countResult as any)?.count || 0;
+  async getServiceById(serviceId: string): Promise<Service | null> {
+    const result = await this.db.prepare(`
+      SELECT * FROM services
+      WHERE id = ? AND expires_at > ?
+    `).bind(serviceId, Date.now()).first();
 
-    // Get topics with peer counts (paginated)
-    const topicsQuery = `
-      SELECT
-        ot.topic,
-        COUNT(DISTINCT o.peer_id) as active_peers
-      FROM offer_topics ot
-      INNER JOIN offers o ON ot.offer_id = o.id
-      WHERE ${whereClause}
-      GROUP BY ot.topic
-      ORDER BY active_peers DESC, ot.topic ASC
-      LIMIT ? OFFSET ?
-    `;
+    if (!result) {
+      return null;
+    }
 
-    const topicsStmt = this.db.prepare(topicsQuery);
-    const topicsResult = startsWith
-      ? await topicsStmt.bind(now, startsWithPattern, limit, offset).all()
-      : await topicsStmt.bind(now, limit, offset).all();
+    return this.rowToService(result as any);
+  }
 
-    const topics = (topicsResult.results || []).map((row: any) => ({
-      topic: row.topic,
-      activePeers: row.active_peers,
+  async getServiceByUuid(uuid: string): Promise<Service | null> {
+    const result = await this.db.prepare(`
+      SELECT s.* FROM services s
+      INNER JOIN service_index si ON s.id = si.service_id
+      WHERE si.uuid = ? AND s.expires_at > ?
+    `).bind(uuid, Date.now()).first();
+
+    if (!result) {
+      return null;
+    }
+
+    return this.rowToService(result as any);
+  }
+
+  async listServicesForUsername(username: string): Promise<ServiceInfo[]> {
+    const result = await this.db.prepare(`
+      SELECT si.uuid, s.is_public, s.service_fqn, s.metadata
+      FROM service_index si
+      INNER JOIN services s ON si.service_id = s.id
+      WHERE si.username = ? AND si.expires_at > ?
+      ORDER BY s.created_at DESC
+    `).bind(username, Date.now()).all();
+
+    if (!result.results) {
+      return [];
+    }
+
+    return result.results.map((row: any) => ({
+      uuid: row.uuid,
+      isPublic: row.is_public === 1,
+      serviceFqn: row.is_public === 1 ? row.service_fqn : undefined,
+      metadata: row.is_public === 1 ? row.metadata || undefined : undefined,
     }));
+  }
 
-    return { topics, total };
+  async queryService(username: string, serviceFqn: string): Promise<string | null> {
+    const result = await this.db.prepare(`
+      SELECT si.uuid FROM service_index si
+      INNER JOIN services s ON si.service_id = s.id
+      WHERE si.username = ? AND si.service_fqn = ? AND si.expires_at > ?
+    `).bind(username, serviceFqn, Date.now()).first();
+
+    return result ? (result as any).uuid : null;
+  }
+
+  async deleteService(serviceId: string, username: string): Promise<boolean> {
+    const result = await this.db.prepare(`
+      DELETE FROM services
+      WHERE id = ? AND username = ?
+    `).bind(serviceId, username).run();
+
+    return (result.meta.changes || 0) > 0;
+  }
+
+  async deleteExpiredServices(now: number): Promise<number> {
+    const result = await this.db.prepare(`
+      DELETE FROM services WHERE expires_at < ?
+    `).bind(now).run();
+
+    return result.meta.changes || 0;
   }
 
   async close(): Promise<void> {
@@ -366,22 +532,16 @@ export class D1Storage implements Storage {
     // Connections are managed by the Cloudflare Workers runtime
   }
 
+  // ===== Helper Methods =====
+
   /**
-   * Helper method to convert database row to Offer object with topics
+   * Helper method to convert database row to Offer object
    */
-  private async rowToOffer(row: any): Promise<Offer> {
-    // Get topics for this offer
-    const topicResult = await this.db.prepare(`
-      SELECT topic FROM offer_topics WHERE offer_id = ?
-    `).bind(row.id).all();
-
-    const topics = topicResult.results?.map((t: any) => t.topic) || [];
-
+  private rowToOffer(row: any): Offer {
     return {
       id: row.id,
       peerId: row.peer_id,
       sdp: row.sdp,
-      topics,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastSeen: row.last_seen,
@@ -389,6 +549,22 @@ export class D1Storage implements Storage {
       answererPeerId: row.answerer_peer_id || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at || undefined,
+    };
+  }
+
+  /**
+   * Helper method to convert database row to Service object
+   */
+  private rowToService(row: any): Service {
+    return {
+      id: row.id,
+      username: row.username,
+      serviceFqn: row.service_fqn,
+      offerId: row.offer_id,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      isPublic: row.is_public === 1,
+      metadata: row.metadata || undefined,
     };
   }
 }

@@ -1,11 +1,22 @@
 /**
  * Crypto utilities for stateless peer authentication
  * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
+ * Uses @noble/ed25519 for Ed25519 signature verification
  */
+
+import * as ed25519 from '@noble/ed25519';
 
 const ALGORITHM = 'AES-GCM';
 const IV_LENGTH = 12; // 96 bits for GCM
 const KEY_LENGTH = 32; // 256 bits
+
+// Username validation
+const USERNAME_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+const USERNAME_MIN_LENGTH = 3;
+const USERNAME_MAX_LENGTH = 32;
+
+// Timestamp validation (5 minutes tolerance)
+const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 
 /**
  * Generates a random peer ID (16 bytes = 32 hex chars)
@@ -146,4 +157,157 @@ export async function validateCredentials(peerId: string, encryptedSecret: strin
   } catch {
     return false;
   }
+}
+
+// ===== Username and Ed25519 Signature Utilities =====
+
+/**
+ * Validates username format
+ * Rules: 3-32 chars, lowercase alphanumeric + dash, must start/end with alphanumeric
+ */
+export function validateUsername(username: string): { valid: boolean; error?: string } {
+  if (typeof username !== 'string') {
+    return { valid: false, error: 'Username must be a string' };
+  }
+
+  if (username.length < USERNAME_MIN_LENGTH) {
+    return { valid: false, error: `Username must be at least ${USERNAME_MIN_LENGTH} characters` };
+  }
+
+  if (username.length > USERNAME_MAX_LENGTH) {
+    return { valid: false, error: `Username must be at most ${USERNAME_MAX_LENGTH} characters` };
+  }
+
+  if (!USERNAME_REGEX.test(username)) {
+    return { valid: false, error: 'Username must be lowercase alphanumeric with optional dashes, and start/end with alphanumeric' };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Validates service FQN format (service-name@version)
+ * Service name: reverse domain notation (com.example.service)
+ * Version: semantic versioning (1.0.0, 2.1.3-beta, etc.)
+ */
+export function validateServiceFqn(fqn: string): { valid: boolean; error?: string } {
+  if (typeof fqn !== 'string') {
+    return { valid: false, error: 'Service FQN must be a string' };
+  }
+
+  // Split into service name and version
+  const parts = fqn.split('@');
+  if (parts.length !== 2) {
+    return { valid: false, error: 'Service FQN must be in format: service-name@version' };
+  }
+
+  const [serviceName, version] = parts;
+
+  // Validate service name (reverse domain notation)
+  const serviceNameRegex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+  if (!serviceNameRegex.test(serviceName)) {
+    return { valid: false, error: 'Service name must be reverse domain notation (e.g., com.example.service)' };
+  }
+
+  if (serviceName.length < 3 || serviceName.length > 128) {
+    return { valid: false, error: 'Service name must be 3-128 characters' };
+  }
+
+  // Validate version (semantic versioning)
+  const versionRegex = /^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$/;
+  if (!versionRegex.test(version)) {
+    return { valid: false, error: 'Version must be semantic versioning (e.g., 1.0.0, 2.1.3-beta)' };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Validates timestamp is within acceptable range (prevents replay attacks)
+ */
+export function validateTimestamp(timestamp: number): { valid: boolean; error?: string } {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+    return { valid: false, error: 'Timestamp must be a finite number' };
+  }
+
+  const now = Date.now();
+  const diff = Math.abs(now - timestamp);
+
+  if (diff > TIMESTAMP_TOLERANCE_MS) {
+    return { valid: false, error: `Timestamp too old or too far in future (tolerance: ${TIMESTAMP_TOLERANCE_MS / 1000}s)` };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Verifies Ed25519 signature
+ * @param publicKey Base64-encoded Ed25519 public key (32 bytes)
+ * @param signature Base64-encoded Ed25519 signature (64 bytes)
+ * @param message Message that was signed (UTF-8 string)
+ * @returns true if signature is valid, false otherwise
+ */
+export async function verifyEd25519Signature(
+  publicKey: string,
+  signature: string,
+  message: string
+): Promise<boolean> {
+  try {
+    // Decode base64 to bytes
+    const publicKeyBytes = base64ToBytes(publicKey);
+    const signatureBytes = base64ToBytes(signature);
+
+    // Encode message as UTF-8
+    const encoder = new TextEncoder();
+    const messageBytes = encoder.encode(message);
+
+    // Verify signature using @noble/ed25519
+    const isValid = await ed25519.verify(signatureBytes, messageBytes, publicKeyBytes);
+    return isValid;
+  } catch (err) {
+    console.error('Ed25519 signature verification failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Validates a username claim request
+ * Verifies format, timestamp, and signature
+ */
+export async function validateUsernameClaim(
+  username: string,
+  publicKey: string,
+  signature: string,
+  message: string
+): Promise<{ valid: boolean; error?: string }> {
+  // Validate username format
+  const usernameCheck = validateUsername(username);
+  if (!usernameCheck.valid) {
+    return usernameCheck;
+  }
+
+  // Parse message format: "claim:{username}:{timestamp}"
+  const parts = message.split(':');
+  if (parts.length !== 3 || parts[0] !== 'claim' || parts[1] !== username) {
+    return { valid: false, error: 'Invalid message format (expected: claim:{username}:{timestamp})' };
+  }
+
+  const timestamp = parseInt(parts[2], 10);
+  if (isNaN(timestamp)) {
+    return { valid: false, error: 'Invalid timestamp in message' };
+  }
+
+  // Validate timestamp
+  const timestampCheck = validateTimestamp(timestamp);
+  if (!timestampCheck.valid) {
+    return timestampCheck;
+  }
+
+  // Verify signature
+  const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
+  if (!signatureValid) {
+    return { valid: false, error: 'Invalid signature' };
+  }
+
+  return { valid: true };
 }

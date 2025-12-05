@@ -1,7 +1,7 @@
 {
   "name": "@xtr-dev/rondevu-server",
-  "version": "0.1.5",
-  "description": "Topic-based peer discovery and signaling server for distributed P2P applications",
+  "version": "2.0.0",
+  "description": "DNS-like WebRTC signaling server with username claiming and service discovery",
   "main": "dist/index.js",
   "scripts": {
     "build": "node build.js",
@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.6",
+    "@noble/ed25519": "^3.0.0",
     "better-sqlite3": "^12.4.1",
     "hono": "^4.10.4"
   }

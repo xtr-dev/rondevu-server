@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/@xtr-dev/rondevu-server)](https://www.npmjs.com/package/@xtr-dev/rondevu-server)
 
-🌐 **Topic-based peer discovery and WebRTC signaling**
+🌐 **DNS-like WebRTC signaling with username claiming and service discovery**
 
-Scalable peer-to-peer connection establishment with topic-based discovery, stateless authentication, and complete WebRTC signaling.
+Scalable WebRTC signaling server with cryptographic username claiming, service publishing, and privacy-preserving discovery.
 
 **Related repositories:**
 - [@xtr-dev/rondevu-client](https://github.com/xtr-dev/rondevu-client) - TypeScript client library ([npm](https://www.npmjs.com/package/@xtr-dev/rondevu-client))
@@ -15,13 +15,27 @@ Scalable peer-to-peer connection establishment with topic-based discovery, state
 
 ## Features
 
-- **Topic-Based Discovery**: Tag offers with topics (e.g., torrent infohashes) for efficient peer finding
+- **Username Claiming**: Cryptographic username ownership with Ed25519 signatures (365-day validity, auto-renewed on use)
+- **Service Publishing**: Package-style naming with semantic versioning (com.example.chat@1.0.0)
+- **Privacy-Preserving Discovery**: UUID-based service index prevents enumeration
+- **Public/Private Services**: Control service visibility
 - **Stateless Authentication**: AES-256-GCM encrypted credentials, no server-side sessions
-- **Protected Offers**: Optional secret field for access-controlled peer connections
-- **Bloom Filters**: Client-side peer exclusion for efficient discovery
-- **Multi-Offer Support**: Create multiple offers per peer simultaneously
 - **Complete WebRTC Signaling**: Offer/answer exchange and ICE candidate relay
 - **Dual Storage**: SQLite (Node.js/Docker) and Cloudflare D1 (Workers) backends
+
+## Architecture
+
+```
+Username Claiming → Service Publishing → Service Discovery → WebRTC Connection
+
+alice claims "alice" with Ed25519 signature
+  ↓
+alice publishes com.example.chat@1.0.0 → receives UUID abc123
+  ↓
+bob queries alice's services → gets UUID abc123
+  ↓
+bob connects to UUID abc123 → WebRTC connection established
+```
 
 ## Quick Start
 
@@ -32,7 +46,7 @@ npm install && npm start
 
 **Docker:**
 ```bash
-docker build -t rondevu . && docker run -p 3000:3000 -e STORAGE_PATH=:memory: rondevu
+docker build -t rondevu . && docker run -p 3000:3000 -e STORAGE_PATH=:memory: -e AUTH_SECRET=$(openssl rand -hex 32) rondevu
 ```
 
 **Cloudflare Workers:**
@@ -63,67 +77,172 @@ Generates a cryptographically random 128-bit peer ID.
 }
 ```
 
-#### `GET /topics?limit=50&offset=0`
-List all topics with active peer counts (paginated)
+### Username Management
 
-**Query Parameters:**
-- `limit` (optional): Maximum number of topics to return (default: 50, max: 200)
-- `offset` (optional): Number of topics to skip (default: 0)
+#### `POST /usernames/claim`
+Claim a username with cryptographic proof
 
-**Response:**
+**Request:**
 ```json
 {
-  "topics": [
-    {"topic": "movie-xyz", "activePeers": 42},
-    {"topic": "torrent-abc", "activePeers": 15}
-  ],
-  "total": 123,
-  "limit": 50,
-  "offset": 0
+  "username": "alice",
+  "publicKey": "base64-encoded-ed25519-public-key",
+  "signature": "base64-encoded-signature",
+  "message": "claim:alice:1733404800000"
 }
 ```
 
-#### `GET /offers/by-topic/:topic?limit=50&bloom=...`
-Find offers by topic with optional bloom filter exclusion
+**Response:**
+```json
+{
+  "username": "alice",
+  "claimedAt": 1733404800000,
+  "expiresAt": 1765027200000
+}
+```
 
-**Query Parameters:**
-- `limit` (optional): Maximum offers to return (default: 50, max: 200)
-- `bloom` (optional): Base64-encoded bloom filter to exclude known peers
+**Validation:**
+- Username format: `^[a-z0-9][a-z0-9-]*[a-z0-9]$` (3-32 characters)
+- Signature must be valid Ed25519 signature
+- Timestamp must be within 5 minutes (replay protection)
+- Expires after 365 days, auto-renewed on use
+
+#### `GET /usernames/:username`
+Check username availability and claim status
 
 **Response:**
 ```json
 {
-  "topic": "movie-xyz",
-  "offers": [
+  "username": "alice",
+  "available": false,
+  "claimedAt": 1733404800000,
+  "expiresAt": 1765027200000,
+  "publicKey": "..."
+}
+```
+
+#### `GET /usernames/:username/services`
+List all services for a username (privacy-preserving)
+
+**Response:**
+```json
+{
+  "username": "alice",
+  "services": [
     {
-      "id": "offer-id",
-      "peerId": "peer-id",
-      "sdp": "v=0...",
-      "topics": ["movie-xyz", "hd-content"],
-      "expiresAt": 1234567890,
-      "lastSeen": 1234567890,
-      "hasSecret": true,  // Indicates if secret is required to answer
-      "info": "Looking for peers in EU region"  // Public info field (optional)
+      "uuid": "abc123",
+      "isPublic": false
+    },
+    {
+      "uuid": "def456",
+      "isPublic": true,
+      "serviceFqn": "com.example.public@1.0.0",
+      "metadata": { "description": "Public service" }
     }
-  ],
-  "total": 42,
-  "returned": 10
+  ]
 }
 ```
 
-**Notes:**
-- `hasSecret`: Boolean flag indicating whether a secret is required to answer this offer. The actual secret is never exposed in public endpoints.
-- `info`: Optional public metadata field (max 128 characters) visible to all peers.
+### Service Management
 
-#### `GET /peers/:peerId/offers`
-View all offers from a specific peer
+#### `POST /services`
+Publish a service (requires authentication and username signature)
 
-### Authenticated Endpoints
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
 
-All authenticated endpoints require `Authorization: Bearer {peerId}:{secret}` header.
+**Request:**
+```json
+{
+  "username": "alice",
+  "serviceFqn": "com.example.chat@1.0.0",
+  "sdp": "v=0...",
+  "ttl": 300000,
+  "isPublic": false,
+  "metadata": { "description": "Chat service" },
+  "signature": "base64-encoded-signature",
+  "message": "publish:alice:com.example.chat@1.0.0:1733404800000"
+}
+```
+
+**Response:**
+```json
+{
+  "serviceId": "uuid-v4",
+  "uuid": "uuid-v4-for-index",
+  "offerId": "offer-hash-id",
+  "expiresAt": 1733405100000
+}
+```
+
+**Service FQN Format:**
+- Service name: Reverse domain notation (e.g., `com.example.chat`)
+- Version: Semantic versioning (e.g., `1.0.0`, `2.1.3-beta`)
+- Complete FQN: `service-name@version` (e.g., `com.example.chat@1.0.0`)
+
+**Validation:**
+- Service name pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`
+- Length: 3-128 characters
+- Version pattern: `^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$`
+
+#### `GET /services/:uuid`
+Get service details by UUID
+
+**Response:**
+```json
+{
+  "serviceId": "...",
+  "username": "alice",
+  "serviceFqn": "com.example.chat@1.0.0",
+  "offerId": "...",
+  "sdp": "v=0...",
+  "isPublic": false,
+  "metadata": { ... },
+  "createdAt": 1733404800000,
+  "expiresAt": 1733405100000
+}
+```
+
+#### `DELETE /services/:serviceId`
+Unpublish a service (requires authentication and ownership)
+
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
+
+**Request:**
+```json
+{
+  "username": "alice"
+}
+```
+
+### Service Discovery
+
+#### `POST /index/:username/query`
+Query a service by FQN
+
+**Request:**
+```json
+{
+  "serviceFqn": "com.example.chat@1.0.0"
+}
+```
+
+**Response:**
+```json
+{
+  "uuid": "abc123",
+  "allowed": true
+}
+```
+
+### Offer Management (Low-level)
 
 #### `POST /offers`
-Create one or more offers
+Create one or more offers (requires authentication)
+
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
 
 **Request:**
 ```json
@@ -131,18 +250,11 @@ Create one or more offers
   "offers": [
     {
       "sdp": "v=0...",
-      "topics": ["movie-xyz", "hd-content"],
-      "ttl": 300000,
-      "secret": "my-secret-password",  // Optional: protect offer (max 128 chars)
-      "info": "Looking for peers in EU region"  // Optional: public info (max 128 chars)
+      "ttl": 300000
     }
   ]
 }
 ```
-
-**Notes:**
-- `secret` (optional): Protect the offer with a secret. Answerers must provide the correct secret to connect.
-- `info` (optional): Public metadata visible to all peers (max 128 characters). Useful for describing the offer or connection requirements.
 
 #### `GET /offers/mine`
 List all offers owned by authenticated peer
@@ -159,13 +271,9 @@ Answer an offer (locks it to answerer)
 **Request:**
 ```json
 {
-  "sdp": "v=0...",
-  "secret": "my-secret-password"  // Required if offer is protected
+  "sdp": "v=0..."
 }
 ```
-
-**Notes:**
-- `secret` (optional): Required if the offer was created with a secret. Must match the offer's secret.
 
 #### `GET /offers/answers`
 Poll for answers to your offers
@@ -192,13 +300,62 @@ Environment variables:
 | `PORT` | `3000` | Server port (Node.js/Docker) |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `STORAGE_PATH` | `./rondevu.db` | SQLite database path (use `:memory:` for in-memory) |
-| `VERSION` | `0.4.0` | Server version (semver) |
-| `AUTH_SECRET` | Random 32-byte hex | Secret key for credential encryption |
+| `VERSION` | `2.0.0` | Server version (semver) |
+| `AUTH_SECRET` | Random 32-byte hex | Secret key for credential encryption (required for production) |
 | `OFFER_DEFAULT_TTL` | `300000` | Default offer TTL in ms (5 minutes) |
 | `OFFER_MIN_TTL` | `60000` | Minimum offer TTL in ms (1 minute) |
 | `OFFER_MAX_TTL` | `3600000` | Maximum offer TTL in ms (1 hour) |
 | `MAX_OFFERS_PER_REQUEST` | `10` | Maximum offers per create request |
-| `MAX_TOPICS_PER_OFFER` | `20` | Maximum topics per offer |
+
+## Database Schema
+
+### usernames
+- `username` (PK): Claimed username
+- `public_key`: Ed25519 public key (base64)
+- `claimed_at`: Claim timestamp
+- `expires_at`: Expiry timestamp (365 days)
+- `last_used`: Last activity timestamp
+- `metadata`: Optional JSON metadata
+
+### services
+- `id` (PK): Service ID (UUID)
+- `username` (FK): Owner username
+- `service_fqn`: Fully qualified name (com.example.chat@1.0.0)
+- `offer_id` (FK): WebRTC offer ID
+- `is_public`: Public/private flag
+- `metadata`: JSON metadata
+- `created_at`, `expires_at`: Timestamps
+
+### service_index (privacy layer)
+- `uuid` (PK): Random UUID for discovery
+- `service_id` (FK): Links to service
+- `username`, `service_fqn`: Denormalized for performance
+
+## Security
+
+### Username Claiming
+- **Algorithm**: Ed25519 signatures
+- **Message Format**: `claim:{username}:{timestamp}`
+- **Replay Protection**: Timestamp must be within 5 minutes
+- **Key Management**: Private keys never leave the client
+
+### Service Publishing
+- **Ownership Verification**: Every publish requires username signature
+- **Message Format**: `publish:{username}:{serviceFqn}:{timestamp}`
+- **Auto-Renewal**: Publishing a service extends username expiry
+
+### Privacy
+- **Private Services**: Only UUID exposed, FQN hidden
+- **Public Services**: FQN and metadata visible
+- **No Enumeration**: Cannot list all services without knowing FQN
+
+## Migration from V1
+
+V2 is a **breaking change** that removes topic-based discovery. See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
+
+**Key Changes:**
+- ❌ Removed: Topic-based discovery, bloom filters, public peer listings
+- ✅ Added: Username claiming, service publishing, UUID-based privacy
 
 ## License
 
