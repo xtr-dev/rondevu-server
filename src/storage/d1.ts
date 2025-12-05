@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+// Use Web Crypto API (available globally in Cloudflare Workers)
 import {
   Storage,
   Offer,
@@ -402,8 +402,8 @@ export class D1Storage implements Storage {
     service: Service;
     indexUuid: string;
   }> {
-    const serviceId = randomUUID();
-    const indexUuid = randomUUID();
+    const serviceId = crypto.randomUUID();
+    const indexUuid = crypto.randomUUID();
     const now = Date.now();
 
     // Insert service

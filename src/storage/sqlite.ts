@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import {
   Storage,
   Offer,
