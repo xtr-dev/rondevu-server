@@ -317,3 +317,46 @@ export async function validateUsernameClaim(
 
   return { valid: true };
 }
+
+/**
+ * Validates a service publish signature
+ * Message format: publish:{username}:{serviceFqn}:{timestamp}
+ */
+export async function validateServicePublish(
+  username: string,
+  serviceFqn: string,
+  publicKey: string,
+  signature: string,
+  message: string
+): Promise<{ valid: boolean; error?: string }> {
+  // Validate username format
+  const usernameCheck = validateUsername(username);
+  if (!usernameCheck.valid) {
+    return usernameCheck;
+  }
+
+  // Parse message format: "publish:{username}:{serviceFqn}:{timestamp}"
+  const parts = message.split(':');
+  if (parts.length !== 4 || parts[0] !== 'publish' || parts[1] !== username || parts[2] !== serviceFqn) {
+    return { valid: false, error: 'Invalid message format (expected: publish:{username}:{serviceFqn}:{timestamp})' };
+  }
+
+  const timestamp = parseInt(parts[3], 10);
+  if (isNaN(timestamp)) {
+    return { valid: false, error: 'Invalid timestamp in message' };
+  }
+
+  // Validate timestamp
+  const timestampCheck = validateTimestamp(timestamp);
+  if (!timestampCheck.valid) {
+    return timestampCheck;
+  }
+
+  // Verify signature
+  const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
+  if (!signatureValid) {
+    return { valid: false, error: 'Invalid signature' };
+  }
+
+  return { valid: true };
+}

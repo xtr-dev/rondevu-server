@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import { createAuthMiddleware, getAuthenticatedPeerId } from './middleware/auth.ts';
-import { generatePeerId, encryptPeerId, validateUsernameClaim, validateServiceFqn } from './crypto.ts';
+import { generatePeerId, encryptPeerId, validateUsernameClaim, validateServicePublish, validateServiceFqn } from './crypto.ts';
 import type { Context } from 'hono';
 
 /**
@@ -207,7 +207,7 @@ export function createApp(storage: Storage, config: Config) {
       }
 
       // Verify signature matches username's public key
-      const signatureValidation = await validateUsernameClaim(username, usernameRecord.publicKey, signature, message);
+      const signatureValidation = await validateServicePublish(username, serviceFqn, usernameRecord.publicKey, signature, message);
       if (!signatureValidation.valid) {
         return c.json({ error: 'Invalid signature for username' }, 403);
       }
