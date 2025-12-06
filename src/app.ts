@@ -217,6 +217,15 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'Invalid signature for username' }, 403);
       }
 
+      // Delete existing service if one exists (upsert behavior)
+      const existingUuid = await storage.queryService(username, serviceFqn);
+      if (existingUuid) {
+        const existingService = await storage.getServiceByUuid(existingUuid);
+        if (existingService) {
+          await storage.deleteService(existingService.id, username);
+        }
+      }
+
       // Validate SDP
       if (typeof sdp !== 'string' || sdp.length === 0) {
         return c.json({ error: 'Invalid SDP' }, 400);
