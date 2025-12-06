@@ -535,9 +535,10 @@ export function createApp(storage: Storage, config: Config) {
       return c.json({
         answers: offers.map(offer => ({
           offerId: offer.id,
-          answererPeerId: offer.answererPeerId,
-          answerSdp: offer.answerSdp,
-          answeredAt: offer.answeredAt
+          answererId: offer.answererPeerId,
+          sdp: offer.answerSdp,
+          answeredAt: offer.answeredAt,
+          topics: [] // V2 doesn't use topics, but client expects this field
         }))
       }, 200);
     } catch (err) {
