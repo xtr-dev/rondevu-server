@@ -61,7 +61,7 @@ export function createApp(storage: Storage, config: Config) {
 
   /**
    * POST /register
-   * Register a new peer (still needed for peer ID generation)
+   * Register a new peer
    */
   app.post('/register', async (c) => {
     try {
