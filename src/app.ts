@@ -291,6 +291,7 @@ export function createApp(storage: Storage, config: Config) {
   /**
    * GET /services/:uuid
    * Get service details by index UUID
+   * Returns an available (unanswered) offer from the service's pool
    */
   app.get('/services/:uuid', async (c) => {
     try {
@@ -302,19 +303,32 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'Service not found' }, 404);
       }
 
-      // Get associated offer
-      const offer = await storage.getOfferById(service.offerId);
+      // Get the initial offer to find the peer ID
+      const initialOffer = await storage.getOfferById(service.offerId);
 
-      if (!offer) {
+      if (!initialOffer) {
         return c.json({ error: 'Associated offer not found' }, 404);
+      }
+
+      // Get all offers from this peer
+      const peerOffers = await storage.getOffersByPeerId(initialOffer.peerId);
+
+      // Find an unanswered offer
+      const availableOffer = peerOffers.find(offer => !offer.answererPeerId);
+
+      if (!availableOffer) {
+        return c.json({
+          error: 'No available offers',
+          message: 'All offers from this service are currently in use. Please try again later.'
+        }, 503);
       }
 
       return c.json({
         serviceId: service.id,
         username: service.username,
         serviceFqn: service.serviceFqn,
-        offerId: service.offerId,
-        sdp: offer.sdp,
+        offerId: availableOffer.id,
+        sdp: availableOffer.sdp,
         isPublic: service.isPublic,
         metadata: service.metadata ? JSON.parse(service.metadata) : undefined,
         createdAt: service.createdAt,
