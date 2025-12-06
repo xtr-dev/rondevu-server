@@ -36,7 +36,7 @@ export class SQLiteStorage implements Storage {
    */
   private initializeDatabase(): void {
     this.db.exec(`
-      -- Offers table (no topics)
+      -- WebRTC signaling offers
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
         peer_id TEXT NOT NULL,
@@ -132,7 +132,7 @@ export class SQLiteStorage implements Storage {
     const offersWithIds = await Promise.all(
       offers.map(async (offer) => ({
         ...offer,
-        id: offer.id || await generateOfferHash(offer.sdp, []),
+        id: offer.id || await generateOfferHash(offer.sdp),
       }))
     );
 

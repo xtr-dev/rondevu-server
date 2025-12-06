@@ -34,7 +34,7 @@ export class D1Storage implements Storage {
    */
   async initializeDatabase(): Promise<void> {
     await this.db.exec(`
-      -- Offers table (no topics)
+      -- WebRTC signaling offers
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
         peer_id TEXT NOT NULL,
@@ -125,7 +125,7 @@ export class D1Storage implements Storage {
 
     // D1 doesn't support true transactions yet, so we do this sequentially
     for (const offer of offers) {
-      const id = offer.id || await generateOfferHash(offer.sdp, []);
+      const id = offer.id || await generateOfferHash(offer.sdp);
       const now = Date.now();
 
       await this.db.prepare(`

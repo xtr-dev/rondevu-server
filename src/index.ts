@@ -20,7 +20,6 @@ async function main() {
     offerMinTtl: `${config.offerMinTtl}ms`,
     cleanupInterval: `${config.cleanupInterval}ms`,
     maxOffersPerRequest: config.maxOffersPerRequest,
-    maxTopicsPerOffer: config.maxTopicsPerOffer,
     corsOrigins: config.corsOrigins,
     version: config.version,
   });

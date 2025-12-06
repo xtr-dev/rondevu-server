@@ -546,8 +546,7 @@ export function createApp(storage: Storage, config: Config) {
           offerId: offer.id,
           answererId: offer.answererPeerId,
           sdp: offer.answerSdp,
-          answeredAt: offer.answeredAt,
-          topics: [] // V2 doesn't use topics, but client expects this field
+          answeredAt: offer.answeredAt
         }))
       }, 200);
     } catch (err) {

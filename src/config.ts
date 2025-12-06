@@ -16,7 +16,6 @@ export interface Config {
   offerMinTtl: number;
   cleanupInterval: number;
   maxOffersPerRequest: number;
-  maxTopicsPerOffer: number;
 }
 
 /**
@@ -45,7 +44,6 @@ export function loadConfig(): Config {
     offerMaxTtl: parseInt(process.env.OFFER_MAX_TTL || '86400000', 10),
     offerMinTtl: parseInt(process.env.OFFER_MIN_TTL || '60000', 10),
     cleanupInterval: parseInt(process.env.CLEANUP_INTERVAL || '60000', 10),
-    maxOffersPerRequest: parseInt(process.env.MAX_OFFERS_PER_REQUEST || '100', 10),
-    maxTopicsPerOffer: parseInt(process.env.MAX_TOPICS_PER_OFFER || '50', 10),
+    maxOffersPerRequest: parseInt(process.env.MAX_OFFERS_PER_REQUEST || '100', 10)
   };
 }

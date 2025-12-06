@@ -1,5 +1,5 @@
 /**
- * Represents a WebRTC signaling offer (no topics)
+ * Represents a WebRTC signaling offer
  */
 export interface Offer {
   id: string;
@@ -9,7 +9,6 @@ export interface Offer {
   expiresAt: number;
   lastSeen: number;
   secret?: string;
-  info?: string;
   answererPeerId?: string;
   answerSdp?: string;
   answeredAt?: number;
@@ -37,7 +36,6 @@ export interface CreateOfferRequest {
   sdp: string;
   expiresAt: number;
   secret?: string;
-  info?: string;
 }
 
 /**

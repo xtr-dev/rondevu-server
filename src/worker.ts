@@ -13,7 +13,6 @@ export interface Env {
   OFFER_MAX_TTL?: string;
   OFFER_MIN_TTL?: string;
   MAX_OFFERS_PER_REQUEST?: string;
-  MAX_TOPICS_PER_OFFER?: string;
   CORS_ORIGINS?: string;
   VERSION?: string;
 }
@@ -43,8 +42,7 @@ export default {
       offerMaxTtl: env.OFFER_MAX_TTL ? parseInt(env.OFFER_MAX_TTL, 10) : 86400000,
       offerMinTtl: env.OFFER_MIN_TTL ? parseInt(env.OFFER_MIN_TTL, 10) : 60000,
       cleanupInterval: 60000, // Not used in Workers (scheduled handler instead)
-      maxOffersPerRequest: env.MAX_OFFERS_PER_REQUEST ? parseInt(env.MAX_OFFERS_PER_REQUEST, 10) : 100,
-      maxTopicsPerOffer: env.MAX_TOPICS_PER_OFFER ? parseInt(env.MAX_TOPICS_PER_OFFER, 10) : 50,
+      maxOffersPerRequest: env.MAX_OFFERS_PER_REQUEST ? parseInt(env.MAX_OFFERS_PER_REQUEST, 10) : 100
     };
 
     // Create Hono app
