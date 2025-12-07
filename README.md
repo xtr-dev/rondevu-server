@@ -240,34 +240,13 @@ Unpublish a service (requires authentication and ownership)
 }
 ```
 
-### Offer Management (Low-level)
+### WebRTC Signaling (Service-Based)
 
-#### `POST /offers`
-Create one or more offers (requires authentication)
+#### `POST /services/:uuid/answer`
+Answer a service offer (requires authentication)
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
-
-**Request:**
-```json
-{
-  "offers": [
-    {
-      "sdp": "v=0...",
-      "ttl": 300000
-    }
-  ]
-}
-```
-
-#### `GET /offers/mine`
-List all offers owned by authenticated peer
-
-#### `DELETE /offers/:offerId`
-Delete a specific offer
-
-#### `POST /offers/:offerId/answer`
-Answer an offer (locks it to answerer)
 
 **Request:**
 ```json
@@ -276,21 +255,76 @@ Answer an offer (locks it to answerer)
 }
 ```
 
-#### `GET /offers/:offerId/answer`
-Get answer for a specific offer
+**Response:**
+```json
+{
+  "success": true,
+  "offerId": "offer-hash"
+}
+```
 
-#### `POST /offers/:offerId/ice-candidates`
-Post ICE candidates for an offer
+#### `GET /services/:uuid/answer`
+Get answer for a service (offerer polls this)
+
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
+
+**Response:**
+```json
+{
+  "offerId": "offer-hash",
+  "answererId": "answerer-peer-id",
+  "sdp": "v=0...",
+  "answeredAt": 1733404800000
+}
+```
+
+**Note:** Returns 404 if not yet answered
+
+#### `POST /services/:uuid/ice-candidates`
+Post ICE candidates for a service (requires authentication)
+
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
 
 **Request:**
 ```json
 {
-  "candidates": ["candidate:1 1 UDP..."]
+  "candidates": ["candidate:1 1 UDP..."],
+  "offerId": "optional-offer-id"
 }
 ```
 
-#### `GET /offers/:offerId/ice-candidates?since=1234567890`
-Get ICE candidates from the other peer
+**Response:**
+```json
+{
+  "count": 1,
+  "offerId": "offer-hash"
+}
+```
+
+**Note:** If `offerId` is omitted, the server will auto-detect the peer's offer
+
+#### `GET /services/:uuid/ice-candidates?since=1234567890&offerId=optional-offer-id`
+Get ICE candidates from the other peer (requires authentication)
+
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
+
+**Response:**
+```json
+{
+  "candidates": [
+    {
+      "candidate": "candidate:1 1 UDP...",
+      "createdAt": 1733404800000
+    }
+  ],
+  "offerId": "offer-hash"
+}
+```
+
+**Note:** Returns candidates from the opposite role (offerer gets answerer candidates and vice versa)
 
 ## Configuration
 
