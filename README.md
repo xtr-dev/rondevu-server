@@ -30,11 +30,11 @@ Username Claiming → Service Publishing → Service Discovery → WebRTC Connec
 
 alice claims "alice" with Ed25519 signature
   ↓
-alice publishes com.example.chat@1.0.0 → receives UUID abc123
+alice publishes com.example.chat@1.0.0 with multiple offers → receives UUID abc123
   ↓
-bob queries alice's services → gets UUID abc123
+bob requests alice/com.example.chat@1.0.0 → gets compatible service with available offer
   ↓
-bob connects to UUID abc123 → WebRTC connection established
+WebRTC connection established via offer/answer exchange
 ```
 
 ## Quick Start
@@ -240,26 +240,6 @@ Unpublish a service (requires authentication and ownership)
 }
 ```
 
-### Service Discovery
-
-#### `POST /index/:username/query`
-Query a service by FQN
-
-**Request:**
-```json
-{
-  "serviceFqn": "com.example.chat@1.0.0"
-}
-```
-
-**Response:**
-```json
-{
-  "uuid": "abc123",
-  "allowed": true
-}
-```
-
 ### Offer Management (Low-level)
 
 #### `POST /offers`
@@ -282,9 +262,6 @@ Create one or more offers (requires authentication)
 
 #### `GET /offers/mine`
 List all offers owned by authenticated peer
-
-#### `PUT /offers/:offerId/heartbeat`
-Update last_seen timestamp for an offer
 
 #### `DELETE /offers/:offerId`
 Delete a specific offer
@@ -345,10 +322,18 @@ Environment variables:
 - `id` (PK): Service ID (UUID)
 - `username` (FK): Owner username
 - `service_fqn`: Fully qualified name (com.example.chat@1.0.0)
-- `offer_id` (FK): WebRTC offer ID
 - `is_public`: Public/private flag
 - `metadata`: JSON metadata
 - `created_at`, `expires_at`: Timestamps
+
+### offers
+- `id` (PK): Offer ID (hash of SDP)
+- `peer_id` (FK): Owner peer ID
+- `service_id` (FK): Optional link to service (null for standalone offers)
+- `sdp`: WebRTC offer SDP
+- `answerer_peer_id`: Peer ID of answerer (null until answered)
+- `answer_sdp`: WebRTC answer SDP (null until answered)
+- `created_at`, `expires_at`, `last_seen`: Timestamps
 
 ### service_index (privacy layer)
 - `uuid` (PK): Random UUID for discovery
