@@ -38,6 +38,7 @@ export class D1Storage implements Storage {
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
         peer_id TEXT NOT NULL,
+        service_id TEXT,
         sdp TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
@@ -49,6 +50,7 @@ export class D1Storage implements Storage {
       );
 
       CREATE INDEX IF NOT EXISTS idx_offers_peer ON offers(peer_id);
+      CREATE INDEX IF NOT EXISTS idx_offers_service ON offers(service_id);
       CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
       CREATE INDEX IF NOT EXISTS idx_offers_last_seen ON offers(last_seen);
       CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_peer_id);
@@ -87,20 +89,17 @@ export class D1Storage implements Storage {
         id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
         service_fqn TEXT NOT NULL,
-        offer_id TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         is_public INTEGER NOT NULL DEFAULT 0,
         metadata TEXT,
         FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
-        FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE,
         UNIQUE(username, service_fqn)
       );
 
       CREATE INDEX IF NOT EXISTS idx_services_username ON services(username);
       CREATE INDEX IF NOT EXISTS idx_services_fqn ON services(service_fqn);
       CREATE INDEX IF NOT EXISTS idx_services_expires ON services(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_services_offer ON services(offer_id);
 
       -- Service index table (privacy layer)
       CREATE TABLE IF NOT EXISTS service_index (
