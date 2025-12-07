@@ -77,15 +77,28 @@ Generates a cryptographically random 128-bit peer ID.
 }
 ```
 
-### Username Management
+### User Management (RESTful)
 
-#### `POST /usernames/claim`
+#### `GET /users/:username`
+Check username availability and claim status
+
+**Response:**
+```json
+{
+  "username": "alice",
+  "available": false,
+  "claimedAt": 1733404800000,
+  "expiresAt": 1765027200000,
+  "publicKey": "..."
+}
+```
+
+#### `POST /users/:username`
 Claim a username with cryptographic proof
 
 **Request:**
 ```json
 {
-  "username": "alice",
   "publicKey": "base64-encoded-ed25519-public-key",
   "signature": "base64-encoded-signature",
   "message": "claim:alice:1733404800000"
@@ -107,21 +120,7 @@ Claim a username with cryptographic proof
 - Timestamp must be within 5 minutes (replay protection)
 - Expires after 365 days, auto-renewed on use
 
-#### `GET /usernames/:username`
-Check username availability and claim status
-
-**Response:**
-```json
-{
-  "username": "alice",
-  "available": false,
-  "claimedAt": 1733404800000,
-  "expiresAt": 1765027200000,
-  "publicKey": "..."
-}
-```
-
-#### `GET /usernames/:username/services`
+#### `GET /users/:username/services`
 List all services for a username (privacy-preserving)
 
 **Response:**
@@ -143,9 +142,28 @@ List all services for a username (privacy-preserving)
 }
 ```
 
-### Service Management
+#### `GET /users/:username/services/:fqn`
+Get specific service by username and FQN (single request)
 
-#### `POST /services`
+**Response:**
+```json
+{
+  "uuid": "abc123",
+  "serviceId": "service-id",
+  "username": "alice",
+  "serviceFqn": "chat.app@1.0.0",
+  "offerId": "offer-hash",
+  "sdp": "v=0...",
+  "isPublic": true,
+  "metadata": {},
+  "createdAt": 1733404800000,
+  "expiresAt": 1733405100000
+}
+```
+
+### Service Management (RESTful)
+
+#### `POST /users/:username/services`
 Publish a service (requires authentication and username signature)
 
 **Headers:**
@@ -154,7 +172,6 @@ Publish a service (requires authentication and username signature)
 **Request:**
 ```json
 {
-  "username": "alice",
   "serviceFqn": "com.example.chat@1.0.0",
   "sdp": "v=0...",
   "ttl": 300000,
@@ -165,12 +182,18 @@ Publish a service (requires authentication and username signature)
 }
 ```
 
-**Response:**
+**Response (Full service details):**
 ```json
 {
-  "serviceId": "uuid-v4",
   "uuid": "uuid-v4-for-index",
+  "serviceId": "uuid-v4",
+  "username": "alice",
+  "serviceFqn": "com.example.chat@1.0.0",
   "offerId": "offer-hash-id",
+  "sdp": "v=0...",
+  "isPublic": false,
+  "metadata": { "description": "Chat service" },
+  "createdAt": 1733404800000,
   "expiresAt": 1733405100000
 }
 ```
@@ -203,7 +226,7 @@ Get service details by UUID
 }
 ```
 
-#### `DELETE /services/:serviceId`
+#### `DELETE /users/:username/services/:fqn`
 Unpublish a service (requires authentication and ownership)
 
 **Headers:**
@@ -275,8 +298,8 @@ Answer an offer (locks it to answerer)
 }
 ```
 
-#### `GET /offers/answers`
-Poll for answers to your offers
+#### `GET /offers/:offerId/answer`
+Get answer for a specific offer
 
 #### `POST /offers/:offerId/ice-candidates`
 Post ICE candidates for an offer

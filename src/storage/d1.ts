@@ -401,6 +401,7 @@ export class D1Storage implements Storage {
   async createService(request: CreateServiceRequest): Promise<{
     service: Service;
     indexUuid: string;
+    offers: Offer[];
   }> {
     const serviceId = crypto.randomUUID();
     const indexUuid = crypto.randomUUID();
@@ -408,13 +409,12 @@ export class D1Storage implements Storage {
 
     // Insert service
     await this.db.prepare(`
-      INSERT INTO services (id, username, service_fqn, offer_id, created_at, expires_at, is_public, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO services (id, username, service_fqn, created_at, expires_at, is_public, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(
       serviceId,
       request.username,
       request.serviceFqn,
-      request.offerId,
       now,
       request.expiresAt,
       request.isPublic ? 1 : 0,
@@ -434,6 +434,13 @@ export class D1Storage implements Storage {
       request.expiresAt
     ).run();
 
+    // Create offers with serviceId
+    const offerRequests = request.offers.map(offer => ({
+      ...offer,
+      serviceId,
+    }));
+    const offers = await this.createOffers(offerRequests);
+
     // Touch username to extend expiry
     await this.touchUsername(request.username);
 
@@ -442,14 +449,41 @@ export class D1Storage implements Storage {
         id: serviceId,
         username: request.username,
         serviceFqn: request.serviceFqn,
-        offerId: request.offerId,
         createdAt: now,
         expiresAt: request.expiresAt,
         isPublic: request.isPublic || false,
         metadata: request.metadata,
       },
       indexUuid,
+      offers,
     };
+  }
+
+  async batchCreateServices(requests: CreateServiceRequest[]): Promise<Array<{
+    service: Service;
+    indexUuid: string;
+    offers: Offer[];
+  }>> {
+    const results = [];
+    for (const request of requests) {
+      const result = await this.createService(request);
+      results.push(result);
+    }
+    return results;
+  }
+
+  async getOffersForService(serviceId: string): Promise<Offer[]> {
+    const result = await this.db.prepare(`
+      SELECT * FROM offers
+      WHERE service_id = ? AND expires_at > ?
+      ORDER BY created_at ASC
+    `).bind(serviceId, Date.now()).all();
+
+    if (!result.results) {
+      return [];
+    }
+
+    return result.results.map(row => this.rowToOffer(row as any));
   }
 
   async getServiceById(serviceId: string): Promise<Service | null> {
@@ -560,7 +594,6 @@ export class D1Storage implements Storage {
       id: row.id,
       username: row.username,
       serviceFqn: row.service_fqn,
-      offerId: row.offer_id,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       isPublic: row.is_public === 1,

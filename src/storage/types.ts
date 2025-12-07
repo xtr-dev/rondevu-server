@@ -4,6 +4,7 @@
 export interface Offer {
   id: string;
   peerId: string;
+  serviceId?: string; // Optional link to service (null for standalone offers)
   sdp: string;
   createdAt: number;
   expiresAt: number;
@@ -33,6 +34,7 @@ export interface IceCandidate {
 export interface CreateOfferRequest {
   id?: string;
   peerId: string;
+  serviceId?: string; // Optional link to service
   sdp: string;
   expiresAt: number;
   secret?: string;
@@ -61,13 +63,12 @@ export interface ClaimUsernameRequest {
 }
 
 /**
- * Represents a published service
+ * Represents a published service (can have multiple offers)
  */
 export interface Service {
   id: string; // UUID v4
   username: string;
   serviceFqn: string; // com.example.chat@1.0.0
-  offerId: string; // Links to offers table
   createdAt: number;
   expiresAt: number;
   isPublic: boolean;
@@ -75,15 +76,22 @@ export interface Service {
 }
 
 /**
- * Request to create a service
+ * Request to create a single service
  */
 export interface CreateServiceRequest {
   username: string;
   serviceFqn: string;
-  offerId: string;
   expiresAt: number;
   isPublic?: boolean;
   metadata?: string;
+  offers: CreateOfferRequest[]; // Multiple offers per service
+}
+
+/**
+ * Request to create multiple services in batch
+ */
+export interface BatchCreateServicesRequest {
+  services: CreateServiceRequest[];
 }
 
 /**
@@ -234,14 +242,33 @@ export interface Storage {
   // ===== Service Management =====
 
   /**
-   * Creates a new service
-   * @param request Service creation request
-   * @returns Created service with generated ID and index UUID
+   * Creates a new service with offers
+   * @param request Service creation request (includes offers)
+   * @returns Created service with generated ID, index UUID, and created offers
    */
   createService(request: CreateServiceRequest): Promise<{
     service: Service;
     indexUuid: string;
+    offers: Offer[];
   }>;
+
+  /**
+   * Creates multiple services with offers in batch
+   * @param requests Array of service creation requests
+   * @returns Array of created services with IDs, UUIDs, and offers
+   */
+  batchCreateServices(requests: CreateServiceRequest[]): Promise<Array<{
+    service: Service;
+    indexUuid: string;
+    offers: Offer[];
+  }>>;
+
+  /**
+   * Gets all offers for a service
+   * @param serviceId Service ID
+   * @returns Array of offers for the service
+   */
+  getOffersForService(serviceId: string): Promise<Offer[]>;
 
   /**
    * Gets a service by its service ID
