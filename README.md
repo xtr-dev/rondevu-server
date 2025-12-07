@@ -120,30 +120,14 @@ Claim a username with cryptographic proof
 - Timestamp must be within 5 minutes (replay protection)
 - Expires after 365 days, auto-renewed on use
 
-#### `GET /users/:username/services`
-List all services for a username (privacy-preserving)
-
-**Response:**
-```json
-{
-  "username": "alice",
-  "services": [
-    {
-      "uuid": "abc123",
-      "isPublic": false
-    },
-    {
-      "uuid": "def456",
-      "isPublic": true,
-      "serviceFqn": "com.example.public@1.0.0",
-      "metadata": { "description": "Public service" }
-    }
-  ]
-}
-```
-
 #### `GET /users/:username/services/:fqn`
-Get specific service by username and FQN (single request)
+Get service by username and FQN with semver-compatible matching
+
+**Semver Matching:**
+- Requesting `chat@1.0.0` matches any `1.x.x` version
+- Major version must match exactly (`chat@1.0.0` will NOT match `chat@2.0.0`)
+- For major version 0, minor must also match (`0.1.0` will NOT match `0.2.0`)
+- Returns the most recently published compatible version
 
 **Response:**
 ```json
@@ -161,10 +145,12 @@ Get specific service by username and FQN (single request)
 }
 ```
 
+**Note:** Returns a single available offer from the service. If all offers are in use, returns 503.
+
 ### Service Management (RESTful)
 
 #### `POST /users/:username/services`
-Publish a service (requires authentication and username signature)
+Publish a service with multiple offers (requires authentication and username signature)
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
@@ -173,7 +159,10 @@ Publish a service (requires authentication and username signature)
 ```json
 {
   "serviceFqn": "com.example.chat@1.0.0",
-  "sdp": "v=0...",
+  "offers": [
+    { "sdp": "v=0..." },
+    { "sdp": "v=0..." }
+  ],
   "ttl": 300000,
   "isPublic": false,
   "metadata": { "description": "Chat service" },
@@ -189,8 +178,20 @@ Publish a service (requires authentication and username signature)
   "serviceId": "uuid-v4",
   "username": "alice",
   "serviceFqn": "com.example.chat@1.0.0",
-  "offerId": "offer-hash-id",
-  "sdp": "v=0...",
+  "offers": [
+    {
+      "offerId": "offer-hash-1",
+      "sdp": "v=0...",
+      "createdAt": 1733404800000,
+      "expiresAt": 1733405100000
+    },
+    {
+      "offerId": "offer-hash-2",
+      "sdp": "v=0...",
+      "createdAt": 1733404800000,
+      "expiresAt": 1733405100000
+    }
+  ],
   "isPublic": false,
   "metadata": { "description": "Chat service" },
   "createdAt": 1733404800000,
