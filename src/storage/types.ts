@@ -300,6 +300,14 @@ export interface Storage {
   queryService(username: string, serviceFqn: string): Promise<string | null>;
 
   /**
+   * Finds all services by username and service name (without version)
+   * @param username Username
+   * @param serviceName Service name (e.g., 'com.example.chat')
+   * @returns Array of services with matching service name
+   */
+  findServicesByName(username: string, serviceName: string): Promise<Service[]>;
+
+  /**
    * Deletes a service (with ownership verification)
    * @param serviceId Service ID
    * @param username Owner username (for verification)

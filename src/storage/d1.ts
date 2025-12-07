@@ -544,6 +544,20 @@ export class D1Storage implements Storage {
     return result ? (result as any).uuid : null;
   }
 
+  async findServicesByName(username: string, serviceName: string): Promise<Service[]> {
+    const result = await this.db.prepare(`
+      SELECT * FROM services
+      WHERE username = ? AND service_fqn LIKE ? AND expires_at > ?
+      ORDER BY created_at DESC
+    `).bind(username, `${serviceName}@%`, Date.now()).all();
+
+    if (!result.results) {
+      return [];
+    }
+
+    return result.results.map(row => this.rowToService(row as any));
+  }
+
   async deleteService(serviceId: string, username: string): Promise<boolean> {
     const result = await this.db.prepare(`
       DELETE FROM services

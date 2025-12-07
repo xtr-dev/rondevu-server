@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import { createAuthMiddleware, getAuthenticatedPeerId } from './middleware/auth.ts';
-import { generatePeerId, encryptPeerId, validateUsernameClaim, validateServicePublish, validateServiceFqn } from './crypto.ts';
+import { generatePeerId, encryptPeerId, validateUsernameClaim, validateServicePublish, validateServiceFqn, parseServiceFqn, isVersionCompatible } from './crypto.ts';
 import type { Context } from 'hono';
 
 /**
@@ -158,45 +158,51 @@ export function createApp(storage: Storage, config: Config) {
   });
 
   /**
-   * GET /users/:username/services
-   * List services for a username (privacy-preserving)
-   */
-  app.get('/users/:username/services', async (c) => {
-    try {
-      const username = c.req.param('username');
-
-      const services = await storage.listServicesForUsername(username);
-
-      return c.json({
-        username,
-        services
-      }, 200);
-    } catch (err) {
-      console.error('Error listing services:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  /**
    * GET /users/:username/services/:fqn
-   * Get service by username and FQN (replaces POST query endpoint)
+   * Get service by username and FQN with semver-compatible matching
    */
   app.get('/users/:username/services/:fqn', async (c) => {
     try {
       const username = c.req.param('username');
       const serviceFqn = decodeURIComponent(c.req.param('fqn'));
 
-      const uuid = await storage.queryService(username, serviceFqn);
+      // Parse the requested FQN
+      const parsed = parseServiceFqn(serviceFqn);
+      if (!parsed) {
+        return c.json({ error: 'Invalid service FQN format' }, 400);
+      }
 
-      if (!uuid) {
+      const { serviceName, version: requestedVersion } = parsed;
+
+      // Find all services with matching service name
+      const matchingServices = await storage.findServicesByName(username, serviceName);
+
+      if (matchingServices.length === 0) {
         return c.json({ error: 'Service not found' }, 404);
       }
 
-      // Get full service details
-      const service = await storage.getServiceByUuid(uuid);
+      // Filter to compatible versions
+      const compatibleServices = matchingServices.filter(service => {
+        const serviceParsed = parseServiceFqn(service.serviceFqn);
+        if (!serviceParsed) return false;
+        return isVersionCompatible(requestedVersion, serviceParsed.version);
+      });
 
-      if (!service) {
-        return c.json({ error: 'Service not found' }, 404);
+      if (compatibleServices.length === 0) {
+        return c.json({
+          error: 'No compatible version found',
+          message: `Requested ${serviceFqn}, but no compatible versions available`
+        }, 404);
+      }
+
+      // Use the first compatible service (most recently created)
+      const service = compatibleServices[0];
+
+      // Get the UUID for this service
+      const uuid = await storage.queryService(username, service.serviceFqn);
+
+      if (!uuid) {
+        return c.json({ error: 'Service index not found' }, 500);
       }
 
       // Get all offers for this service

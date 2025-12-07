@@ -229,6 +229,60 @@ export function validateServiceFqn(fqn: string): { valid: boolean; error?: strin
 }
 
 /**
+ * Parse semantic version string into components
+ */
+export function parseVersion(version: string): { major: number; minor: number; patch: number; prerelease?: string } | null {
+  const match = version.match(/^([0-9]+)\.([0-9]+)\.([0-9]+)(-[a-z0-9.-]+)?$/);
+  if (!match) return null;
+
+  return {
+    major: parseInt(match[1], 10),
+    minor: parseInt(match[2], 10),
+    patch: parseInt(match[3], 10),
+    prerelease: match[4]?.substring(1), // Remove leading dash
+  };
+}
+
+/**
+ * Check if two versions are compatible (same major version)
+ * Following semver rules: ^1.0.0 matches 1.x.x but not 2.x.x
+ */
+export function isVersionCompatible(requested: string, available: string): boolean {
+  const req = parseVersion(requested);
+  const avail = parseVersion(available);
+
+  if (!req || !avail) return false;
+
+  // Major version must match
+  if (req.major !== avail.major) return false;
+
+  // If major is 0, minor must also match (0.x.y is unstable)
+  if (req.major === 0 && req.minor !== avail.minor) return false;
+
+  // Available version must be >= requested version
+  if (avail.minor < req.minor) return false;
+  if (avail.minor === req.minor && avail.patch < req.patch) return false;
+
+  // Prerelease versions are only compatible with exact matches
+  if (req.prerelease && req.prerelease !== avail.prerelease) return false;
+
+  return true;
+}
+
+/**
+ * Parse service FQN into service name and version
+ */
+export function parseServiceFqn(fqn: string): { serviceName: string; version: string } | null {
+  const parts = fqn.split('@');
+  if (parts.length !== 2) return null;
+
+  return {
+    serviceName: parts[0],
+    version: parts[1],
+  };
+}
+
+/**
  * Validates timestamp is within acceptable range (prevents replay attacks)
  */
 export function validateTimestamp(timestamp: number): { valid: boolean; error?: string } {

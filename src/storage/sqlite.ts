@@ -572,6 +572,18 @@ export class SQLiteStorage implements Storage {
     return row ? row.uuid : null;
   }
 
+  async findServicesByName(username: string, serviceName: string): Promise<Service[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM services
+      WHERE username = ? AND service_fqn LIKE ? AND expires_at > ?
+      ORDER BY created_at DESC
+    `);
+
+    const rows = stmt.all(username, `${serviceName}@%`, Date.now()) as any[];
+
+    return rows.map(row => this.rowToService(row));
+  }
+
   async deleteService(serviceId: string, username: string): Promise<boolean> {
     const stmt = this.db.prepare(`
       DELETE FROM services
