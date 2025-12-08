@@ -320,36 +320,44 @@ export class D1Storage implements Storage {
     const now = Date.now();
     const expiresAt = now + YEAR_IN_MS;
 
-    // Try to insert or update
-    const result = await this.db.prepare(`
-      INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
-      VALUES (?, ?, ?, ?, ?, NULL)
-      ON CONFLICT(username) DO UPDATE SET
-        expires_at = ?,
-        last_used = ?
-      WHERE public_key = ?
-    `).bind(
-      request.username,
-      request.publicKey,
-      now,
-      expiresAt,
-      now,
-      expiresAt,
-      now,
-      request.publicKey
-    ).run();
+    try {
+      // Try to insert or update
+      const result = await this.db.prepare(`
+        INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
+        VALUES (?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(username) DO UPDATE SET
+          expires_at = ?,
+          last_used = ?
+        WHERE public_key = ?
+      `).bind(
+        request.username,
+        request.publicKey,
+        now,
+        expiresAt,
+        now,
+        expiresAt,
+        now,
+        request.publicKey
+      ).run();
 
-    if ((result.meta.changes || 0) === 0) {
-      throw new Error('Username already claimed by different public key');
+      if ((result.meta.changes || 0) === 0) {
+        throw new Error('Username already claimed by different public key');
+      }
+
+      return {
+        username: request.username,
+        publicKey: request.publicKey,
+        claimedAt: now,
+        expiresAt,
+        lastUsed: now,
+      };
+    } catch (err: any) {
+      // Handle UNIQUE constraint on public_key
+      if (err.message?.includes('UNIQUE constraint failed: usernames.public_key')) {
+        throw new Error('This public key has already claimed a different username');
+      }
+      throw err;
     }
-
-    return {
-      username: request.username,
-      publicKey: request.publicKey,
-      claimedAt: now,
-      expiresAt,
-      lastUsed: now,
-    };
   }
 
   async getUsername(username: string): Promise<Username | null> {
