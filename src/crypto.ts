@@ -425,14 +425,22 @@ export async function validateServicePublish(
   }
 
   // Parse message format: "publish:{username}:{serviceFqn}:{timestamp}"
+  // Note: serviceFqn can contain colons (e.g., "chat:2.0.0@user"), so we need careful parsing
   const parts = message.split(':');
-  if (parts.length !== 4 || parts[0] !== 'publish' || parts[1] !== username || parts[2] !== serviceFqn) {
+  if (parts.length < 4 || parts[0] !== 'publish' || parts[1] !== username) {
     return { valid: false, error: 'Invalid message format (expected: publish:{username}:{serviceFqn}:{timestamp})' };
   }
 
-  const timestamp = parseInt(parts[3], 10);
+  // The timestamp is the last part
+  const timestamp = parseInt(parts[parts.length - 1], 10);
   if (isNaN(timestamp)) {
     return { valid: false, error: 'Invalid timestamp in message' };
+  }
+
+  // The serviceFqn is everything between username and timestamp
+  const extractedServiceFqn = parts.slice(2, parts.length - 1).join(':');
+  if (extractedServiceFqn !== serviceFqn) {
+    return { valid: false, error: `Service FQN mismatch (expected: ${serviceFqn}, got: ${extractedServiceFqn})` };
   }
 
   // Validate timestamp
