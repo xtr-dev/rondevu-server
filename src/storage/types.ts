@@ -64,56 +64,25 @@ export interface ClaimUsernameRequest {
 
 /**
  * Represents a published service (can have multiple offers)
+ * New format: service:version@username (e.g., chat:1.0.0@alice)
  */
 export interface Service {
   id: string; // UUID v4
-  username: string;
-  serviceFqn: string; // com.example.chat@1.0.0
+  serviceFqn: string; // Full FQN: chat:1.0.0@alice
+  serviceName: string; // Extracted: chat
+  version: string; // Extracted: 1.0.0
+  username: string; // Extracted: alice
   createdAt: number;
   expiresAt: number;
-  isPublic: boolean;
-  metadata?: string; // JSON service description
 }
 
 /**
  * Request to create a single service
  */
 export interface CreateServiceRequest {
-  username: string;
-  serviceFqn: string;
+  serviceFqn: string; // Full FQN with username: chat:1.0.0@alice
   expiresAt: number;
-  isPublic?: boolean;
-  metadata?: string;
   offers: CreateOfferRequest[]; // Multiple offers per service
-}
-
-/**
- * Request to create multiple services in batch
- */
-export interface BatchCreateServicesRequest {
-  services: CreateServiceRequest[];
-}
-
-/**
- * Represents a service index entry (privacy layer)
- */
-export interface ServiceIndex {
-  uuid: string; // Random UUID for privacy
-  serviceId: string;
-  username: string;
-  serviceFqn: string;
-  createdAt: number;
-  expiresAt: number;
-}
-
-/**
- * Service info for discovery (privacy-aware)
- */
-export interface ServiceInfo {
-  uuid: string;
-  isPublic: boolean;
-  serviceFqn?: string; // Only present if public
-  metadata?: string; // Only present if public
 }
 
 /**
@@ -226,13 +195,6 @@ export interface Storage {
   getUsername(username: string): Promise<Username | null>;
 
   /**
-   * Updates the last_used timestamp for a username (extends expiry)
-   * @param username Username to update
-   * @returns true if updated, false if not found
-   */
-  touchUsername(username: string): Promise<boolean>;
-
-  /**
    * Deletes all expired usernames
    * @param now Current timestamp
    * @returns Number of usernames deleted
@@ -244,24 +206,13 @@ export interface Storage {
   /**
    * Creates a new service with offers
    * @param request Service creation request (includes offers)
-   * @returns Created service with generated ID, index UUID, and created offers
+   * @returns Created service with generated ID and created offers
    */
   createService(request: CreateServiceRequest): Promise<{
     service: Service;
-    indexUuid: string;
     offers: Offer[];
   }>;
 
-  /**
-   * Creates multiple services with offers in batch
-   * @param requests Array of service creation requests
-   * @returns Array of created services with IDs, UUIDs, and offers
-   */
-  batchCreateServices(requests: CreateServiceRequest[]): Promise<Array<{
-    service: Service;
-    indexUuid: string;
-    offers: Offer[];
-  }>>;
 
   /**
    * Gets all offers for a service
@@ -278,34 +229,40 @@ export interface Storage {
   getServiceById(serviceId: string): Promise<Service | null>;
 
   /**
-   * Gets a service by its index UUID
-   * @param uuid Index UUID
+   * Gets a service by its fully qualified name (FQN)
+   * @param serviceFqn Full service FQN (e.g., "chat:1.0.0@alice")
    * @returns Service if found, null otherwise
    */
-  getServiceByUuid(uuid: string): Promise<Service | null>;
+  getServiceByFqn(serviceFqn: string): Promise<Service | null>;
+
+
+
+
 
   /**
-   * Lists all services for a username (with privacy filtering)
-   * @param username Username to query
-   * @returns Array of service info (UUIDs only for private services)
+   * Discovers services by name and version with pagination
+   * Returns unique available offers (where answerer_peer_id IS NULL)
+   * @param serviceName Service name (e.g., 'chat')
+   * @param version Version string for semver matching (e.g., '1.0.0')
+   * @param limit Maximum number of unique services to return
+   * @param offset Number of services to skip
+   * @returns Array of services with available offers
    */
-  listServicesForUsername(username: string): Promise<ServiceInfo[]>;
+  discoverServices(
+    serviceName: string,
+    version: string,
+    limit: number,
+    offset: number
+  ): Promise<Service[]>;
 
   /**
-   * Queries a service by username and FQN
-   * @param username Username
-   * @param serviceFqn Service FQN
-   * @returns Service index UUID if found, null otherwise
+   * Gets a random available service by name and version
+   * Returns a single random offer that is available (answerer_peer_id IS NULL)
+   * @param serviceName Service name (e.g., 'chat')
+   * @param version Version string for semver matching (e.g., '1.0.0')
+   * @returns Random service with available offer, or null if none found
    */
-  queryService(username: string, serviceFqn: string): Promise<string | null>;
-
-  /**
-   * Finds all services by username and service name (without version)
-   * @param username Username
-   * @param serviceName Service name (e.g., 'com.example.chat')
-   * @returns Array of services with matching service name
-   */
-  findServicesByName(username: string, serviceName: string): Promise<Service[]>;
+  getRandomService(serviceName: string, version: string): Promise<Service | null>;
 
   /**
    * Deletes a service (with ownership verification)

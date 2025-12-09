@@ -8,9 +8,9 @@ import {
   ClaimUsernameRequest,
   Service,
   CreateServiceRequest,
-  ServiceInfo,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
+import { parseServiceFqn } from '../crypto.ts';
 
 const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
 
@@ -84,36 +84,23 @@ export class D1Storage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_usernames_expires ON usernames(expires_at);
       CREATE INDEX IF NOT EXISTS idx_usernames_public_key ON usernames(public_key);
 
-      -- Services table
+      -- Services table (new schema with extracted fields for discovery)
       CREATE TABLE IF NOT EXISTS services (
         id TEXT PRIMARY KEY,
-        username TEXT NOT NULL,
         service_fqn TEXT NOT NULL,
+        service_name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        username TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
-        is_public INTEGER NOT NULL DEFAULT 0,
-        metadata TEXT,
         FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
-        UNIQUE(username, service_fqn)
+        UNIQUE(service_fqn)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_services_username ON services(username);
       CREATE INDEX IF NOT EXISTS idx_services_fqn ON services(service_fqn);
+      CREATE INDEX IF NOT EXISTS idx_services_discovery ON services(service_name, version);
+      CREATE INDEX IF NOT EXISTS idx_services_username ON services(username);
       CREATE INDEX IF NOT EXISTS idx_services_expires ON services(expires_at);
-
-      -- Service index table (privacy layer)
-      CREATE TABLE IF NOT EXISTS service_index (
-        uuid TEXT PRIMARY KEY,
-        service_id TEXT NOT NULL,
-        username TEXT NOT NULL,
-        service_fqn TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_service_index_username ON service_index(username);
-      CREATE INDEX IF NOT EXISTS idx_service_index_expires ON service_index(expires_at);
     `);
   }
 
@@ -382,18 +369,6 @@ export class D1Storage implements Storage {
     };
   }
 
-  async touchUsername(username: string): Promise<boolean> {
-    const now = Date.now();
-    const expiresAt = now + YEAR_IN_MS;
-
-    const result = await this.db.prepare(`
-      UPDATE usernames
-      SET last_used = ?, expires_at = ?
-      WHERE username = ? AND expires_at > ?
-    `).bind(now, expiresAt, username, now).run();
-
-    return (result.meta.changes || 0) > 0;
-  }
 
   async deleteExpiredUsernames(now: number): Promise<number> {
     const result = await this.db.prepare(`
@@ -407,36 +382,32 @@ export class D1Storage implements Storage {
 
   async createService(request: CreateServiceRequest): Promise<{
     service: Service;
-    indexUuid: string;
     offers: Offer[];
   }> {
     const serviceId = crypto.randomUUID();
-    const indexUuid = crypto.randomUUID();
     const now = Date.now();
 
-    // Insert service
+    // Parse FQN to extract components
+    const parsed = parseServiceFqn(request.serviceFqn);
+    if (!parsed) {
+      throw new Error(`Invalid service FQN: ${request.serviceFqn}`);
+    }
+    if (!parsed.username) {
+      throw new Error(`Service FQN must include username: ${request.serviceFqn}`);
+    }
+
+    const { serviceName, version, username } = parsed;
+
+    // Insert service with extracted fields
     await this.db.prepare(`
-      INSERT INTO services (id, username, service_fqn, created_at, expires_at, is_public, metadata)
+      INSERT INTO services (id, service_fqn, service_name, version, username, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(
       serviceId,
-      request.username,
       request.serviceFqn,
-      now,
-      request.expiresAt,
-      request.isPublic ? 1 : 0,
-      request.metadata || null
-    ).run();
-
-    // Insert service index
-    await this.db.prepare(`
-      INSERT INTO service_index (uuid, service_id, username, service_fqn, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(
-      indexUuid,
-      serviceId,
-      request.username,
-      request.serviceFqn,
+      serviceName,
+      version,
+      username,
       now,
       request.expiresAt
     ).run();
@@ -448,36 +419,28 @@ export class D1Storage implements Storage {
     }));
     const offers = await this.createOffers(offerRequests);
 
-    // Touch username to extend expiry
-    await this.touchUsername(request.username);
+    // Touch username to extend expiry (inline logic)
+    const expiresAt = now + YEAR_IN_MS;
+    await this.db.prepare(`
+      UPDATE usernames
+      SET last_used = ?, expires_at = ?
+      WHERE username = ? AND expires_at > ?
+    `).bind(now, expiresAt, username, now).run();
 
     return {
       service: {
         id: serviceId,
-        username: request.username,
         serviceFqn: request.serviceFqn,
+        serviceName,
+        version,
+        username,
         createdAt: now,
         expiresAt: request.expiresAt,
-        isPublic: request.isPublic || false,
-        metadata: request.metadata,
       },
-      indexUuid,
       offers,
     };
   }
 
-  async batchCreateServices(requests: CreateServiceRequest[]): Promise<Array<{
-    service: Service;
-    indexUuid: string;
-    offers: Offer[];
-  }>> {
-    const results = [];
-    for (const request of requests) {
-      const result = await this.createService(request);
-      results.push(result);
-    }
-    return results;
-  }
 
   async getOffersForService(serviceId: string): Promise<Offer[]> {
     const result = await this.db.prepare(`
@@ -506,12 +469,11 @@ export class D1Storage implements Storage {
     return this.rowToService(result as any);
   }
 
-  async getServiceByUuid(uuid: string): Promise<Service | null> {
+  async getServiceByFqn(serviceFqn: string): Promise<Service | null> {
     const result = await this.db.prepare(`
-      SELECT s.* FROM services s
-      INNER JOIN service_index si ON s.id = si.service_id
-      WHERE si.uuid = ? AND s.expires_at > ?
-    `).bind(uuid, Date.now()).first();
+      SELECT * FROM services
+      WHERE service_fqn = ? AND expires_at > ?
+    `).bind(serviceFqn, Date.now()).first();
 
     if (!result) {
       return null;
@@ -520,49 +482,56 @@ export class D1Storage implements Storage {
     return this.rowToService(result as any);
   }
 
-  async listServicesForUsername(username: string): Promise<ServiceInfo[]> {
+
+
+
+
+  async discoverServices(
+    serviceName: string,
+    version: string,
+    limit: number,
+    offset: number
+  ): Promise<Service[]> {
+    // Query for unique services with available offers
+    // We join with offers and filter for available ones (answerer_peer_id IS NULL)
     const result = await this.db.prepare(`
-      SELECT si.uuid, s.is_public, s.service_fqn, s.metadata
-      FROM service_index si
-      INNER JOIN services s ON si.service_id = s.id
-      WHERE si.username = ? AND si.expires_at > ?
+      SELECT DISTINCT s.* FROM services s
+      INNER JOIN offers o ON o.service_id = s.id
+      WHERE s.service_name = ?
+        AND s.version = ?
+        AND s.expires_at > ?
+        AND o.answerer_peer_id IS NULL
+        AND o.expires_at > ?
       ORDER BY s.created_at DESC
-    `).bind(username, Date.now()).all();
-
-    if (!result.results) {
-      return [];
-    }
-
-    return result.results.map((row: any) => ({
-      uuid: row.uuid,
-      isPublic: row.is_public === 1,
-      serviceFqn: row.is_public === 1 ? row.service_fqn : undefined,
-      metadata: row.is_public === 1 ? row.metadata || undefined : undefined,
-    }));
-  }
-
-  async queryService(username: string, serviceFqn: string): Promise<string | null> {
-    const result = await this.db.prepare(`
-      SELECT si.uuid FROM service_index si
-      INNER JOIN services s ON si.service_id = s.id
-      WHERE si.username = ? AND si.service_fqn = ? AND si.expires_at > ?
-    `).bind(username, serviceFqn, Date.now()).first();
-
-    return result ? (result as any).uuid : null;
-  }
-
-  async findServicesByName(username: string, serviceName: string): Promise<Service[]> {
-    const result = await this.db.prepare(`
-      SELECT * FROM services
-      WHERE username = ? AND service_fqn LIKE ? AND expires_at > ?
-      ORDER BY created_at DESC
-    `).bind(username, `${serviceName}@%`, Date.now()).all();
+      LIMIT ? OFFSET ?
+    `).bind(serviceName, version, Date.now(), Date.now(), limit, offset).all();
 
     if (!result.results) {
       return [];
     }
 
     return result.results.map(row => this.rowToService(row as any));
+  }
+
+  async getRandomService(serviceName: string, version: string): Promise<Service | null> {
+    // Get a random service with an available offer
+    const result = await this.db.prepare(`
+      SELECT s.* FROM services s
+      INNER JOIN offers o ON o.service_id = s.id
+      WHERE s.service_name = ?
+        AND s.version = ?
+        AND s.expires_at > ?
+        AND o.answerer_peer_id IS NULL
+        AND o.expires_at > ?
+      ORDER BY RANDOM()
+      LIMIT 1
+    `).bind(serviceName, version, Date.now(), Date.now()).first();
+
+    if (!result) {
+      return null;
+    }
+
+    return this.rowToService(result as any);
   }
 
   async deleteService(serviceId: string, username: string): Promise<boolean> {
@@ -613,12 +582,12 @@ export class D1Storage implements Storage {
   private rowToService(row: any): Service {
     return {
       id: row.id,
-      username: row.username,
       serviceFqn: row.service_fqn,
+      serviceName: row.service_name,
+      version: row.version,
+      username: row.username,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
-      isPublic: row.is_public === 1,
-      metadata: row.metadata || undefined,
     };
   }
 }

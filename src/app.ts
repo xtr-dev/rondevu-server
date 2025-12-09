@@ -157,83 +157,133 @@ export function createApp(storage: Storage, config: Config) {
     }
   });
 
+  // ===== Service Discovery and Management =====
+
   /**
-   * GET /users/:username/services/:fqn
-   * Get service by username and FQN with semver-compatible matching
+   * GET /services/:fqn
+   * Get service by FQN with optional discovery
+   * Supports three modes:
+   * 1. Direct lookup: /services/chat:1.0.0@alice - Returns specific user's offer
+   * 2. Random discovery: /services/chat:1.0.0 - Returns random available offer
+   * 3. Paginated discovery: /services/chat:1.0.0?limit=10&offset=0 - Returns array of available offers
    */
-  app.get('/users/:username/services/:fqn', async (c) => {
+  app.get('/services/:fqn', async (c) => {
     try {
-      const username = c.req.param('username');
       const serviceFqn = decodeURIComponent(c.req.param('fqn'));
+      const limit = c.req.query('limit');
+      const offset = c.req.query('offset');
 
       // Parse the requested FQN
       const parsed = parseServiceFqn(serviceFqn);
       if (!parsed) {
-        return c.json({ error: 'Invalid service FQN format' }, 400);
+        return c.json({ error: 'Invalid service FQN format. Use service:version or service:version@username' }, 400);
       }
 
-      const { serviceName, version: requestedVersion } = parsed;
+      const { serviceName, version, username } = parsed;
 
-      // Find all services with matching service name
-      const matchingServices = await storage.findServicesByName(username, serviceName);
+      // Mode 1: Direct lookup with username
+      if (username) {
+        // Find service by exact FQN
+        const service = await storage.getServiceByFqn(serviceFqn);
 
-      if (matchingServices.length === 0) {
-        return c.json({ error: 'Service not found' }, 404);
-      }
+        if (!service) {
+          return c.json({ error: 'Service not found' }, 404);
+        }
 
-      // Filter to compatible versions
-      const compatibleServices = matchingServices.filter(service => {
-        const serviceParsed = parseServiceFqn(service.serviceFqn);
-        if (!serviceParsed) return false;
-        return isVersionCompatible(requestedVersion, serviceParsed.version);
-      });
+        // Get available offer from this service
+        const serviceOffers = await storage.getOffersForService(service.id);
+        const availableOffer = serviceOffers.find(offer => !offer.answererPeerId);
 
-      if (compatibleServices.length === 0) {
+        if (!availableOffer) {
+          return c.json({
+            error: 'No available offers',
+            message: 'All offers from this service are currently in use.'
+          }, 503);
+        }
+
         return c.json({
-          error: 'No compatible version found',
-          message: `Requested ${serviceFqn}, but no compatible versions available`
-        }, 404);
+          serviceId: service.id,
+          username: service.username,
+          serviceFqn: service.serviceFqn,
+          offerId: availableOffer.id,
+          sdp: availableOffer.sdp,
+          createdAt: service.createdAt,
+          expiresAt: service.expiresAt
+        }, 200);
       }
 
-      // Use the first compatible service (most recently created)
-      const service = compatibleServices[0];
+      // Mode 2 & 3: Discovery without username
+      if (limit || offset) {
+        // Paginated discovery
+        const limitNum = limit ? Math.min(parseInt(limit, 10), 100) : 10;
+        const offsetNum = offset ? parseInt(offset, 10) : 0;
 
-      // Get the UUID for this service
-      const uuid = await storage.queryService(username, service.serviceFqn);
+        const services = await storage.discoverServices(serviceName, version, limitNum, offsetNum);
 
-      if (!uuid) {
-        return c.json({ error: 'Service index not found' }, 500);
-      }
+        if (services.length === 0) {
+          return c.json({
+            error: 'No services found',
+            message: `No available services found for ${serviceName}:${version}`
+          }, 404);
+        }
 
-      // Get all offers for this service
-      const serviceOffers = await storage.getOffersForService(service.id);
+        // Get available offers for each service
+        const servicesWithOffers = await Promise.all(
+          services.map(async (service) => {
+            const offers = await storage.getOffersForService(service.id);
+            const availableOffer = offers.find(offer => !offer.answererPeerId);
+            return availableOffer ? {
+              serviceId: service.id,
+              username: service.username,
+              serviceFqn: service.serviceFqn,
+              offerId: availableOffer.id,
+              sdp: availableOffer.sdp,
+              createdAt: service.createdAt,
+              expiresAt: service.expiresAt
+            } : null;
+          })
+        );
 
-      if (serviceOffers.length === 0) {
-        return c.json({ error: 'No offers found for this service' }, 404);
-      }
+        const availableServices = servicesWithOffers.filter(s => s !== null);
 
-      // Find an unanswered offer
-      const availableOffer = serviceOffers.find(offer => !offer.answererPeerId);
-
-      if (!availableOffer) {
         return c.json({
-          error: 'No available offers',
-          message: 'All offers from this service are currently in use. Please try again later.'
-        }, 503);
-      }
+          services: availableServices,
+          count: availableServices.length,
+          limit: limitNum,
+          offset: offsetNum
+        }, 200);
+      } else {
+        // Random discovery
+        const service = await storage.getRandomService(serviceName, version);
 
-      return c.json({
-        uuid: uuid,
-        serviceId: service.id,
-        username: service.username,
-        serviceFqn: service.serviceFqn,
-        offerId: availableOffer.id,
-        sdp: availableOffer.sdp,
-        isPublic: service.isPublic,
-        metadata: service.metadata ? JSON.parse(service.metadata) : undefined,
-        createdAt: service.createdAt,
-        expiresAt: service.expiresAt
-      }, 200);
+        if (!service) {
+          return c.json({
+            error: 'No services found',
+            message: `No available services found for ${serviceName}:${version}`
+          }, 404);
+        }
+
+        // Get available offer
+        const offers = await storage.getOffersForService(service.id);
+        const availableOffer = offers.find(offer => !offer.answererPeerId);
+
+        if (!availableOffer) {
+          return c.json({
+            error: 'No available offers',
+            message: 'Service found but no available offers.'
+          }, 503);
+        }
+
+        return c.json({
+          serviceId: service.id,
+          username: service.username,
+          serviceFqn: service.serviceFqn,
+          offerId: availableOffer.id,
+          sdp: availableOffer.sdp,
+          createdAt: service.createdAt,
+          expiresAt: service.expiresAt
+        }, 200);
+      }
     } catch (err) {
       console.error('Error getting service:', err);
       return c.json({ error: 'Internal server error' }, 500);
@@ -241,28 +291,35 @@ export function createApp(storage: Storage, config: Config) {
   });
 
   /**
-   * POST /users/:username/services
-   * Publish a service with one or more offers (RESTful endpoint)
+   * POST /services
+   * Publish a service with one or more offers
+   * Service FQN must include username: service:version@username
    */
-  app.post('/users/:username/services', authMiddleware, async (c) => {
+  app.post('/services', authMiddleware, async (c) => {
     let serviceFqn: string | undefined;
     let createdOffers: any[] = [];
 
     try {
-      const username = c.req.param('username');
       const body = await c.req.json();
       serviceFqn = body.serviceFqn;
-      const { offers, ttl, isPublic, metadata, signature, message } = body;
+      const { offers, ttl, signature, message } = body;
 
       if (!serviceFqn || !offers || !Array.isArray(offers) || offers.length === 0) {
         return c.json({ error: 'Missing required parameters: serviceFqn, offers (must be non-empty array)' }, 400);
       }
 
-      // Validate service FQN
+      // Validate and parse service FQN
       const fqnValidation = validateServiceFqn(serviceFqn);
       if (!fqnValidation.valid) {
         return c.json({ error: fqnValidation.error }, 400);
       }
+
+      const parsed = parseServiceFqn(serviceFqn);
+      if (!parsed || !parsed.username) {
+        return c.json({ error: 'Service FQN must include username (format: service:version@username)' }, 400);
+      }
+
+      const username = parsed.username;
 
       // Verify username ownership (signature required)
       if (!signature || !message) {
@@ -281,12 +338,9 @@ export function createApp(storage: Storage, config: Config) {
       }
 
       // Delete existing service if one exists (upsert behavior)
-      const existingUuid = await storage.queryService(username, serviceFqn);
-      if (existingUuid) {
-        const existingService = await storage.getServiceByUuid(existingUuid);
-        if (existingService) {
-          await storage.deleteService(existingService.id, username);
-        }
+      const existingService = await storage.getServiceByFqn(serviceFqn);
+      if (existingService) {
+        await storage.deleteService(existingService.id, username);
       }
 
       // Validate all offers
@@ -317,11 +371,8 @@ export function createApp(storage: Storage, config: Config) {
 
       // Create service with offers
       const result = await storage.createService({
-        username,
         serviceFqn,
         expiresAt,
-        isPublic: isPublic || false,
-        metadata: metadata ? JSON.stringify(metadata) : undefined,
         offers: offerRequests
       });
 
@@ -329,9 +380,8 @@ export function createApp(storage: Storage, config: Config) {
 
       // Return full service details with all offers
       return c.json({
-        uuid: result.indexUuid,
-        serviceFqn: serviceFqn,
-        username: username,
+        serviceFqn: result.service.serviceFqn,
+        username: result.service.username,
         serviceId: result.service.id,
         offers: result.offers.map(o => ({
           offerId: o.id,
@@ -339,8 +389,6 @@ export function createApp(storage: Storage, config: Config) {
           createdAt: o.createdAt,
           expiresAt: o.expiresAt
         })),
-        isPublic: result.service.isPublic,
-        metadata: metadata,
         createdAt: result.service.createdAt,
         expiresAt: result.service.expiresAt
       }, 201);
@@ -349,7 +397,6 @@ export function createApp(storage: Storage, config: Config) {
       console.error('Error details:', {
         message: (err as Error).message,
         stack: (err as Error).stack,
-        username: c.req.param('username'),
         serviceFqn,
         offerIds: createdOffers.map(o => o.id)
       });
@@ -361,21 +408,23 @@ export function createApp(storage: Storage, config: Config) {
   });
 
   /**
-   * DELETE /users/:username/services/:fqn
-   * Delete a service by username and FQN (RESTful)
+   * DELETE /services/:fqn
+   * Delete a service by FQN (must include username)
    */
-  app.delete('/users/:username/services/:fqn', authMiddleware, async (c) => {
+  app.delete('/services/:fqn', authMiddleware, async (c) => {
     try {
-      const username = c.req.param('username');
       const serviceFqn = decodeURIComponent(c.req.param('fqn'));
 
-      // Find service by username and FQN
-      const uuid = await storage.queryService(username, serviceFqn);
-      if (!uuid) {
-        return c.json({ error: 'Service not found' }, 404);
+      // Parse and validate FQN
+      const parsed = parseServiceFqn(serviceFqn);
+      if (!parsed || !parsed.username) {
+        return c.json({ error: 'Service FQN must include username (format: service:version@username)' }, 400);
       }
 
-      const service = await storage.getServiceByUuid(uuid);
+      const username = parsed.username;
+
+      // Find service by FQN
+      const service = await storage.getServiceByFqn(serviceFqn);
       if (!service) {
         return c.json({ error: 'Service not found' }, 404);
       }
@@ -393,66 +442,16 @@ export function createApp(storage: Storage, config: Config) {
     }
   });
 
-  // ===== Service Management (Legacy - for UUID-based access) =====
+  // ===== WebRTC Signaling (Offer-Specific) =====
 
   /**
-   * GET /services/:uuid
-   * Get service details by index UUID (kept for privacy)
+   * POST /services/:fqn/offers/:offerId/answer
+   * Answer a specific offer from a service
    */
-  app.get('/services/:uuid', async (c) => {
+  app.post('/services/:fqn/offers/:offerId/answer', authMiddleware, async (c) => {
     try {
-      const uuid = c.req.param('uuid');
-
-      const service = await storage.getServiceByUuid(uuid);
-
-      if (!service) {
-        return c.json({ error: 'Service not found' }, 404);
-      }
-
-      // Get all offers for this service
-      const serviceOffers = await storage.getOffersForService(service.id);
-
-      if (serviceOffers.length === 0) {
-        return c.json({ error: 'No offers found for this service' }, 404);
-      }
-
-      // Find an unanswered offer
-      const availableOffer = serviceOffers.find(offer => !offer.answererPeerId);
-
-      if (!availableOffer) {
-        return c.json({
-          error: 'No available offers',
-          message: 'All offers from this service are currently in use. Please try again later.'
-        }, 503);
-      }
-
-      return c.json({
-        uuid: uuid,
-        serviceId: service.id,
-        username: service.username,
-        serviceFqn: service.serviceFqn,
-        offerId: availableOffer.id,
-        sdp: availableOffer.sdp,
-        isPublic: service.isPublic,
-        metadata: service.metadata ? JSON.parse(service.metadata) : undefined,
-        createdAt: service.createdAt,
-        expiresAt: service.expiresAt
-      }, 200);
-    } catch (err) {
-      console.error('Error getting service:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  // ===== Service-Based WebRTC Signaling =====
-
-  /**
-   * POST /services/:uuid/answer
-   * Answer a service offer
-   */
-  app.post('/services/:uuid/answer', authMiddleware, async (c) => {
-    try {
-      const uuid = c.req.param('uuid');
+      const serviceFqn = decodeURIComponent(c.req.param('fqn'));
+      const offerId = c.req.param('offerId');
       const body = await c.req.json();
       const { sdp } = body;
 
@@ -468,23 +467,15 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'SDP too large (max 64KB)' }, 400);
       }
 
-      // Get the service by UUID
-      const service = await storage.getServiceByUuid(uuid);
-      if (!service) {
-        return c.json({ error: 'Service not found' }, 404);
-      }
-
-      // Get available offer from service
-      const serviceOffers = await storage.getOffersForService(service.id);
-      const availableOffer = serviceOffers.find(offer => !offer.answererPeerId);
-
-      if (!availableOffer) {
-        return c.json({ error: 'No available offers' }, 503);
+      // Verify offer exists
+      const offer = await storage.getOfferById(offerId);
+      if (!offer) {
+        return c.json({ error: 'Offer not found' }, 404);
       }
 
       const answererPeerId = getAuthenticatedPeerId(c);
 
-      const result = await storage.answerOffer(availableOffer.id, answererPeerId, sdp);
+      const result = await storage.answerOffer(offerId, answererPeerId, sdp);
 
       if (!result.success) {
         return c.json({ error: result.error }, 400);
@@ -492,58 +483,61 @@ export function createApp(storage: Storage, config: Config) {
 
       return c.json({
         success: true,
-        offerId: availableOffer.id
+        offerId: offerId
       }, 200);
     } catch (err) {
-      console.error('Error answering service:', err);
+      console.error('Error answering offer:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
   });
 
   /**
-   * GET /services/:uuid/answer
-   * Get answer for a service (offerer polls this)
+   * GET /services/:fqn/offers/:offerId/answer
+   * Get answer for a specific offer (offerer polls this)
    */
-  app.get('/services/:uuid/answer', authMiddleware, async (c) => {
+  app.get('/services/:fqn/offers/:offerId/answer', authMiddleware, async (c) => {
     try {
-      const uuid = c.req.param('uuid');
+      const serviceFqn = decodeURIComponent(c.req.param('fqn'));
+      const offerId = c.req.param('offerId');
       const peerId = getAuthenticatedPeerId(c);
 
-      // Get the service by UUID
-      const service = await storage.getServiceByUuid(uuid);
-      if (!service) {
-        return c.json({ error: 'Service not found' }, 404);
+      // Get the offer
+      const offer = await storage.getOfferById(offerId);
+      if (!offer) {
+        return c.json({ error: 'Offer not found' }, 404);
       }
 
-      // Get offers for this service owned by the requesting peer
-      const serviceOffers = await storage.getOffersForService(service.id);
-      const myOffer = serviceOffers.find(offer => offer.peerId === peerId && offer.answererPeerId);
+      // Verify ownership
+      if (offer.peerId !== peerId) {
+        return c.json({ error: 'Not authorized to access this offer' }, 403);
+      }
 
-      if (!myOffer || !myOffer.answerSdp) {
+      if (!offer.answerSdp) {
         return c.json({ error: 'Offer not yet answered' }, 404);
       }
 
       return c.json({
-        offerId: myOffer.id,
-        answererId: myOffer.answererPeerId,
-        sdp: myOffer.answerSdp,
-        answeredAt: myOffer.answeredAt
+        offerId: offer.id,
+        answererId: offer.answererPeerId,
+        sdp: offer.answerSdp,
+        answeredAt: offer.answeredAt
       }, 200);
     } catch (err) {
-      console.error('Error getting service answer:', err);
+      console.error('Error getting offer answer:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
   });
 
   /**
-   * POST /services/:uuid/ice-candidates
-   * Add ICE candidates for a service
+   * POST /services/:fqn/offers/:offerId/ice-candidates
+   * Add ICE candidates for a specific offer
    */
-  app.post('/services/:uuid/ice-candidates', authMiddleware, async (c) => {
+  app.post('/services/:fqn/offers/:offerId/ice-candidates', authMiddleware, async (c) => {
     try {
-      const uuid = c.req.param('uuid');
+      const serviceFqn = decodeURIComponent(c.req.param('fqn'));
+      const offerId = c.req.param('offerId');
       const body = await c.req.json();
-      const { candidates, offerId } = body;
+      const { candidates } = body;
 
       if (!Array.isArray(candidates) || candidates.length === 0) {
         return c.json({ error: 'Missing or invalid required parameter: candidates' }, 400);
@@ -551,75 +545,37 @@ export function createApp(storage: Storage, config: Config) {
 
       const peerId = getAuthenticatedPeerId(c);
 
-      // Get the service by UUID
-      const service = await storage.getServiceByUuid(uuid);
-      if (!service) {
-        return c.json({ error: 'Service not found' }, 404);
-      }
-
-      // If offerId is provided, use it; otherwise find the peer's offer
-      let targetOfferId = offerId;
-      if (!targetOfferId) {
-        const serviceOffers = await storage.getOffersForService(service.id);
-        const myOffer = serviceOffers.find(offer =>
-          offer.peerId === peerId || offer.answererPeerId === peerId
-        );
-        if (!myOffer) {
-          return c.json({ error: 'No offer found for this peer' }, 404);
-        }
-        targetOfferId = myOffer.id;
-      }
-
       // Get offer to determine role
-      const offer = await storage.getOfferById(targetOfferId);
+      const offer = await storage.getOfferById(offerId);
       if (!offer) {
         return c.json({ error: 'Offer not found' }, 404);
       }
 
-      // Determine role
+      // Determine role (offerer or answerer)
       const role = offer.peerId === peerId ? 'offerer' : 'answerer';
 
-      const count = await storage.addIceCandidates(targetOfferId, peerId, role, candidates);
+      const count = await storage.addIceCandidates(offerId, peerId, role, candidates);
 
-      return c.json({ count, offerId: targetOfferId }, 200);
+      return c.json({ count, offerId }, 200);
     } catch (err) {
-      console.error('Error adding ICE candidates to service:', err);
+      console.error('Error adding ICE candidates:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
   });
 
   /**
-   * GET /services/:uuid/ice-candidates
-   * Get ICE candidates for a service
+   * GET /services/:fqn/offers/:offerId/ice-candidates
+   * Get ICE candidates for a specific offer
    */
-  app.get('/services/:uuid/ice-candidates', authMiddleware, async (c) => {
+  app.get('/services/:fqn/offers/:offerId/ice-candidates', authMiddleware, async (c) => {
     try {
-      const uuid = c.req.param('uuid');
+      const serviceFqn = decodeURIComponent(c.req.param('fqn'));
+      const offerId = c.req.param('offerId');
       const since = c.req.query('since');
-      const offerId = c.req.query('offerId');
       const peerId = getAuthenticatedPeerId(c);
 
-      // Get the service by UUID
-      const service = await storage.getServiceByUuid(uuid);
-      if (!service) {
-        return c.json({ error: 'Service not found' }, 404);
-      }
-
-      // If offerId is provided, use it; otherwise find the peer's offer
-      let targetOfferId = offerId;
-      if (!targetOfferId) {
-        const serviceOffers = await storage.getOffersForService(service.id);
-        const myOffer = serviceOffers.find(offer =>
-          offer.peerId === peerId || offer.answererPeerId === peerId
-        );
-        if (!myOffer) {
-          return c.json({ error: 'No offer found for this peer' }, 404);
-        }
-        targetOfferId = myOffer.id;
-      }
-
       // Get offer to determine role
-      const offer = await storage.getOfferById(targetOfferId);
+      const offer = await storage.getOfferById(offerId);
       if (!offer) {
         return c.json({ error: 'Offer not found' }, 404);
       }
@@ -628,17 +584,17 @@ export function createApp(storage: Storage, config: Config) {
       const targetRole = offer.peerId === peerId ? 'answerer' : 'offerer';
       const sinceTimestamp = since ? parseInt(since, 10) : undefined;
 
-      const candidates = await storage.getIceCandidates(targetOfferId, targetRole, sinceTimestamp);
+      const candidates = await storage.getIceCandidates(offerId, targetRole, sinceTimestamp);
 
       return c.json({
         candidates: candidates.map(c => ({
           candidate: c.candidate,
           createdAt: c.createdAt
         })),
-        offerId: targetOfferId
+        offerId
       }, 200);
     } catch (err) {
-      console.error('Error getting ICE candidates for service:', err);
+      console.error('Error getting ICE candidates:', err);
       return c.json({ error: 'Internal server error' }, 500);
     }
   });

@@ -192,37 +192,46 @@ export function validateUsername(username: string): { valid: boolean; error?: st
 }
 
 /**
- * Validates service FQN format (service-name@version)
- * Service name: reverse domain notation (com.example.service)
+ * Validates service FQN format (service:version@username or service:version)
+ * Service name: lowercase alphanumeric with dots/dashes (e.g., chat, file-share, com.example.chat)
  * Version: semantic versioning (1.0.0, 2.1.3-beta, etc.)
+ * Username: optional, lowercase alphanumeric with dashes
  */
 export function validateServiceFqn(fqn: string): { valid: boolean; error?: string } {
   if (typeof fqn !== 'string') {
     return { valid: false, error: 'Service FQN must be a string' };
   }
 
-  // Split into service name and version
-  const parts = fqn.split('@');
-  if (parts.length !== 2) {
-    return { valid: false, error: 'Service FQN must be in format: service-name@version' };
+  // Parse the FQN
+  const parsed = parseServiceFqn(fqn);
+  if (!parsed) {
+    return { valid: false, error: 'Service FQN must be in format: service:version[@username]' };
   }
 
-  const [serviceName, version] = parts;
+  const { serviceName, version, username } = parsed;
 
-  // Validate service name (reverse domain notation)
-  const serviceNameRegex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+  // Validate service name (alphanumeric with dots/dashes)
+  const serviceNameRegex = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
   if (!serviceNameRegex.test(serviceName)) {
-    return { valid: false, error: 'Service name must be reverse domain notation (e.g., com.example.service)' };
+    return { valid: false, error: 'Service name must be lowercase alphanumeric with optional dots/dashes' };
   }
 
-  if (serviceName.length < 3 || serviceName.length > 128) {
-    return { valid: false, error: 'Service name must be 3-128 characters' };
+  if (serviceName.length < 1 || serviceName.length > 128) {
+    return { valid: false, error: 'Service name must be 1-128 characters' };
   }
 
   // Validate version (semantic versioning)
   const versionRegex = /^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$/;
   if (!versionRegex.test(version)) {
     return { valid: false, error: 'Version must be semantic versioning (e.g., 1.0.0, 2.1.3-beta)' };
+  }
+
+  // Validate username if present
+  if (username) {
+    const usernameCheck = validateUsername(username);
+    if (!usernameCheck.valid) {
+      return usernameCheck;
+    }
   }
 
   return { valid: true };
@@ -270,15 +279,41 @@ export function isVersionCompatible(requested: string, available: string): boole
 }
 
 /**
- * Parse service FQN into service name and version
+ * Parse service FQN into components
+ * Formats supported:
+ * - service:version@username (e.g., "chat:1.0.0@alice")
+ * - service:version (e.g., "chat:1.0.0") for discovery
  */
-export function parseServiceFqn(fqn: string): { serviceName: string; version: string } | null {
-  const parts = fqn.split('@');
-  if (parts.length !== 2) return null;
+export function parseServiceFqn(fqn: string): { serviceName: string; version: string; username: string | null } | null {
+  if (!fqn || typeof fqn !== 'string') return null;
+
+  // Check if username is present
+  const atIndex = fqn.lastIndexOf('@');
+  let serviceVersion: string;
+  let username: string | null = null;
+
+  if (atIndex > 0) {
+    // Format: service:version@username
+    serviceVersion = fqn.substring(0, atIndex);
+    username = fqn.substring(atIndex + 1);
+  } else {
+    // Format: service:version (no username)
+    serviceVersion = fqn;
+  }
+
+  // Split service:version
+  const colonIndex = serviceVersion.indexOf(':');
+  if (colonIndex <= 0) return null; // No colon or colon at start
+
+  const serviceName = serviceVersion.substring(0, colonIndex);
+  const version = serviceVersion.substring(colonIndex + 1);
+
+  if (!serviceName || !version) return null;
 
   return {
-    serviceName: parts[0],
-    version: parts[1],
+    serviceName,
+    version,
+    username,
   };
 }
 
