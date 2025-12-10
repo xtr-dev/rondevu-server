@@ -16,10 +16,11 @@ Scalable WebRTC signaling server with cryptographic username claiming, service p
 ## Features
 
 - **Username Claiming**: Cryptographic username ownership with Ed25519 signatures (365-day validity, auto-renewed on use)
+- **Anonymous Users**: Auto-generated anonymous usernames for quick testing without claiming
 - **Service Publishing**: Service:version@username naming (e.g., `chat:1.0.0@alice`)
 - **Service Discovery**: Random and paginated discovery for finding services without knowing usernames
 - **Semantic Versioning**: Compatible version matching (chat:1.0.0 matches any 1.x.x)
-- **Stateless Authentication**: AES-256-GCM encrypted credentials, no server-side sessions
+- **Signature-Based Authentication**: All authenticated requests use Ed25519 signatures
 - **Complete WebRTC Signaling**: Offer/answer exchange and ICE candidate relay
 - **Efficient Batch Polling**: Combined endpoint for answers and ICE candidates (50% fewer HTTP requests)
 - **Dual Storage**: SQLite (Node.js/Docker) and Cloudflare D1 (Workers) backends
@@ -49,7 +50,7 @@ npm install && npm start
 
 **Docker:**
 ```bash
-docker build -t rondevu . && docker run -p 3000:3000 -e STORAGE_PATH=:memory: -e AUTH_SECRET=$(openssl rand -hex 32) rondevu
+docker build -t rondevu . && docker run -p 3000:3000 -e STORAGE_PATH=:memory: rondevu
 ```
 
 **Cloudflare Workers:**
@@ -82,19 +83,6 @@ Health check endpoint with version
   "status": "ok",
   "timestamp": 1733404800000,
   "version": "0.4.0"
-}
-```
-
-#### `POST /register`
-Register a new peer and receive credentials (peerId + secret)
-
-Generates a cryptographically random 128-bit peer ID.
-
-**Response:**
-```json
-{
-  "peerId": "f17c195f067255e357232e34cf0735d9",
-  "secret": "DdorTR8QgSn9yngn+4qqR8cs1aMijvX..."
 }
 ```
 
@@ -151,14 +139,12 @@ Claim a username with cryptographic proof
 ### Service Management
 
 #### `POST /services`
-Publish a service with offers (requires authentication and username signature)
-
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
+Publish a service with offers (requires username and signature)
 
 **Request:**
 ```json
 {
+  "username": "alice",
   "serviceFqn": "chat:1.0.0@alice",
   "offers": [
     { "sdp": "v=0..." },
@@ -262,10 +248,12 @@ Returns array of unique available offers from different users.
 ```
 
 #### `DELETE /services/:fqn`
-Unpublish a service (requires authentication and ownership)
+Unpublish a service (requires username, signature, and ownership)
 
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
+**Query Parameters:**
+- `username` - Your username
+- `signature` - Base64-encoded Ed25519 signature
+- `message` - Signed message (format: `deleteService:{username}:{serviceFqn}:{timestamp}`)
 
 **Response:**
 ```json
@@ -279,13 +267,13 @@ Unpublish a service (requires authentication and ownership)
 #### `POST /services/:fqn/offers/:offerId/answer`
 Post answer SDP to specific offer
 
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
-
 **Request:**
 ```json
 {
-  "sdp": "v=0..."
+  "username": "bob",
+  "sdp": "v=0...",
+  "signature": "base64-encoded-signature",
+  "message": "answerOffer:{username}:{offerId}:{timestamp}"
 }
 ```
 
@@ -300,15 +288,17 @@ Post answer SDP to specific offer
 #### `GET /services/:fqn/offers/:offerId/answer`
 Get answer SDP (offerer polls this)
 
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
+**Query Parameters:**
+- `username` - Your username
+- `signature` - Base64-encoded Ed25519 signature
+- `message` - Signed message (format: `getAnswer:{username}:{offerId}:{timestamp}`)
 
 **Response:**
 ```json
 {
   "sdp": "v=0...",
   "offerId": "offer-hash",
-  "answererId": "answerer-peer-id",
+  "answererUsername": "bob",
   "answeredAt": 1733404800000
 }
 ```
@@ -318,10 +308,10 @@ Returns 404 if not yet answered.
 #### `GET /offers/answered`
 Get all answered offers (efficient batch polling for offerer)
 
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
-
-**Query params:**
+**Query Parameters:**
+- `username` - Your username
+- `signature` - Base64-encoded Ed25519 signature
+- `message` - Signed message (format: `getAnsweredOffers:{username}:{timestamp}`)
 - `since` - Optional timestamp to get only new answers
 
 **Response:**
@@ -331,7 +321,7 @@ Get all answered offers (efficient batch polling for offerer)
     {
       "offerId": "offer-hash",
       "serviceId": "service-uuid",
-      "answererId": "answerer-peer-id",
+      "answererUsername": "bob",
       "sdp": "v=0...",
       "answeredAt": 1733404800000
     }
@@ -342,10 +332,10 @@ Get all answered offers (efficient batch polling for offerer)
 #### `GET /offers/poll`
 Combined polling for answers and ICE candidates (offerer)
 
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
-
-**Query params:**
+**Query Parameters:**
+- `username` - Your username
+- `signature` - Base64-encoded Ed25519 signature
+- `message` - Signed message (format: `pollOffers:{username}:{timestamp}`)
 - `since` - Optional timestamp to get only new data
 
 **Response:**
@@ -355,7 +345,7 @@ Combined polling for answers and ICE candidates (offerer)
     {
       "offerId": "offer-hash",
       "serviceId": "service-uuid",
-      "answererId": "answerer-peer-id",
+      "answererUsername": "bob",
       "sdp": "v=0...",
       "answeredAt": 1733404800000
     }
@@ -365,7 +355,7 @@ Combined polling for answers and ICE candidates (offerer)
       {
         "candidate": { "candidate": "...", "sdpMid": "0", "sdpMLineIndex": 0 },
         "role": "answerer",
-        "peerId": "peer-id",
+        "username": "bob",
         "createdAt": 1733404800000
       }
     ]
@@ -378,19 +368,19 @@ More efficient than polling answers and ICE separately - reduces HTTP requests b
 #### `POST /services/:fqn/offers/:offerId/ice-candidates`
 Add ICE candidates to specific offer
 
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
-
 **Request:**
 ```json
 {
+  "username": "alice",
   "candidates": [
     {
       "candidate": "candidate:...",
       "sdpMid": "0",
       "sdpMLineIndex": 0
     }
-  ]
+  ],
+  "signature": "base64-encoded-signature",
+  "message": "addIceCandidates:{username}:{offerId}:{timestamp}"
 }
 ```
 
@@ -405,10 +395,10 @@ Add ICE candidates to specific offer
 #### `GET /services/:fqn/offers/:offerId/ice-candidates`
 Get ICE candidates for specific offer
 
-**Headers:**
-- `Authorization: Bearer {peerId}:{secret}`
-
-**Query params:**
+**Query Parameters:**
+- `username` - Your username
+- `signature` - Base64-encoded Ed25519 signature
+- `message` - Signed message (format: `getIceCandidates:{username}:{offerId}:{timestamp}`)
 - `since` - Optional timestamp to get only new candidates
 
 **Response:**
@@ -439,12 +429,12 @@ Environment variables:
 | `PORT` | `3000` | Server port (Node.js/Docker) |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `STORAGE_PATH` | `./rondevu.db` | SQLite database path (use `:memory:` for in-memory) |
-| `VERSION` | `0.4.0` | Server version (semver) |
-| `AUTH_SECRET` | Random 32-byte hex | Secret key for credential encryption (required for production) |
-| `OFFER_DEFAULT_TTL` | `300000` | Default offer TTL in ms (5 minutes) |
+| `VERSION` | `0.5.0` | Server version (semver) |
+| `OFFER_DEFAULT_TTL` | `60000` | Default offer TTL in ms (1 minute) |
 | `OFFER_MIN_TTL` | `60000` | Minimum offer TTL in ms (1 minute) |
-| `OFFER_MAX_TTL` | `3600000` | Maximum offer TTL in ms (1 hour) |
-| `MAX_OFFERS_PER_REQUEST` | `10` | Maximum offers per create request |
+| `OFFER_MAX_TTL` | `86400000` | Maximum offer TTL in ms (24 hours) |
+| `CLEANUP_INTERVAL` | `60000` | Cleanup interval in ms (1 minute) |
+| `MAX_OFFERS_PER_REQUEST` | `100` | Maximum offers per create request |
 
 ## Database Schema
 
@@ -454,6 +444,7 @@ Environment variables:
 - `claimed_at`: Claim timestamp
 - `expires_at`: Expiry timestamp (365 days)
 - `last_used`: Last activity timestamp
+- `metadata`: Optional JSON metadata
 
 ### services
 - `id` (PK): Service ID (UUID)
@@ -466,30 +457,42 @@ Environment variables:
 
 ### offers
 - `id` (PK): Offer ID (hash of SDP)
-- `peer_id` (FK): Owner peer ID
+- `username` (FK): Owner username
 - `service_id` (FK): Link to service
 - `service_fqn`: Denormalized service FQN
 - `sdp`: WebRTC offer SDP
-- `answerer_peer_id`: Peer ID of answerer (null until answered)
+- `answerer_username`: Username of answerer (null until answered)
 - `answer_sdp`: WebRTC answer SDP (null until answered)
 - `answered_at`: Timestamp when answered
-- `created_at`, `expires_at`: Timestamps
+- `created_at`, `expires_at`, `last_seen`: Timestamps
 
 ### ice_candidates
 - `id` (PK): Auto-increment ID
 - `offer_id` (FK): Link to offer
-- `peer_id`: Peer who sent the candidate
+- `username`: Username who sent the candidate
 - `role`: 'offerer' or 'answerer'
 - `candidate`: JSON-encoded candidate
 - `created_at`: Timestamp
 
 ## Security
 
+### Ed25519 Signature Authentication
+All authenticated requests require:
+- **username**: Your claimed username
+- **signature**: Base64-encoded Ed25519 signature of the message
+- **message**: Signed message with format-specific structure
+
 ### Username Claiming
 - **Algorithm**: Ed25519 signatures
 - **Message Format**: `claim:{username}:{timestamp}`
 - **Replay Protection**: Timestamp must be within 5 minutes
 - **Key Management**: Private keys never leave the client
+- **Validity**: 365 days, auto-renewed on use
+
+### Anonymous Users
+- **Format**: `anon-{timestamp}-{random}` (e.g., `anon-lx2w34-a3f501`)
+- **Generation**: Auto-generated by client for testing
+- **Behavior**: Same as regular usernames, can be claimed
 
 ### Service Publishing
 - **Ownership Verification**: Every publish requires username signature
