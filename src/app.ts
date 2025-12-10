@@ -529,6 +529,38 @@ export function createApp(storage: Storage, config: Config) {
   });
 
   /**
+   * GET /offers/answered
+   * Get all answered offers for the authenticated peer (efficient batch polling)
+   */
+  app.get('/offers/answered', authMiddleware, async (c) => {
+    try {
+      const peerId = getAuthenticatedPeerId(c);
+      const since = c.req.query('since');
+      const sinceTimestamp = since ? parseInt(since, 10) : 0;
+
+      const offers = await storage.getAnsweredOffers(peerId);
+
+      // Filter by timestamp if provided
+      const filteredOffers = since
+        ? offers.filter(offer => offer.answeredAt && offer.answeredAt > sinceTimestamp)
+        : offers;
+
+      return c.json({
+        offers: filteredOffers.map(offer => ({
+          offerId: offer.id,
+          serviceId: offer.serviceId,
+          answererId: offer.answererPeerId,
+          sdp: offer.answerSdp,
+          answeredAt: offer.answeredAt
+        }))
+      }, 200);
+    } catch (err) {
+      console.error('Error getting answered offers:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  /**
    * POST /services/:fqn/offers/:offerId/ice-candidates
    * Add ICE candidates for a specific offer
    */
