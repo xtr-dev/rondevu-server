@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/@xtr-dev/rondevu-server)](https://www.npmjs.com/package/@xtr-dev/rondevu-server)
 
-🌐 **DNS-like WebRTC signaling with username claiming and service discovery**
+🌐 **Simple WebRTC signaling with username-based discovery**
 
-Scalable WebRTC signaling server with cryptographic username claiming, service publishing, and privacy-preserving discovery.
+Scalable WebRTC signaling server with cryptographic username claiming, service publishing with semantic versioning, and efficient offer/answer exchange.
 
 **Related repositories:**
 - [@xtr-dev/rondevu-client](https://github.com/xtr-dev/rondevu-client) - TypeScript client library ([npm](https://www.npmjs.com/package/@xtr-dev/rondevu-client))
@@ -16,11 +16,12 @@ Scalable WebRTC signaling server with cryptographic username claiming, service p
 ## Features
 
 - **Username Claiming**: Cryptographic username ownership with Ed25519 signatures (365-day validity, auto-renewed on use)
-- **Service Publishing**: Package-style naming with semantic versioning (com.example.chat@1.0.0)
-- **Privacy-Preserving Discovery**: UUID-based service index prevents enumeration
-- **Public/Private Services**: Control service visibility
+- **Service Publishing**: Service:version@username naming (e.g., `chat:1.0.0@alice`)
+- **Service Discovery**: Random and paginated discovery for finding services without knowing usernames
+- **Semantic Versioning**: Compatible version matching (chat:1.0.0 matches any 1.x.x)
 - **Stateless Authentication**: AES-256-GCM encrypted credentials, no server-side sessions
 - **Complete WebRTC Signaling**: Offer/answer exchange and ICE candidate relay
+- **Efficient Batch Polling**: Combined endpoint for answers and ICE candidates (50% fewer HTTP requests)
 - **Dual Storage**: SQLite (Node.js/Docker) and Cloudflare D1 (Workers) backends
 
 ## Architecture
@@ -30,11 +31,13 @@ Username Claiming → Service Publishing → Service Discovery → WebRTC Connec
 
 alice claims "alice" with Ed25519 signature
   ↓
-alice publishes com.example.chat@1.0.0 with multiple offers → receives UUID abc123
+alice publishes chat:1.0.0@alice with offers
   ↓
-bob requests alice/com.example.chat@1.0.0 → gets compatible service with available offer
+bob queries chat:1.0.0@alice (direct) or chat:1.0.0 (discovery) → gets offer SDP
   ↓
-WebRTC connection established via offer/answer exchange
+bob posts answer SDP → WebRTC connection established
+  ↓
+ICE candidates exchanged via server relay
 ```
 
 ## Quick Start
@@ -61,8 +64,26 @@ npx wrangler deploy
 #### `GET /`
 Returns server version and info
 
+**Response:**
+```json
+{
+  "version": "0.4.0",
+  "name": "Rondevu",
+  "description": "DNS-like WebRTC signaling with username claiming and service discovery"
+}
+```
+
 #### `GET /health`
 Health check endpoint with version
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "timestamp": 1733404800000,
+  "version": "0.4.0"
+}
+```
 
 #### `POST /register`
 Register a new peer and receive credentials (peerId + secret)
@@ -77,19 +98,27 @@ Generates a cryptographically random 128-bit peer ID.
 }
 ```
 
-### User Management (RESTful)
+### User Management
 
 #### `GET /users/:username`
 Check username availability and claim status
 
-**Response:**
+**Response (Available):**
+```json
+{
+  "username": "alice",
+  "available": true
+}
+```
+
+**Response (Claimed):**
 ```json
 {
   "username": "alice",
   "available": false,
   "claimedAt": 1733404800000,
   "expiresAt": 1765027200000,
-  "publicKey": "..."
+  "publicKey": "base64-encoded-ed25519-public-key"
 }
 ```
 
@@ -108,9 +137,8 @@ Claim a username with cryptographic proof
 **Response:**
 ```json
 {
-  "username": "alice",
-  "claimedAt": 1733404800000,
-  "expiresAt": 1765027200000
+  "success": true,
+  "username": "alice"
 }
 ```
 
@@ -120,37 +148,10 @@ Claim a username with cryptographic proof
 - Timestamp must be within 5 minutes (replay protection)
 - Expires after 365 days, auto-renewed on use
 
-#### `GET /users/:username/services/:fqn`
-Get service by username and FQN with semver-compatible matching
+### Service Management
 
-**Semver Matching:**
-- Requesting `chat@1.0.0` matches any `1.x.x` version
-- Major version must match exactly (`chat@1.0.0` will NOT match `chat@2.0.0`)
-- For major version 0, minor must also match (`0.1.0` will NOT match `0.2.0`)
-- Returns the most recently published compatible version
-
-**Response:**
-```json
-{
-  "uuid": "abc123",
-  "serviceId": "service-id",
-  "username": "alice",
-  "serviceFqn": "chat.app@1.0.0",
-  "offerId": "offer-hash",
-  "sdp": "v=0...",
-  "isPublic": true,
-  "metadata": {},
-  "createdAt": 1733404800000,
-  "expiresAt": 1733405100000
-}
-```
-
-**Note:** Returns a single available offer from the service. If all offers are in use, returns 503.
-
-### Service Management (RESTful)
-
-#### `POST /users/:username/services`
-Publish a service with multiple offers (requires authentication and username signature)
+#### `POST /services`
+Publish a service with offers (requires authentication and username signature)
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
@@ -158,92 +159,125 @@ Publish a service with multiple offers (requires authentication and username sig
 **Request:**
 ```json
 {
-  "serviceFqn": "com.example.chat@1.0.0",
+  "serviceFqn": "chat:1.0.0@alice",
   "offers": [
     { "sdp": "v=0..." },
     { "sdp": "v=0..." }
   ],
   "ttl": 300000,
-  "isPublic": false,
-  "metadata": { "description": "Chat service" },
   "signature": "base64-encoded-signature",
-  "message": "publish:alice:com.example.chat@1.0.0:1733404800000"
+  "message": "publish:alice:chat:1.0.0@alice:1733404800000"
 }
 ```
 
-**Response (Full service details):**
+**Response:**
 ```json
 {
-  "uuid": "uuid-v4-for-index",
   "serviceId": "uuid-v4",
   "username": "alice",
-  "serviceFqn": "com.example.chat@1.0.0",
+  "serviceFqn": "chat:1.0.0@alice",
   "offers": [
     {
       "offerId": "offer-hash-1",
       "sdp": "v=0...",
       "createdAt": 1733404800000,
       "expiresAt": 1733405100000
-    },
-    {
-      "offerId": "offer-hash-2",
-      "sdp": "v=0...",
-      "createdAt": 1733404800000,
-      "expiresAt": 1733405100000
     }
   ],
-  "isPublic": false,
-  "metadata": { "description": "Chat service" },
   "createdAt": 1733404800000,
   "expiresAt": 1733405100000
 }
 ```
 
 **Service FQN Format:**
-- Service name: Reverse domain notation (e.g., `com.example.chat`)
-- Version: Semantic versioning (e.g., `1.0.0`, `2.1.3-beta`)
-- Complete FQN: `service-name@version` (e.g., `com.example.chat@1.0.0`)
+- Format: `service:version@username`
+- Service name: Lowercase alphanumeric + dash (e.g., `chat`, `video-call`)
+- Version: Semantic versioning (e.g., `1.0.0`, `2.1.3`)
+- Username: Claimed username
+- Example: `chat:1.0.0@alice`
 
 **Validation:**
-- Service name pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`
-- Length: 3-128 characters
-- Version pattern: `^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$`
+- Service name pattern: `^[a-z0-9][a-z0-9-]*[a-z0-9]$`
+- Version pattern: `^[0-9]+\.[0-9]+\.[0-9]+$`
+- Must include @username
 
-#### `GET /services/:uuid`
-Get service details by UUID
+#### `GET /services/:fqn`
+Get service by FQN - Three modes:
 
-**Response:**
+**1. Direct Lookup (with username):**
+```
+GET /services/chat:1.0.0@alice
+```
+Returns first available offer from Alice's chat:1.0.0 service.
+
+**2. Random Discovery (without username):**
+```
+GET /services/chat:1.0.0
+```
+Returns a random available offer from any user's chat:1.0.0 service.
+
+**3. Paginated Discovery (with query params):**
+```
+GET /services/chat:1.0.0?limit=10&offset=0
+```
+Returns array of unique available offers from different users.
+
+**Semver Matching:**
+- Requesting `chat:1.0.0` matches any `1.x.x` version
+- Major version must match exactly (`chat:1.0.0` will NOT match `chat:2.0.0`)
+- For major version 0, minor must also match (`0.1.0` will NOT match `0.2.0`)
+- Returns the most recently published compatible version
+
+**Response (Single Offer):**
 ```json
 {
-  "serviceId": "...",
+  "serviceId": "uuid",
   "username": "alice",
-  "serviceFqn": "com.example.chat@1.0.0",
-  "offerId": "...",
+  "serviceFqn": "chat:1.0.0@alice",
+  "offerId": "offer-hash",
   "sdp": "v=0...",
-  "isPublic": false,
-  "metadata": { ... },
   "createdAt": 1733404800000,
   "expiresAt": 1733405100000
 }
 ```
 
-#### `DELETE /users/:username/services/:fqn`
+**Response (Paginated):**
+```json
+{
+  "services": [
+    {
+      "serviceId": "uuid",
+      "username": "alice",
+      "serviceFqn": "chat:1.0.0@alice",
+      "offerId": "offer-hash",
+      "sdp": "v=0...",
+      "createdAt": 1733404800000,
+      "expiresAt": 1733405100000
+    }
+  ],
+  "count": 1,
+  "limit": 10,
+  "offset": 0
+}
+```
+
+#### `DELETE /services/:fqn`
 Unpublish a service (requires authentication and ownership)
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
 
-**Request:**
+**Response:**
 ```json
 {
-  "username": "alice"
+  "success": true
 }
 ```
 
-### WebRTC Signaling (Service-Based)
+### WebRTC Signaling
 
-#### `POST /services/:uuid/answer`
-Answer a service offer (requires authentication)
+#### `POST /services/:fqn/offers/:offerId/answer`
+Post answer SDP to specific offer
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
@@ -263,8 +297,8 @@ Answer a service offer (requires authentication)
 }
 ```
 
-#### `GET /services/:uuid/answer`
-Get answer for a service (offerer polls this)
+#### `GET /services/:fqn/offers/:offerId/answer`
+Get answer SDP (offerer polls this)
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
@@ -272,17 +306,77 @@ Get answer for a service (offerer polls this)
 **Response:**
 ```json
 {
+  "sdp": "v=0...",
   "offerId": "offer-hash",
   "answererId": "answerer-peer-id",
-  "sdp": "v=0...",
   "answeredAt": 1733404800000
 }
 ```
 
-**Note:** Returns 404 if not yet answered
+Returns 404 if not yet answered.
 
-#### `POST /services/:uuid/ice-candidates`
-Post ICE candidates for a service (requires authentication)
+#### `GET /offers/answered`
+Get all answered offers (efficient batch polling for offerer)
+
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
+
+**Query params:**
+- `since` - Optional timestamp to get only new answers
+
+**Response:**
+```json
+{
+  "offers": [
+    {
+      "offerId": "offer-hash",
+      "serviceId": "service-uuid",
+      "answererId": "answerer-peer-id",
+      "sdp": "v=0...",
+      "answeredAt": 1733404800000
+    }
+  ]
+}
+```
+
+#### `GET /offers/poll`
+Combined polling for answers and ICE candidates (offerer)
+
+**Headers:**
+- `Authorization: Bearer {peerId}:{secret}`
+
+**Query params:**
+- `since` - Optional timestamp to get only new data
+
+**Response:**
+```json
+{
+  "answers": [
+    {
+      "offerId": "offer-hash",
+      "serviceId": "service-uuid",
+      "answererId": "answerer-peer-id",
+      "sdp": "v=0...",
+      "answeredAt": 1733404800000
+    }
+  ],
+  "iceCandidates": {
+    "offer-hash": [
+      {
+        "candidate": { "candidate": "...", "sdpMid": "0", "sdpMLineIndex": 0 },
+        "role": "answerer",
+        "peerId": "peer-id",
+        "createdAt": 1733404800000
+      }
+    ]
+  }
+}
+```
+
+More efficient than polling answers and ICE separately - reduces HTTP requests by 50%.
+
+#### `POST /services/:fqn/offers/:offerId/ice-candidates`
+Add ICE candidates to specific offer
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
@@ -290,8 +384,13 @@ Post ICE candidates for a service (requires authentication)
 **Request:**
 ```json
 {
-  "candidates": ["candidate:1 1 UDP..."],
-  "offerId": "optional-offer-id"
+  "candidates": [
+    {
+      "candidate": "candidate:...",
+      "sdpMid": "0",
+      "sdpMLineIndex": 0
+    }
+  ]
 }
 ```
 
@@ -303,20 +402,25 @@ Post ICE candidates for a service (requires authentication)
 }
 ```
 
-**Note:** If `offerId` is omitted, the server will auto-detect the peer's offer
-
-#### `GET /services/:uuid/ice-candidates?since=1234567890&offerId=optional-offer-id`
-Get ICE candidates from the other peer (requires authentication)
+#### `GET /services/:fqn/offers/:offerId/ice-candidates`
+Get ICE candidates for specific offer
 
 **Headers:**
 - `Authorization: Bearer {peerId}:{secret}`
+
+**Query params:**
+- `since` - Optional timestamp to get only new candidates
 
 **Response:**
 ```json
 {
   "candidates": [
     {
-      "candidate": "candidate:1 1 UDP...",
+      "candidate": {
+        "candidate": "candidate:...",
+        "sdpMid": "0",
+        "sdpMLineIndex": 0
+      },
       "createdAt": 1733404800000
     }
   ],
@@ -335,7 +439,7 @@ Environment variables:
 | `PORT` | `3000` | Server port (Node.js/Docker) |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `STORAGE_PATH` | `./rondevu.db` | SQLite database path (use `:memory:` for in-memory) |
-| `VERSION` | `2.0.0` | Server version (semver) |
+| `VERSION` | `0.4.0` | Server version (semver) |
 | `AUTH_SECRET` | Random 32-byte hex | Secret key for credential encryption (required for production) |
 | `OFFER_DEFAULT_TTL` | `300000` | Default offer TTL in ms (5 minutes) |
 | `OFFER_MIN_TTL` | `60000` | Minimum offer TTL in ms (1 minute) |
@@ -350,29 +454,34 @@ Environment variables:
 - `claimed_at`: Claim timestamp
 - `expires_at`: Expiry timestamp (365 days)
 - `last_used`: Last activity timestamp
-- `metadata`: Optional JSON metadata
 
 ### services
 - `id` (PK): Service ID (UUID)
 - `username` (FK): Owner username
-- `service_fqn`: Fully qualified name (com.example.chat@1.0.0)
-- `is_public`: Public/private flag
-- `metadata`: JSON metadata
+- `service_fqn`: Fully qualified name (chat:1.0.0@alice)
+- `service_name`: Service name component (chat)
+- `version`: Version component (1.0.0)
 - `created_at`, `expires_at`: Timestamps
+- UNIQUE constraint on (service_name, version, username)
 
 ### offers
 - `id` (PK): Offer ID (hash of SDP)
 - `peer_id` (FK): Owner peer ID
-- `service_id` (FK): Optional link to service (null for standalone offers)
+- `service_id` (FK): Link to service
+- `service_fqn`: Denormalized service FQN
 - `sdp`: WebRTC offer SDP
 - `answerer_peer_id`: Peer ID of answerer (null until answered)
 - `answer_sdp`: WebRTC answer SDP (null until answered)
-- `created_at`, `expires_at`, `last_seen`: Timestamps
+- `answered_at`: Timestamp when answered
+- `created_at`, `expires_at`: Timestamps
 
-### service_index (privacy layer)
-- `uuid` (PK): Random UUID for discovery
-- `service_id` (FK): Links to service
-- `username`, `service_fqn`: Denormalized for performance
+### ice_candidates
+- `id` (PK): Auto-increment ID
+- `offer_id` (FK): Link to offer
+- `peer_id`: Peer who sent the candidate
+- `role`: 'offerer' or 'answerer'
+- `candidate`: JSON-encoded candidate
+- `created_at`: Timestamp
 
 ## Security
 
@@ -387,18 +496,22 @@ Environment variables:
 - **Message Format**: `publish:{username}:{serviceFqn}:{timestamp}`
 - **Auto-Renewal**: Publishing a service extends username expiry
 
-### Privacy
-- **Private Services**: Only UUID exposed, FQN hidden
-- **Public Services**: FQN and metadata visible
-- **No Enumeration**: Cannot list all services without knowing FQN
+### ICE Candidate Filtering
+- Server filters candidates by role to prevent peers from receiving their own candidates
+- Offerers receive only answerer candidates
+- Answerers receive only offerer candidates
 
-## Migration from V1
+## Migration from v0.3.x
 
-V2 is a **breaking change** that removes topic-based discovery. See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
+See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
 
 **Key Changes:**
-- ❌ Removed: Topic-based discovery, bloom filters, public peer listings
-- ✅ Added: Username claiming, service publishing, UUID-based privacy
+- Service FQN format changed from `service@version` to `service:version@username`
+- Removed UUID privacy layer - direct FQN-based access
+- Removed public/private service distinction
+- Added service discovery (random and paginated)
+- Added combined polling endpoint (/offers/poll)
+- ICE candidate endpoints moved to offer-specific routes
 
 ## License
 
