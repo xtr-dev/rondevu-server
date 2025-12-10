@@ -11,10 +11,11 @@ DROP TABLE IF EXISTS usernames;
 CREATE TABLE offers (
   id TEXT PRIMARY KEY,
   peer_id TEXT NOT NULL,
-  service_fqn TEXT NOT NULL,
+  service_id TEXT,
   sdp TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
   secret TEXT,
   answerer_peer_id TEXT,
   answer_sdp TEXT,
@@ -22,10 +23,10 @@ CREATE TABLE offers (
 );
 
 CREATE INDEX idx_offers_peer ON offers(peer_id);
-CREATE INDEX idx_offers_service_fqn ON offers(service_fqn);
+CREATE INDEX idx_offers_service ON offers(service_id);
 CREATE INDEX idx_offers_expires ON offers(expires_at);
+CREATE INDEX idx_offers_last_seen ON offers(last_seen);
 CREATE INDEX idx_offers_answerer ON offers(answerer_peer_id);
-CREATE INDEX idx_offers_available ON offers(answerer_peer_id) WHERE answerer_peer_id IS NULL;
 
 -- ICE candidates table
 CREATE TABLE ice_candidates (
