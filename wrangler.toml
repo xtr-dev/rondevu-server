@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "rondevu-offers"
-database_id = "b94e3f71-816d-455b-a89d-927fa49532d0"
+database_id = "3d469855-d37f-477b-b139-fa58843a54ff"
 
 # Environment variables
 [vars]
