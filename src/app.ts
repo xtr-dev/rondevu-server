@@ -337,11 +337,7 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'Invalid signature for username' }, 403);
       }
 
-      // Delete existing service if one exists (upsert behavior)
-      const existingService = await storage.getServiceByFqn(serviceFqn);
-      if (existingService) {
-        await storage.deleteService(existingService.id, username);
-      }
+      // Note: createService handles upsert behavior (deletes existing service if it exists)
 
       // Validate all offers
       for (const offer of offers) {

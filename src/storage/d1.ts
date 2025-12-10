@@ -399,7 +399,26 @@ export class D1Storage implements Storage {
 
     const { serviceName, version, username } = parsed;
 
-    // Insert service with extracted fields
+    // Delete existing service with same (service_name, version, username) and its related offers (upsert behavior)
+    // First get the existing service
+    const existingService = await this.db.prepare(`
+      SELECT id FROM services
+      WHERE service_name = ? AND version = ? AND username = ?
+    `).bind(serviceName, version, username).first();
+
+    if (existingService) {
+      // Delete related offers first (no FK cascade from offers to services)
+      await this.db.prepare(`
+        DELETE FROM offers WHERE service_id = ?
+      `).bind(existingService.id).run();
+
+      // Delete the service
+      await this.db.prepare(`
+        DELETE FROM services WHERE id = ?
+      `).bind(existingService.id).run();
+    }
+
+    // Insert new service with extracted fields
     await this.db.prepare(`
       INSERT INTO services (id, service_fqn, service_name, version, username, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)

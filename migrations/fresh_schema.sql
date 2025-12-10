@@ -68,7 +68,7 @@ CREATE TABLE services (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
-  UNIQUE(service_fqn)
+  UNIQUE(service_name, version, username)
 );
 
 CREATE INDEX idx_services_fqn ON services(service_fqn);
