@@ -561,6 +561,55 @@ export function createApp(storage: Storage, config: Config) {
   });
 
   /**
+   * GET /offers/poll
+   * Combined efficient polling endpoint for answers and ICE candidates
+   * Returns all answered offers and ICE candidates for all peer's offers since timestamp
+   */
+  app.get('/offers/poll', authMiddleware, async (c) => {
+    try {
+      const peerId = getAuthenticatedPeerId(c);
+      const since = c.req.query('since');
+      const sinceTimestamp = since ? parseInt(since, 10) : 0;
+
+      // Get all answered offers
+      const answeredOffers = await storage.getAnsweredOffers(peerId);
+      const filteredAnswers = since
+        ? answeredOffers.filter(offer => offer.answeredAt && offer.answeredAt > sinceTimestamp)
+        : answeredOffers;
+
+      // Get all peer's offers
+      const allOffers = await storage.getOffersByPeerId(peerId);
+
+      // For each offer, get ICE candidates since timestamp
+      const iceCandidatesByOffer: Record<string, any[]> = {};
+      for (const offer of allOffers) {
+        // Get answerer ICE candidates (offerer polls for these)
+        const candidates = await storage.getIceCandidates(offer.id, 'answerer', sinceTimestamp);
+        if (candidates.length > 0) {
+          iceCandidatesByOffer[offer.id] = candidates.map(c => ({
+            candidate: c.candidate,
+            createdAt: c.createdAt
+          }));
+        }
+      }
+
+      return c.json({
+        answers: filteredAnswers.map(offer => ({
+          offerId: offer.id,
+          serviceId: offer.serviceId,
+          answererId: offer.answererPeerId,
+          sdp: offer.answerSdp,
+          answeredAt: offer.answeredAt
+        })),
+        iceCandidates: iceCandidatesByOffer
+      }, 200);
+    } catch (err) {
+      console.error('Error polling offers:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  });
+
+  /**
    * POST /services/:fqn/offers/:offerId/ice-candidates
    * Add ICE candidates for a specific offer
    */
