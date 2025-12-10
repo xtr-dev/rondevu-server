@@ -115,13 +115,14 @@ export class D1Storage implements Storage {
       const now = Date.now();
 
       await this.db.prepare(`
-        INSERT INTO offers (id, peer_id, sdp, created_at, expires_at, last_seen, secret)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).bind(id, offer.peerId, offer.sdp, now, offer.expiresAt, now, offer.secret || null).run();
+        INSERT INTO offers (id, peer_id, service_id, sdp, created_at, expires_at, last_seen, secret)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(id, offer.peerId, offer.serviceId || null, offer.sdp, now, offer.expiresAt, now, offer.secret || null).run();
 
       created.push({
         id,
         peerId: offer.peerId,
+        serviceId: offer.serviceId,
         sdp: offer.sdp,
         createdAt: now,
         expiresAt: offer.expiresAt,
@@ -565,6 +566,7 @@ export class D1Storage implements Storage {
     return {
       id: row.id,
       peerId: row.peer_id,
+      serviceId: row.service_id || undefined,
       sdp: row.sdp,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
