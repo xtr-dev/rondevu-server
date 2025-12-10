@@ -1,7 +1,7 @@
 /**
- * Crypto utilities for stateless peer authentication
- * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
+ * Crypto utilities for Ed25519-based authentication
  * Uses @noble/ed25519 for Ed25519 signature verification
+ * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
  */
 
 import * as ed25519 from '@noble/ed25519';
@@ -12,10 +12,6 @@ ed25519.hashes.sha512Async = async (message: Uint8Array) => {
   return new Uint8Array(await crypto.subtle.digest('SHA-512', message as BufferSource));
 };
 
-const ALGORITHM = 'AES-GCM';
-const IV_LENGTH = 12; // 96 bits for GCM
-const KEY_LENGTH = 32; // 256 bits
-
 // Username validation
 const USERNAME_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
 const USERNAME_MIN_LENGTH = 3;
@@ -25,30 +21,15 @@ const USERNAME_MAX_LENGTH = 32;
 const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 
 /**
- * Generates a random peer ID (16 bytes = 32 hex chars)
+ * Generates an anonymous username for users who don't want to claim one
+ * Format: anon-{timestamp}-{random}
+ * This reduces collision probability to near-zero
  */
-export function generatePeerId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Generates a random secret key for encryption (32 bytes = 64 hex chars)
- */
-export function generateSecretKey(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(KEY_LENGTH));
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Convert hex string to Uint8Array
- */
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
+export function generateAnonymousUsername(): string {
+  const timestamp = Date.now().toString(36);
+  const random = crypto.getRandomValues(new Uint8Array(3));
+  const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
+  return `anon-${timestamp}-${hex}`;
 }
 
 /**
@@ -70,99 +51,40 @@ function base64ToBytes(base64: string): Uint8Array {
 }
 
 /**
- * Encrypts a peer ID using the server secret key
- * Returns base64-encoded encrypted data (IV + ciphertext)
+ * Validates a generic auth message format
+ * Expected format: action:username:params:timestamp
+ * Validates that the message contains the expected username and has a valid timestamp
  */
-export async function encryptPeerId(peerId: string, secretKeyHex: string): Promise<string> {
-  const keyBytes = hexToBytes(secretKeyHex);
+export function validateAuthMessage(
+  expectedUsername: string,
+  message: string
+): { valid: boolean; error?: string } {
+  const parts = message.split(':');
 
-  if (keyBytes.length !== KEY_LENGTH) {
-    throw new Error(`Secret key must be ${KEY_LENGTH * 2} hex characters (${KEY_LENGTH} bytes)`);
+  if (parts.length < 3) {
+    return { valid: false, error: 'Invalid message format: must have at least action:username:timestamp' };
   }
 
-  // Import key
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBytes,
-    { name: ALGORITHM, length: 256 },
-    false,
-    ['encrypt']
-  );
+  // Extract username (second part) and timestamp (last part)
+  const messageUsername = parts[1];
+  const timestamp = parseInt(parts[parts.length - 1], 10);
 
-  // Generate random IV
-  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
-
-  // Encrypt peer ID
-  const encoder = new TextEncoder();
-  const data = encoder.encode(peerId);
-
-  const encrypted = await crypto.subtle.encrypt(
-    { name: ALGORITHM, iv },
-    key,
-    data
-  );
-
-  // Combine IV + ciphertext and encode as base64
-  const combined = new Uint8Array(iv.length + encrypted.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(encrypted), iv.length);
-
-  return bytesToBase64(combined);
-}
-
-/**
- * Decrypts an encrypted peer ID secret
- * Returns the plaintext peer ID or throws if decryption fails
- */
-export async function decryptPeerId(encryptedSecret: string, secretKeyHex: string): Promise<string> {
-  try {
-    const keyBytes = hexToBytes(secretKeyHex);
-
-    if (keyBytes.length !== KEY_LENGTH) {
-      throw new Error(`Secret key must be ${KEY_LENGTH * 2} hex characters (${KEY_LENGTH} bytes)`);
-    }
-
-    // Decode base64
-    const combined = base64ToBytes(encryptedSecret);
-
-    // Extract IV and ciphertext
-    const iv = combined.slice(0, IV_LENGTH);
-    const ciphertext = combined.slice(IV_LENGTH);
-
-    // Import key
-    const key = await crypto.subtle.importKey(
-      'raw',
-      keyBytes,
-      { name: ALGORITHM, length: 256 },
-      false,
-      ['decrypt']
-    );
-
-    // Decrypt
-    const decrypted = await crypto.subtle.decrypt(
-      { name: ALGORITHM, iv },
-      key,
-      ciphertext
-    );
-
-    const decoder = new TextDecoder();
-    return decoder.decode(decrypted);
-  } catch (err) {
-    throw new Error('Failed to decrypt peer ID: invalid secret or secret key');
+  // Validate username matches
+  if (messageUsername !== expectedUsername) {
+    return { valid: false, error: 'Username in message does not match authenticated username' };
   }
-}
 
-/**
- * Validates that a peer ID and secret match
- * Returns true if valid, false otherwise
- */
-export async function validateCredentials(peerId: string, encryptedSecret: string, secretKey: string): Promise<boolean> {
-  try {
-    const decryptedPeerId = await decryptPeerId(encryptedSecret, secretKey);
-    return decryptedPeerId === peerId;
-  } catch {
-    return false;
+  // Validate timestamp
+  if (isNaN(timestamp)) {
+    return { valid: false, error: 'Invalid timestamp in message' };
   }
+
+  const timestampCheck = validateTimestamp(timestamp);
+  if (!timestampCheck.valid) {
+    return timestampCheck;
+  }
+
+  return { valid: true };
 }
 
 // ===== Username and Ed25519 Signature Utilities =====

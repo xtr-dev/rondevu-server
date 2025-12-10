@@ -37,29 +37,28 @@ export class D1Storage implements Storage {
       -- WebRTC signaling offers
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
-        peer_id TEXT NOT NULL,
+        username TEXT NOT NULL,
         service_id TEXT,
         sdp TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         last_seen INTEGER NOT NULL,
-        secret TEXT,
-        answerer_peer_id TEXT,
+        answerer_username TEXT,
         answer_sdp TEXT,
         answered_at INTEGER
       );
 
-      CREATE INDEX IF NOT EXISTS idx_offers_peer ON offers(peer_id);
+      CREATE INDEX IF NOT EXISTS idx_offers_username ON offers(username);
       CREATE INDEX IF NOT EXISTS idx_offers_service ON offers(service_id);
       CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
       CREATE INDEX IF NOT EXISTS idx_offers_last_seen ON offers(last_seen);
-      CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_peer_id);
+      CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_username);
 
       -- ICE candidates table
       CREATE TABLE IF NOT EXISTS ice_candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         offer_id TEXT NOT NULL,
-        peer_id TEXT NOT NULL,
+        username TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
         candidate TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -67,7 +66,7 @@ export class D1Storage implements Storage {
       );
 
       CREATE INDEX IF NOT EXISTS idx_ice_offer ON ice_candidates(offer_id);
-      CREATE INDEX IF NOT EXISTS idx_ice_peer ON ice_candidates(peer_id);
+      CREATE INDEX IF NOT EXISTS idx_ice_username ON ice_candidates(username);
       CREATE INDEX IF NOT EXISTS idx_ice_created ON ice_candidates(created_at);
 
       -- Usernames table
@@ -115,31 +114,31 @@ export class D1Storage implements Storage {
       const now = Date.now();
 
       await this.db.prepare(`
-        INSERT INTO offers (id, peer_id, service_id, sdp, created_at, expires_at, last_seen, secret)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(id, offer.peerId, offer.serviceId || null, offer.sdp, now, offer.expiresAt, now, offer.secret || null).run();
+        INSERT INTO offers (id, username, service_id, sdp, created_at, expires_at, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(id, offer.username, offer.serviceId || null, offer.sdp, now, offer.expiresAt, now).run();
 
       created.push({
         id,
-        peerId: offer.peerId,
+        username: offer.username,
         serviceId: offer.serviceId,
+        serviceFqn: offer.serviceFqn,
         sdp: offer.sdp,
         createdAt: now,
         expiresAt: offer.expiresAt,
         lastSeen: now,
-        secret: offer.secret,
       });
     }
 
     return created;
   }
 
-  async getOffersByPeerId(peerId: string): Promise<Offer[]> {
+  async getOffersByUsername(username: string): Promise<Offer[]> {
     const result = await this.db.prepare(`
       SELECT * FROM offers
-      WHERE peer_id = ? AND expires_at > ?
+      WHERE username = ? AND expires_at > ?
       ORDER BY last_seen DESC
-    `).bind(peerId, Date.now()).all();
+    `).bind(username, Date.now()).all();
 
     if (!result.results) {
       return [];
@@ -161,11 +160,11 @@ export class D1Storage implements Storage {
     return this.rowToOffer(result as any);
   }
 
-  async deleteOffer(offerId: string, ownerPeerId: string): Promise<boolean> {
+  async deleteOffer(offerId: string, ownerUsername: string): Promise<boolean> {
     const result = await this.db.prepare(`
       DELETE FROM offers
-      WHERE id = ? AND peer_id = ?
-    `).bind(offerId, ownerPeerId).run();
+      WHERE id = ? AND username = ?
+    `).bind(offerId, ownerUsername).run();
 
     return (result.meta.changes || 0) > 0;
   }
@@ -180,9 +179,8 @@ export class D1Storage implements Storage {
 
   async answerOffer(
     offerId: string,
-    answererPeerId: string,
-    answerSdp: string,
-    secret?: string
+    answererUsername: string,
+    answerSdp: string
   ): Promise<{ success: boolean; error?: string }> {
     // Check if offer exists and is not expired
     const offer = await this.getOfferById(offerId);
@@ -194,16 +192,8 @@ export class D1Storage implements Storage {
       };
     }
 
-    // Verify secret if offer is protected
-    if (offer.secret && offer.secret !== secret) {
-      return {
-        success: false,
-        error: 'Invalid or missing secret'
-      };
-    }
-
     // Check if offer already has an answerer
-    if (offer.answererPeerId) {
+    if (offer.answererUsername) {
       return {
         success: false,
         error: 'Offer already answered'
@@ -213,9 +203,9 @@ export class D1Storage implements Storage {
     // Update offer with answer
     const result = await this.db.prepare(`
       UPDATE offers
-      SET answerer_peer_id = ?, answer_sdp = ?, answered_at = ?
-      WHERE id = ? AND answerer_peer_id IS NULL
-    `).bind(answererPeerId, answerSdp, Date.now(), offerId).run();
+      SET answerer_username = ?, answer_sdp = ?, answered_at = ?
+      WHERE id = ? AND answerer_username IS NULL
+    `).bind(answererUsername, answerSdp, Date.now(), offerId).run();
 
     if ((result.meta.changes || 0) === 0) {
       return {
@@ -227,12 +217,12 @@ export class D1Storage implements Storage {
     return { success: true };
   }
 
-  async getAnsweredOffers(offererPeerId: string): Promise<Offer[]> {
+  async getAnsweredOffers(offererUsername: string): Promise<Offer[]> {
     const result = await this.db.prepare(`
       SELECT * FROM offers
-      WHERE peer_id = ? AND answerer_peer_id IS NOT NULL AND expires_at > ?
+      WHERE username = ? AND answerer_username IS NOT NULL AND expires_at > ?
       ORDER BY answered_at DESC
-    `).bind(offererPeerId, Date.now()).all();
+    `).bind(offererUsername, Date.now()).all();
 
     if (!result.results) {
       return [];
@@ -245,7 +235,7 @@ export class D1Storage implements Storage {
 
   async addIceCandidates(
     offerId: string,
-    peerId: string,
+    username: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number> {
@@ -253,11 +243,11 @@ export class D1Storage implements Storage {
     for (let i = 0; i < candidates.length; i++) {
       const timestamp = Date.now() + i;
       await this.db.prepare(`
-        INSERT INTO ice_candidates (offer_id, peer_id, role, candidate, created_at)
+        INSERT INTO ice_candidates (offer_id, username, role, candidate, created_at)
         VALUES (?, ?, ?, ?, ?)
       `).bind(
         offerId,
-        peerId,
+        username,
         role,
         JSON.stringify(candidates[i]),
         timestamp
@@ -295,7 +285,7 @@ export class D1Storage implements Storage {
     return result.results.map((row: any) => ({
       id: row.id,
       offerId: row.offer_id,
-      peerId: row.peer_id,
+      username: row.username,
       role: row.role,
       candidate: JSON.parse(row.candidate),
       createdAt: row.created_at,
@@ -513,14 +503,14 @@ export class D1Storage implements Storage {
     offset: number
   ): Promise<Service[]> {
     // Query for unique services with available offers
-    // We join with offers and filter for available ones (answerer_peer_id IS NULL)
+    // We join with offers and filter for available ones (answerer_username IS NULL)
     const result = await this.db.prepare(`
       SELECT DISTINCT s.* FROM services s
       INNER JOIN offers o ON o.service_id = s.id
       WHERE s.service_name = ?
         AND s.version = ?
         AND s.expires_at > ?
-        AND o.answerer_peer_id IS NULL
+        AND o.answerer_username IS NULL
         AND o.expires_at > ?
       ORDER BY s.created_at DESC
       LIMIT ? OFFSET ?
@@ -541,7 +531,7 @@ export class D1Storage implements Storage {
       WHERE s.service_name = ?
         AND s.version = ?
         AND s.expires_at > ?
-        AND o.answerer_peer_id IS NULL
+        AND o.answerer_username IS NULL
         AND o.expires_at > ?
       ORDER BY RANDOM()
       LIMIT 1
@@ -584,14 +574,14 @@ export class D1Storage implements Storage {
   private rowToOffer(row: any): Offer {
     return {
       id: row.id,
-      peerId: row.peer_id,
+      username: row.username,
       serviceId: row.service_id || undefined,
+      serviceFqn: row.service_fqn || undefined,
       sdp: row.sdp,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastSeen: row.last_seen,
-      secret: row.secret || undefined,
-      answererPeerId: row.answerer_peer_id || undefined,
+      answererUsername: row.answerer_username || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at || undefined,
     };

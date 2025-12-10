@@ -9,9 +9,9 @@ import {
   ClaimUsernameRequest,
   Service,
   CreateServiceRequest,
-  ServiceInfo,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
+import { parseServiceFqn } from '../crypto.ts';
 
 const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
 
@@ -39,30 +39,29 @@ export class SQLiteStorage implements Storage {
       -- WebRTC signaling offers
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
-        peer_id TEXT NOT NULL,
+        username TEXT NOT NULL,
         service_id TEXT,
         sdp TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         last_seen INTEGER NOT NULL,
-        secret TEXT,
-        answerer_peer_id TEXT,
+        answerer_username TEXT,
         answer_sdp TEXT,
         answered_at INTEGER,
         FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
       );
 
-      CREATE INDEX IF NOT EXISTS idx_offers_peer ON offers(peer_id);
+      CREATE INDEX IF NOT EXISTS idx_offers_username ON offers(username);
       CREATE INDEX IF NOT EXISTS idx_offers_service ON offers(service_id);
       CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
       CREATE INDEX IF NOT EXISTS idx_offers_last_seen ON offers(last_seen);
-      CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_peer_id);
+      CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_username);
 
       -- ICE candidates table
       CREATE TABLE IF NOT EXISTS ice_candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         offer_id TEXT NOT NULL,
-        peer_id TEXT NOT NULL,
+        username TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
         candidate TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -70,7 +69,7 @@ export class SQLiteStorage implements Storage {
       );
 
       CREATE INDEX IF NOT EXISTS idx_ice_offer ON ice_candidates(offer_id);
-      CREATE INDEX IF NOT EXISTS idx_ice_peer ON ice_candidates(peer_id);
+      CREATE INDEX IF NOT EXISTS idx_ice_username ON ice_candidates(username);
       CREATE INDEX IF NOT EXISTS idx_ice_created ON ice_candidates(created_at);
 
       -- Usernames table
@@ -87,36 +86,23 @@ export class SQLiteStorage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_usernames_expires ON usernames(expires_at);
       CREATE INDEX IF NOT EXISTS idx_usernames_public_key ON usernames(public_key);
 
-      -- Services table (one service can have multiple offers)
+      -- Services table (new schema with extracted fields for discovery)
       CREATE TABLE IF NOT EXISTS services (
         id TEXT PRIMARY KEY,
-        username TEXT NOT NULL,
         service_fqn TEXT NOT NULL,
+        service_name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        username TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
-        is_public INTEGER NOT NULL DEFAULT 0,
-        metadata TEXT,
         FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
-        UNIQUE(username, service_fqn)
+        UNIQUE(service_fqn)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_services_username ON services(username);
       CREATE INDEX IF NOT EXISTS idx_services_fqn ON services(service_fqn);
+      CREATE INDEX IF NOT EXISTS idx_services_discovery ON services(service_name, version);
+      CREATE INDEX IF NOT EXISTS idx_services_username ON services(username);
       CREATE INDEX IF NOT EXISTS idx_services_expires ON services(expires_at);
-
-      -- Service index table (privacy layer)
-      CREATE TABLE IF NOT EXISTS service_index (
-        uuid TEXT PRIMARY KEY,
-        service_id TEXT NOT NULL,
-        username TEXT NOT NULL,
-        service_fqn TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_service_index_username ON service_index(username);
-      CREATE INDEX IF NOT EXISTS idx_service_index_expires ON service_index(expires_at);
     `);
 
     // Enable foreign keys
@@ -139,8 +125,8 @@ export class SQLiteStorage implements Storage {
     // Use transaction for atomic creation
     const transaction = this.db.transaction((offersWithIds: (CreateOfferRequest & { id: string })[]) => {
       const offerStmt = this.db.prepare(`
-        INSERT INTO offers (id, peer_id, service_id, sdp, created_at, expires_at, last_seen, secret)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO offers (id, username, service_id, sdp, created_at, expires_at, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const offer of offersWithIds) {
@@ -149,24 +135,23 @@ export class SQLiteStorage implements Storage {
         // Insert offer
         offerStmt.run(
           offer.id,
-          offer.peerId,
+          offer.username,
           offer.serviceId || null,
           offer.sdp,
           now,
           offer.expiresAt,
-          now,
-          offer.secret || null
+          now
         );
 
         created.push({
           id: offer.id,
-          peerId: offer.peerId,
+          username: offer.username,
           serviceId: offer.serviceId || undefined,
+          serviceFqn: offer.serviceFqn,
           sdp: offer.sdp,
           createdAt: now,
           expiresAt: offer.expiresAt,
           lastSeen: now,
-          secret: offer.secret,
         });
       }
     });
@@ -175,14 +160,14 @@ export class SQLiteStorage implements Storage {
     return created;
   }
 
-  async getOffersByPeerId(peerId: string): Promise<Offer[]> {
+  async getOffersByUsername(username: string): Promise<Offer[]> {
     const stmt = this.db.prepare(`
       SELECT * FROM offers
-      WHERE peer_id = ? AND expires_at > ?
+      WHERE username = ? AND expires_at > ?
       ORDER BY last_seen DESC
     `);
 
-    const rows = stmt.all(peerId, Date.now()) as any[];
+    const rows = stmt.all(username, Date.now()) as any[];
     return rows.map(row => this.rowToOffer(row));
   }
 
@@ -201,13 +186,13 @@ export class SQLiteStorage implements Storage {
     return this.rowToOffer(row);
   }
 
-  async deleteOffer(offerId: string, ownerPeerId: string): Promise<boolean> {
+  async deleteOffer(offerId: string, ownerUsername: string): Promise<boolean> {
     const stmt = this.db.prepare(`
       DELETE FROM offers
-      WHERE id = ? AND peer_id = ?
+      WHERE id = ? AND username = ?
     `);
 
-    const result = stmt.run(offerId, ownerPeerId);
+    const result = stmt.run(offerId, ownerUsername);
     return result.changes > 0;
   }
 
@@ -219,9 +204,8 @@ export class SQLiteStorage implements Storage {
 
   async answerOffer(
     offerId: string,
-    answererPeerId: string,
-    answerSdp: string,
-    secret?: string
+    answererUsername: string,
+    answerSdp: string
   ): Promise<{ success: boolean; error?: string }> {
     // Check if offer exists and is not expired
     const offer = await this.getOfferById(offerId);
@@ -233,16 +217,8 @@ export class SQLiteStorage implements Storage {
       };
     }
 
-    // Verify secret if offer is protected
-    if (offer.secret && offer.secret !== secret) {
-      return {
-        success: false,
-        error: 'Invalid or missing secret'
-      };
-    }
-
     // Check if offer already has an answerer
-    if (offer.answererPeerId) {
+    if (offer.answererUsername) {
       return {
         success: false,
         error: 'Offer already answered'
@@ -252,11 +228,11 @@ export class SQLiteStorage implements Storage {
     // Update offer with answer
     const stmt = this.db.prepare(`
       UPDATE offers
-      SET answerer_peer_id = ?, answer_sdp = ?, answered_at = ?
-      WHERE id = ? AND answerer_peer_id IS NULL
+      SET answerer_username = ?, answer_sdp = ?, answered_at = ?
+      WHERE id = ? AND answerer_username IS NULL
     `);
 
-    const result = stmt.run(answererPeerId, answerSdp, Date.now(), offerId);
+    const result = stmt.run(answererUsername, answerSdp, Date.now(), offerId);
 
     if (result.changes === 0) {
       return {
@@ -268,14 +244,14 @@ export class SQLiteStorage implements Storage {
     return { success: true };
   }
 
-  async getAnsweredOffers(offererPeerId: string): Promise<Offer[]> {
+  async getAnsweredOffers(offererUsername: string): Promise<Offer[]> {
     const stmt = this.db.prepare(`
       SELECT * FROM offers
-      WHERE peer_id = ? AND answerer_peer_id IS NOT NULL AND expires_at > ?
+      WHERE username = ? AND answerer_username IS NOT NULL AND expires_at > ?
       ORDER BY answered_at DESC
     `);
 
-    const rows = stmt.all(offererPeerId, Date.now()) as any[];
+    const rows = stmt.all(offererUsername, Date.now()) as any[];
     return rows.map(row => this.rowToOffer(row));
   }
 
@@ -283,12 +259,12 @@ export class SQLiteStorage implements Storage {
 
   async addIceCandidates(
     offerId: string,
-    peerId: string,
+    username: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number> {
     const stmt = this.db.prepare(`
-      INSERT INTO ice_candidates (offer_id, peer_id, role, candidate, created_at)
+      INSERT INTO ice_candidates (offer_id, username, role, candidate, created_at)
       VALUES (?, ?, ?, ?, ?)
     `);
 
@@ -297,7 +273,7 @@ export class SQLiteStorage implements Storage {
       for (let i = 0; i < candidates.length; i++) {
         stmt.run(
           offerId,
-          peerId,
+          username,
           role,
           JSON.stringify(candidates[i]),
           baseTimestamp + i
@@ -334,7 +310,7 @@ export class SQLiteStorage implements Storage {
     return rows.map(row => ({
       id: row.id,
       offerId: row.offer_id,
-      peerId: row.peer_id,
+      username: row.username,
       role: row.role,
       candidate: JSON.parse(row.candidate),
       createdAt: row.created_at,
@@ -427,87 +403,96 @@ export class SQLiteStorage implements Storage {
 
   async createService(request: CreateServiceRequest): Promise<{
     service: Service;
-    indexUuid: string;
     offers: Offer[];
   }> {
     const serviceId = randomUUID();
-    const indexUuid = randomUUID();
     const now = Date.now();
 
-    // Create offers with serviceId
-    const offerRequests: CreateOfferRequest[] = request.offers.map(offer => ({
-      ...offer,
-      serviceId,
-    }));
+    // Parse FQN to extract components
+    const parsed = parseServiceFqn(request.serviceFqn);
+    if (!parsed) {
+      throw new Error(`Invalid service FQN: ${request.serviceFqn}`);
+    }
+    if (!parsed.username) {
+      throw new Error(`Service FQN must include username: ${request.serviceFqn}`);
+    }
 
-    const offers = await this.createOffers(offerRequests);
+    const { serviceName, version, username } = parsed;
 
     const transaction = this.db.transaction(() => {
-      // Insert service (no offer_id column anymore)
-      const serviceStmt = this.db.prepare(`
-        INSERT INTO services (id, username, service_fqn, created_at, expires_at, is_public, metadata)
+      // Delete existing service with same (service_name, version, username) and its related offers (upsert behavior)
+      const existingService = this.db.prepare(`
+        SELECT id FROM services
+        WHERE service_name = ? AND version = ? AND username = ?
+      `).get(serviceName, version, username) as any;
+
+      if (existingService) {
+        // Delete related offers first (no FK cascade from offers to services)
+        this.db.prepare(`
+          DELETE FROM offers WHERE service_id = ?
+        `).run(existingService.id);
+
+        // Delete the service
+        this.db.prepare(`
+          DELETE FROM services WHERE id = ?
+        `).run(existingService.id);
+      }
+
+      // Insert new service with extracted fields
+      this.db.prepare(`
+        INSERT INTO services (id, service_fqn, service_name, version, username, created_at, expires_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      serviceStmt.run(
+      `).run(
         serviceId,
-        request.username,
         request.serviceFqn,
-        now,
-        request.expiresAt,
-        request.isPublic ? 1 : 0,
-        request.metadata || null
-      );
-
-      // Insert service index
-      const indexStmt = this.db.prepare(`
-        INSERT INTO service_index (uuid, service_id, username, service_fqn, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
-      indexStmt.run(
-        indexUuid,
-        serviceId,
-        request.username,
-        request.serviceFqn,
+        serviceName,
+        version,
+        username,
         now,
         request.expiresAt
       );
 
-      // Touch username to extend expiry
-      this.touchUsername(request.username);
+      // Touch username to extend expiry (inline logic)
+      const expiresAt = now + YEAR_IN_MS;
+      this.db.prepare(`
+        UPDATE usernames
+        SET last_used = ?, expires_at = ?
+        WHERE username = ? AND expires_at > ?
+      `).run(now, expiresAt, username, now);
     });
 
     transaction();
 
+    // Create offers with serviceId (after transaction)
+    const offerRequests = request.offers.map(offer => ({
+      ...offer,
+      serviceId,
+    }));
+    const offers = await this.createOffers(offerRequests);
+
     return {
       service: {
         id: serviceId,
-        username: request.username,
         serviceFqn: request.serviceFqn,
+        serviceName,
+        version,
+        username,
         createdAt: now,
         expiresAt: request.expiresAt,
-        isPublic: request.isPublic || false,
-        metadata: request.metadata,
       },
-      indexUuid,
       offers,
     };
   }
 
-  async batchCreateServices(requests: CreateServiceRequest[]): Promise<Array<{
-    service: Service;
-    indexUuid: string;
-    offers: Offer[];
-  }>> {
-    const results = [];
+  async getOffersForService(serviceId: string): Promise<Offer[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM offers
+      WHERE service_id = ? AND expires_at > ?
+      ORDER BY created_at ASC
+    `);
 
-    for (const request of requests) {
-      const result = await this.createService(request);
-      results.push(result);
-    }
-
-    return results;
+    const rows = stmt.all(serviceId, Date.now()) as any[];
+    return rows.map(row => this.rowToOffer(row));
   }
 
   async getServiceById(serviceId: string): Promise<Service | null> {
@@ -525,14 +510,13 @@ export class SQLiteStorage implements Storage {
     return this.rowToService(row);
   }
 
-  async getServiceByUuid(uuid: string): Promise<Service | null> {
+  async getServiceByFqn(serviceFqn: string): Promise<Service | null> {
     const stmt = this.db.prepare(`
-      SELECT s.* FROM services s
-      INNER JOIN service_index si ON s.id = si.service_id
-      WHERE si.uuid = ? AND s.expires_at > ?
+      SELECT * FROM services
+      WHERE service_fqn = ? AND expires_at > ?
     `);
 
-    const row = stmt.get(uuid, Date.now()) as any;
+    const row = stmt.get(serviceFqn, Date.now()) as any;
 
     if (!row) {
       return null;
@@ -541,47 +525,51 @@ export class SQLiteStorage implements Storage {
     return this.rowToService(row);
   }
 
-  async listServicesForUsername(username: string): Promise<ServiceInfo[]> {
+  async discoverServices(
+    serviceName: string,
+    version: string,
+    limit: number,
+    offset: number
+  ): Promise<Service[]> {
+    // Query for unique services with available offers
+    // We join with offers and filter for available ones (answerer_username IS NULL)
     const stmt = this.db.prepare(`
-      SELECT si.uuid, s.is_public, s.service_fqn, s.metadata
-      FROM service_index si
-      INNER JOIN services s ON si.service_id = s.id
-      WHERE si.username = ? AND si.expires_at > ?
+      SELECT DISTINCT s.* FROM services s
+      INNER JOIN offers o ON o.service_id = s.id
+      WHERE s.service_name = ?
+        AND s.version = ?
+        AND s.expires_at > ?
+        AND o.answerer_username IS NULL
+        AND o.expires_at > ?
       ORDER BY s.created_at DESC
+      LIMIT ? OFFSET ?
     `);
 
-    const rows = stmt.all(username, Date.now()) as any[];
-
-    return rows.map(row => ({
-      uuid: row.uuid,
-      isPublic: row.is_public === 1,
-      serviceFqn: row.is_public === 1 ? row.service_fqn : undefined,
-      metadata: row.is_public === 1 ? row.metadata || undefined : undefined,
-    }));
-  }
-
-  async queryService(username: string, serviceFqn: string): Promise<string | null> {
-    const stmt = this.db.prepare(`
-      SELECT si.uuid FROM service_index si
-      INNER JOIN services s ON si.service_id = s.id
-      WHERE si.username = ? AND si.service_fqn = ? AND si.expires_at > ?
-    `);
-
-    const row = stmt.get(username, serviceFqn, Date.now()) as any;
-
-    return row ? row.uuid : null;
-  }
-
-  async findServicesByName(username: string, serviceName: string): Promise<Service[]> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM services
-      WHERE username = ? AND service_fqn LIKE ? AND expires_at > ?
-      ORDER BY created_at DESC
-    `);
-
-    const rows = stmt.all(username, `${serviceName}@%`, Date.now()) as any[];
-
+    const rows = stmt.all(serviceName, version, Date.now(), Date.now(), limit, offset) as any[];
     return rows.map(row => this.rowToService(row));
+  }
+
+  async getRandomService(serviceName: string, version: string): Promise<Service | null> {
+    // Get a random service with an available offer
+    const stmt = this.db.prepare(`
+      SELECT s.* FROM services s
+      INNER JOIN offers o ON o.service_id = s.id
+      WHERE s.service_name = ?
+        AND s.version = ?
+        AND s.expires_at > ?
+        AND o.answerer_username IS NULL
+        AND o.expires_at > ?
+      ORDER BY RANDOM()
+      LIMIT 1
+    `);
+
+    const row = stmt.get(serviceName, version, Date.now(), Date.now()) as any;
+
+    if (!row) {
+      return null;
+    }
+
+    return this.rowToService(row);
   }
 
   async deleteService(serviceId: string, username: string): Promise<boolean> {
@@ -612,14 +600,14 @@ export class SQLiteStorage implements Storage {
   private rowToOffer(row: any): Offer {
     return {
       id: row.id,
-      peerId: row.peer_id,
+      username: row.username,
       serviceId: row.service_id || undefined,
+      serviceFqn: row.service_fqn || undefined,
       sdp: row.sdp,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastSeen: row.last_seen,
-      secret: row.secret || undefined,
-      answererPeerId: row.answerer_peer_id || undefined,
+      answererUsername: row.answerer_username || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at || undefined,
     };
@@ -631,26 +619,12 @@ export class SQLiteStorage implements Storage {
   private rowToService(row: any): Service {
     return {
       id: row.id,
-      username: row.username,
       serviceFqn: row.service_fqn,
+      serviceName: row.service_name,
+      version: row.version,
+      username: row.username,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
-      isPublic: row.is_public === 1,
-      metadata: row.metadata || undefined,
     };
-  }
-
-  /**
-   * Get all offers for a service
-   */
-  async getOffersForService(serviceId: string): Promise<Offer[]> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM offers
-      WHERE service_id = ? AND expires_at > ?
-      ORDER BY created_at ASC
-    `);
-
-    const rows = stmt.all(serviceId, Date.now()) as any[];
-    return rows.map(row => this.rowToOffer(row));
   }
 }

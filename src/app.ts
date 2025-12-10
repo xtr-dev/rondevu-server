@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
-import { createAuthMiddleware, getAuthenticatedPeerId } from './middleware/auth.ts';
-import { generatePeerId, encryptPeerId, validateUsernameClaim, validateServicePublish, validateServiceFqn, parseServiceFqn, isVersionCompatible } from './crypto.ts';
+import { createAuthMiddleware, getAuthenticatedUsername } from './middleware/auth.ts';
+import { validateUsernameClaim, validateServicePublish, validateServiceFqn, parseServiceFqn, isVersionCompatible } from './crypto.ts';
 import type { Context } from 'hono';
 
 /**
@@ -14,7 +14,7 @@ export function createApp(storage: Storage, config: Config) {
   const app = new Hono();
 
   // Create auth middleware
-  const authMiddleware = createAuthMiddleware(config.authSecret);
+  const authMiddleware = createAuthMiddleware(storage);
 
   // Enable CORS
   app.use('/*', cors({
@@ -60,24 +60,6 @@ export function createApp(storage: Storage, config: Config) {
     });
   });
 
-  /**
-   * POST /register
-   * Register a new peer
-   */
-  app.post('/register', async (c) => {
-    try {
-      const peerId = generatePeerId();
-      const secret = await encryptPeerId(peerId, config.authSecret);
-
-      return c.json({
-        peerId,
-        secret
-      }, 200);
-    } catch (err) {
-      console.error('Error registering peer:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
 
   // ===== User Management (RESTful) =====
 
@@ -192,7 +174,7 @@ export function createApp(storage: Storage, config: Config) {
 
         // Get available offer from this service
         const serviceOffers = await storage.getOffersForService(service.id);
-        const availableOffer = serviceOffers.find(offer => !offer.answererPeerId);
+        const availableOffer = serviceOffers.find(offer => !offer.answererUsername);
 
         if (!availableOffer) {
           return c.json({
@@ -231,7 +213,7 @@ export function createApp(storage: Storage, config: Config) {
         const servicesWithOffers = await Promise.all(
           services.map(async (service) => {
             const offers = await storage.getOffersForService(service.id);
-            const availableOffer = offers.find(offer => !offer.answererPeerId);
+            const availableOffer = offers.find(offer => !offer.answererUsername);
             return availableOffer ? {
               serviceId: service.id,
               username: service.username,
@@ -265,7 +247,7 @@ export function createApp(storage: Storage, config: Config) {
 
         // Get available offer
         const offers = await storage.getOffersForService(service.id);
-        const availableOffer = offers.find(offer => !offer.answererPeerId);
+        const availableOffer = offers.find(offer => !offer.answererUsername);
 
         if (!availableOffer) {
           return c.json({
@@ -351,7 +333,7 @@ export function createApp(storage: Storage, config: Config) {
       }
 
       // Calculate expiry
-      const peerId = getAuthenticatedPeerId(c);
+      const authenticatedUsername = getAuthenticatedUsername(c);
       const offerTtl = Math.min(
         Math.max(ttl || config.offerDefaultTtl, config.offerMinTtl),
         config.offerMaxTtl
@@ -360,7 +342,7 @@ export function createApp(storage: Storage, config: Config) {
 
       // Prepare offer requests
       const offerRequests = offers.map(offer => ({
-        peerId,
+        username: authenticatedUsername,
         sdp: offer.sdp,
         expiresAt
       }));
@@ -469,9 +451,9 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'Offer not found' }, 404);
       }
 
-      const answererPeerId = getAuthenticatedPeerId(c);
+      const answererUsername = getAuthenticatedUsername(c);
 
-      const result = await storage.answerOffer(offerId, answererPeerId, sdp);
+      const result = await storage.answerOffer(offerId, answererUsername, sdp);
 
       if (!result.success) {
         return c.json({ error: result.error }, 400);
@@ -495,7 +477,7 @@ export function createApp(storage: Storage, config: Config) {
     try {
       const serviceFqn = decodeURIComponent(c.req.param('fqn'));
       const offerId = c.req.param('offerId');
-      const peerId = getAuthenticatedPeerId(c);
+      const username = getAuthenticatedUsername(c);
 
       // Get the offer
       const offer = await storage.getOfferById(offerId);
@@ -504,7 +486,7 @@ export function createApp(storage: Storage, config: Config) {
       }
 
       // Verify ownership
-      if (offer.peerId !== peerId) {
+      if (offer.username !== username) {
         return c.json({ error: 'Not authorized to access this offer' }, 403);
       }
 
@@ -514,7 +496,7 @@ export function createApp(storage: Storage, config: Config) {
 
       return c.json({
         offerId: offer.id,
-        answererId: offer.answererPeerId,
+        answererId: offer.answererUsername,
         sdp: offer.answerSdp,
         answeredAt: offer.answeredAt
       }, 200);
@@ -530,11 +512,11 @@ export function createApp(storage: Storage, config: Config) {
    */
   app.get('/offers/answered', authMiddleware, async (c) => {
     try {
-      const peerId = getAuthenticatedPeerId(c);
+      const username = getAuthenticatedUsername(c);
       const since = c.req.query('since');
       const sinceTimestamp = since ? parseInt(since, 10) : 0;
 
-      const offers = await storage.getAnsweredOffers(peerId);
+      const offers = await storage.getAnsweredOffers(username);
 
       // Filter by timestamp if provided
       const filteredOffers = since
@@ -545,7 +527,7 @@ export function createApp(storage: Storage, config: Config) {
         offers: filteredOffers.map(offer => ({
           offerId: offer.id,
           serviceId: offer.serviceId,
-          answererId: offer.answererPeerId,
+          answererId: offer.answererUsername,
           sdp: offer.answerSdp,
           answeredAt: offer.answeredAt
         }))
@@ -563,18 +545,18 @@ export function createApp(storage: Storage, config: Config) {
    */
   app.get('/offers/poll', authMiddleware, async (c) => {
     try {
-      const peerId = getAuthenticatedPeerId(c);
+      const username = getAuthenticatedUsername(c);
       const since = c.req.query('since');
       const sinceTimestamp = since ? parseInt(since, 10) : 0;
 
       // Get all answered offers
-      const answeredOffers = await storage.getAnsweredOffers(peerId);
+      const answeredOffers = await storage.getAnsweredOffers(username);
       const filteredAnswers = since
         ? answeredOffers.filter(offer => offer.answeredAt && offer.answeredAt > sinceTimestamp)
         : answeredOffers;
 
-      // Get all peer's offers
-      const allOffers = await storage.getOffersByPeerId(peerId);
+      // Get all user's offers
+      const allOffers = await storage.getOffersByUsername(username);
 
       // For each offer, get ICE candidates from both sides
       const iceCandidatesByOffer: Record<string, any[]> = {};
@@ -587,7 +569,7 @@ export function createApp(storage: Storage, config: Config) {
           allCandidates.push({
             candidate: c.candidate,
             role: 'offerer',
-            peerId: c.peerId,
+            username: c.username,
             createdAt: c.createdAt
           });
         }
@@ -598,7 +580,7 @@ export function createApp(storage: Storage, config: Config) {
           allCandidates.push({
             candidate: c.candidate,
             role: 'answerer',
-            peerId: c.peerId,
+            username: c.username,
             createdAt: c.createdAt
           });
         }
@@ -612,7 +594,7 @@ export function createApp(storage: Storage, config: Config) {
         answers: filteredAnswers.map(offer => ({
           offerId: offer.id,
           serviceId: offer.serviceId,
-          answererId: offer.answererPeerId,
+          answererId: offer.answererUsername,
           sdp: offer.answerSdp,
           answeredAt: offer.answeredAt
         })),
@@ -639,7 +621,7 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'Missing or invalid required parameter: candidates' }, 400);
       }
 
-      const peerId = getAuthenticatedPeerId(c);
+      const username = getAuthenticatedUsername(c);
 
       // Get offer to determine role
       const offer = await storage.getOfferById(offerId);
@@ -648,9 +630,9 @@ export function createApp(storage: Storage, config: Config) {
       }
 
       // Determine role (offerer or answerer)
-      const role = offer.peerId === peerId ? 'offerer' : 'answerer';
+      const role = offer.username === username ? 'offerer' : 'answerer';
 
-      const count = await storage.addIceCandidates(offerId, peerId, role, candidates);
+      const count = await storage.addIceCandidates(offerId, username, role, candidates);
 
       return c.json({ count, offerId }, 200);
     } catch (err) {
@@ -668,7 +650,7 @@ export function createApp(storage: Storage, config: Config) {
       const serviceFqn = decodeURIComponent(c.req.param('fqn'));
       const offerId = c.req.param('offerId');
       const since = c.req.query('since');
-      const peerId = getAuthenticatedPeerId(c);
+      const username = getAuthenticatedUsername(c);
 
       // Get offer to determine role
       const offer = await storage.getOfferById(offerId);
@@ -677,7 +659,7 @@ export function createApp(storage: Storage, config: Config) {
       }
 
       // Get candidates for opposite role
-      const targetRole = offer.peerId === peerId ? 'answerer' : 'offerer';
+      const targetRole = offer.username === username ? 'answerer' : 'offerer';
       const sinceTimestamp = since ? parseInt(since, 10) : undefined;
 
       const candidates = await storage.getIceCandidates(offerId, targetRole, sinceTimestamp);

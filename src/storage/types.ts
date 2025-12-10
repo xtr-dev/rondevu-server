@@ -3,14 +3,14 @@
  */
 export interface Offer {
   id: string;
-  peerId: string;
+  username: string;
   serviceId?: string; // Optional link to service (null for standalone offers)
+  serviceFqn?: string; // Denormalized service FQN for easier queries
   sdp: string;
   createdAt: number;
   expiresAt: number;
   lastSeen: number;
-  secret?: string;
-  answererPeerId?: string;
+  answererUsername?: string;
   answerSdp?: string;
   answeredAt?: number;
 }
@@ -22,7 +22,7 @@ export interface Offer {
 export interface IceCandidate {
   id: number;
   offerId: string;
-  peerId: string;
+  username: string;
   role: 'offerer' | 'answerer';
   candidate: any; // Full candidate object as JSON - don't enforce structure
   createdAt: number;
@@ -33,11 +33,11 @@ export interface IceCandidate {
  */
 export interface CreateOfferRequest {
   id?: string;
-  peerId: string;
+  username: string;
   serviceId?: string; // Optional link to service
+  serviceFqn?: string; // Optional service FQN
   sdp: string;
   expiresAt: number;
-  secret?: string;
 }
 
 /**
@@ -100,11 +100,11 @@ export interface Storage {
   createOffers(offers: CreateOfferRequest[]): Promise<Offer[]>;
 
   /**
-   * Retrieves all offers from a specific peer
-   * @param peerId Peer identifier
-   * @returns Array of offers from the peer
+   * Retrieves all offers from a specific user
+   * @param username Username identifier
+   * @returns Array of offers from the user
    */
-  getOffersByPeerId(peerId: string): Promise<Offer[]>;
+  getOffersByUsername(username: string): Promise<Offer[]>;
 
   /**
    * Retrieves a specific offer by ID
@@ -116,10 +116,10 @@ export interface Storage {
   /**
    * Deletes an offer (with ownership verification)
    * @param offerId Offer identifier
-   * @param ownerPeerId Peer ID of the owner (for verification)
+   * @param ownerUsername Username of the owner (for verification)
    * @returns true if deleted, false if not found or not owned
    */
-  deleteOffer(offerId: string, ownerPeerId: string): Promise<boolean>;
+  deleteOffer(offerId: string, ownerUsername: string): Promise<boolean>;
 
   /**
    * Deletes all expired offers
@@ -131,36 +131,35 @@ export interface Storage {
   /**
    * Answers an offer (locks it to the answerer)
    * @param offerId Offer identifier
-   * @param answererPeerId Answerer's peer ID
+   * @param answererUsername Answerer's username
    * @param answerSdp WebRTC answer SDP
-   * @param secret Optional secret for protected offers
    * @returns Success status and optional error message
    */
-  answerOffer(offerId: string, answererPeerId: string, answerSdp: string, secret?: string): Promise<{
+  answerOffer(offerId: string, answererUsername: string, answerSdp: string): Promise<{
     success: boolean;
     error?: string;
   }>;
 
   /**
    * Retrieves all answered offers for a specific offerer
-   * @param offererPeerId Offerer's peer ID
+   * @param offererUsername Offerer's username
    * @returns Array of answered offers
    */
-  getAnsweredOffers(offererPeerId: string): Promise<Offer[]>;
+  getAnsweredOffers(offererUsername: string): Promise<Offer[]>;
 
   // ===== ICE Candidate Management =====
 
   /**
    * Adds ICE candidates for an offer
    * @param offerId Offer identifier
-   * @param peerId Peer ID posting the candidates
-   * @param role Role of the peer (offerer or answerer)
+   * @param username Username posting the candidates
+   * @param role Role of the user (offerer or answerer)
    * @param candidates Array of candidate objects (stored as plain JSON)
    * @returns Number of candidates added
    */
   addIceCandidates(
     offerId: string,
-    peerId: string,
+    username: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number>;

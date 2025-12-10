@@ -1,5 +1,3 @@
-import { generateSecretKey } from './crypto.ts';
-
 /**
  * Application configuration
  * Reads from environment variables with sensible defaults
@@ -10,7 +8,6 @@ export interface Config {
   storagePath: string;
   corsOrigins: string[];
   version: string;
-  authSecret: string;
   offerDefaultTtl: number;
   offerMaxTtl: number;
   offerMinTtl: number;
@@ -22,15 +19,6 @@ export interface Config {
  * Loads configuration from environment variables
  */
 export function loadConfig(): Config {
-  // Generate or load auth secret
-  let authSecret = process.env.AUTH_SECRET;
-  if (!authSecret) {
-    authSecret = generateSecretKey();
-    console.warn('WARNING: No AUTH_SECRET provided. Generated temporary secret:', authSecret);
-    console.warn('All peer credentials will be invalidated on server restart.');
-    console.warn('Set AUTH_SECRET environment variable to persist credentials across restarts.');
-  }
-
   return {
     port: parseInt(process.env.PORT || '3000', 10),
     storageType: (process.env.STORAGE_TYPE || 'sqlite') as 'sqlite' | 'memory',
@@ -39,7 +27,6 @@ export function loadConfig(): Config {
       ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
       : ['*'],
     version: process.env.VERSION || 'unknown',
-    authSecret,
     offerDefaultTtl: parseInt(process.env.OFFER_DEFAULT_TTL || '60000', 10),
     offerMaxTtl: parseInt(process.env.OFFER_MAX_TTL || '86400000', 10),
     offerMinTtl: parseInt(process.env.OFFER_MIN_TTL || '60000', 10),
