@@ -576,16 +576,35 @@ export function createApp(storage: Storage, config: Config) {
       // Get all peer's offers
       const allOffers = await storage.getOffersByPeerId(peerId);
 
-      // For each offer, get ICE candidates since timestamp
+      // For each offer, get ICE candidates from both sides
       const iceCandidatesByOffer: Record<string, any[]> = {};
       for (const offer of allOffers) {
-        // Get answerer ICE candidates (offerer polls for these)
-        const candidates = await storage.getIceCandidates(offer.id, 'answerer', sinceTimestamp);
-        if (candidates.length > 0) {
-          iceCandidatesByOffer[offer.id] = candidates.map(c => ({
+        const allCandidates = [];
+
+        // Get offerer ICE candidates (answerer polls for these, offerer can also see for debugging/sync)
+        const offererCandidates = await storage.getIceCandidates(offer.id, 'offerer', sinceTimestamp);
+        for (const c of offererCandidates) {
+          allCandidates.push({
             candidate: c.candidate,
+            role: 'offerer',
+            peerId: c.peerId,
             createdAt: c.createdAt
-          }));
+          });
+        }
+
+        // Get answerer ICE candidates (offerer polls for these)
+        const answererCandidates = await storage.getIceCandidates(offer.id, 'answerer', sinceTimestamp);
+        for (const c of answererCandidates) {
+          allCandidates.push({
+            candidate: c.candidate,
+            role: 'answerer',
+            peerId: c.peerId,
+            createdAt: c.createdAt
+          });
+        }
+
+        if (allCandidates.length > 0) {
+          iceCandidatesByOffer[offer.id] = allCandidates;
         }
       }
 
