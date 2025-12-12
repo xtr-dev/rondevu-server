@@ -336,6 +336,19 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
+    // Validate each offer has valid SDP
+    offers.forEach((offer, index) => {
+      if (!offer || typeof offer !== 'object') {
+        throw new Error(`Invalid offer at index ${index}: must be an object`);
+      }
+      if (!offer.sdp || typeof offer.sdp !== 'string') {
+        throw new Error(`Invalid offer at index ${index}: missing or invalid SDP`);
+      }
+      if (!offer.sdp.trim()) {
+        throw new Error(`Invalid offer at index ${index}: SDP cannot be empty`);
+      }
+    });
+
     // Create service with offers
     const now = Date.now();
     const offerTtl =
