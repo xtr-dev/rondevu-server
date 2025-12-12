@@ -151,35 +151,6 @@ const handlers: Record<string, RpcHandler> = {
   },
 
   /**
-   * Claim a username
-   */
-  async claimUsername(params, message, signature, publicKey, storage, config) {
-    const { username, publicKey: paramPublicKey } = params;
-
-    // Validate claim
-    const validation = await validateUsernameClaim(
-      username,
-      paramPublicKey,
-      signature,
-      message
-    );
-
-    if (!validation.valid) {
-      throw new Error(validation.error || 'Invalid username claim');
-    }
-
-    // Claim the username
-    const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 365 days
-    await storage.claimUsername({
-      username,
-      publicKey: paramPublicKey,
-      expiresAt,
-    });
-
-    return { success: true, username };
-  },
-
-  /**
    * Get service by FQN
    */
   async getService(params, message, signature, publicKey, storage, config) {
