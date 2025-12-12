@@ -365,7 +365,7 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
-    // Create service
+    // Create service with offers
     const now = Date.now();
     const offerTtl =
       ttl !== undefined
@@ -376,39 +376,32 @@ const handlers: Record<string, RpcHandler> = {
         : config.offerDefaultTtl;
     const expiresAt = now + offerTtl;
 
-    const service = await storage.createService({
+    // Prepare offer requests with TTL
+    const offerRequests = offers.map(offer => ({
       username,
       serviceFqn,
-      serviceName: parsed.service,
-      version: parsed.version,
+      sdp: offer.sdp,
       expiresAt,
+    }));
+
+    const result = await storage.createService({
+      serviceFqn,
+      expiresAt,
+      offers: offerRequests,
     });
 
-    // Create offers
-    const createdOffers = [];
-    for (const offer of offers) {
-      const createdOffer = await storage.createOffer({
-        username,
-        serviceId: service.id,
-        serviceFqn,
-        sdp: offer.sdp,
-        ttl: offerTtl,
-      });
-      createdOffers.push({
-        offerId: createdOffer.id,
-        sdp: createdOffer.sdp,
-        createdAt: createdOffer.createdAt,
-        expiresAt: createdOffer.expiresAt,
-      });
-    }
-
     return {
-      serviceId: service.id,
-      username: service.username,
-      serviceFqn: service.serviceFqn,
-      offers: createdOffers,
-      createdAt: service.createdAt,
-      expiresAt: service.expiresAt,
+      serviceId: result.service.id,
+      username: result.service.username,
+      serviceFqn: result.service.serviceFqn,
+      offers: result.offers.map(offer => ({
+        offerId: offer.id,
+        sdp: offer.sdp,
+        createdAt: offer.createdAt,
+        expiresAt: offer.expiresAt,
+      })),
+      createdAt: result.service.createdAt,
+      expiresAt: result.service.expiresAt,
     };
   },
 
