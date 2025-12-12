@@ -507,43 +507,11 @@ export function createApp(storage: Storage, config: Config) {
   });
 
   /**
-   * GET /offers/answered
-   * Get all answered offers for the authenticated peer (efficient batch polling)
-   */
-  app.get('/offers/answered', authMiddleware, async (c) => {
-    try {
-      const username = getAuthenticatedUsername(c);
-      const since = c.req.query('since');
-      const sinceTimestamp = since ? parseInt(since, 10) : 0;
-
-      const offers = await storage.getAnsweredOffers(username);
-
-      // Filter by timestamp if provided
-      const filteredOffers = since
-        ? offers.filter(offer => offer.answeredAt && offer.answeredAt > sinceTimestamp)
-        : offers;
-
-      return c.json({
-        offers: filteredOffers.map(offer => ({
-          offerId: offer.id,
-          serviceId: offer.serviceId,
-          answererId: offer.answererUsername,
-          sdp: offer.answerSdp,
-          answeredAt: offer.answeredAt
-        }))
-      }, 200);
-    } catch (err) {
-      console.error('Error getting answered offers:', err);
-      return c.json({ error: 'Internal server error' }, 500);
-    }
-  });
-
-  /**
-   * GET /offers/poll
+   * GET /poll
    * Combined efficient polling endpoint for answers and ICE candidates
    * Returns all answered offers and ICE candidates for all peer's offers since timestamp
    */
-  app.get('/offers/poll', authMiddleware, async (c) => {
+  app.get('/poll', authMiddleware, async (c) => {
     try {
       const username = getAuthenticatedUsername(c);
       const since = c.req.query('since');

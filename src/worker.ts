@@ -1,6 +1,5 @@
 import { createApp } from './app.ts';
 import { D1Storage } from './storage/d1.ts';
-import { generateSecretKey } from './crypto.ts';
 import { Config } from './config.ts';
 
 /**
@@ -8,7 +7,6 @@ import { Config } from './config.ts';
  */
 export interface Env {
   DB: D1Database;
-  AUTH_SECRET?: string;
   OFFER_DEFAULT_TTL?: string;
   OFFER_MAX_TTL?: string;
   OFFER_MIN_TTL?: string;
@@ -24,9 +22,6 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // Initialize D1 storage
     const storage = new D1Storage(env.DB);
-
-    // Generate or use provided auth secret
-    const authSecret = env.AUTH_SECRET || generateSecretKey();
 
     // Build config from environment
     const config: Config = {

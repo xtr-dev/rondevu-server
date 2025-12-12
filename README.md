@@ -309,37 +309,13 @@ Get answer SDP (offerer polls this)
 
 Returns 404 if not yet answered.
 
-#### `GET /offers/answered`
-Get all answered offers (efficient batch polling for offerer)
+#### `GET /poll`
+Combined polling endpoint for answers and ICE candidates
 
 **Query Parameters:**
 - `username` - Your username
 - `signature` - Base64-encoded Ed25519 signature
-- `message` - Signed message (format: `getAnsweredOffers:{username}:{timestamp}`)
-- `since` - Optional timestamp to get only new answers
-
-**Response:**
-```json
-{
-  "offers": [
-    {
-      "offerId": "offer-hash",
-      "serviceId": "service-uuid",
-      "answererUsername": "bob",
-      "sdp": "v=0...",
-      "answeredAt": 1733404800000
-    }
-  ]
-}
-```
-
-#### `GET /offers/poll`
-Combined polling for answers and ICE candidates (offerer)
-
-**Query Parameters:**
-- `username` - Your username
-- `signature` - Base64-encoded Ed25519 signature
-- `message` - Signed message (format: `pollOffers:{username}:{timestamp}`)
+- `message` - Signed message (format: `poll:{username}:{timestamp}`)
 - `since` - Optional timestamp to get only new data
 
 **Response:**
@@ -366,8 +342,6 @@ Combined polling for answers and ICE candidates (offerer)
   }
 }
 ```
-
-More efficient than polling answers and ICE separately - reduces HTTP requests by 50%.
 
 #### `POST /services/:fqn/offers/:offerId/ice-candidates`
 Add ICE candidates to specific offer
@@ -517,7 +491,7 @@ See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
 - Removed UUID privacy layer - direct FQN-based access
 - Removed public/private service distinction
 - Added service discovery (random and paginated)
-- Added combined polling endpoint (/offers/poll)
+- Unified polling endpoint (/poll replaces /offers/answered and /offers/poll)
 - ICE candidate endpoints moved to offer-specific routes
 
 ## License
