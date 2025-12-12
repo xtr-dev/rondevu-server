@@ -32,7 +32,6 @@ export default {
         ? env.CORS_ORIGINS.split(',').map(o => o.trim())
         : ['*'],
       version: env.VERSION || 'unknown',
-      authSecret,
       offerDefaultTtl: env.OFFER_DEFAULT_TTL ? parseInt(env.OFFER_DEFAULT_TTL, 10) : 60000,
       offerMaxTtl: env.OFFER_MAX_TTL ? parseInt(env.OFFER_MAX_TTL, 10) : 86400000,
       offerMinTtl: env.OFFER_MIN_TTL ? parseInt(env.OFFER_MIN_TTL, 10) : 60000,
