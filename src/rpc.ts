@@ -9,6 +9,7 @@ import {
   isVersionCompatible,
   verifyEd25519Signature,
   validateAuthMessage,
+  validateUsername,
 } from './crypto.ts';
 
 /**
@@ -67,18 +68,15 @@ async function verifyAuth(
     }
 
     // Validate username format before claiming
-    const validation = await validateUsernameClaim(
-      username,
-      publicKey,
-      signature,
-      message
-    );
+    const usernameValidation = validateUsername(username);
+    if (!usernameValidation.valid) {
+      return usernameValidation;
+    }
 
-    if (!validation.valid) {
-      return {
-        valid: false,
-        error: validation.error || 'Invalid username claim',
-      };
+    // Verify signature against the current message (not a claim message)
+    const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
+    if (!signatureValid) {
+      return { valid: false, error: 'Invalid signature for auto-claim' };
     }
 
     // Auto-claim the username
