@@ -67,12 +67,12 @@ async function verifyAuth(
     }
 
     // Validate username format before claiming
-    const validation = await validateUsernameClaim({
+    const validation = await validateUsernameClaim(
       username,
       publicKey,
       signature,
-      message,
-    });
+      message
+    );
 
     if (!validation.valid) {
       return {
@@ -159,12 +159,12 @@ const handlers: Record<string, RpcHandler> = {
     const { username, publicKey: paramPublicKey } = params;
 
     // Validate claim
-    const validation = await validateUsernameClaim({
+    const validation = await validateUsernameClaim(
       username,
-      publicKey: paramPublicKey,
+      paramPublicKey,
       signature,
-      message,
-    });
+      message
+    );
 
     if (!validation.valid) {
       throw new Error(validation.error || 'Invalid username claim');
