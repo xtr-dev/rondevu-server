@@ -265,7 +265,7 @@ const handlers: Record<string, RpcHandler> = {
         throw new Error('Service not found');
       }
 
-      const offers = await storage.getOffersByService(service.id);
+      const offers = await storage.getOffersForService(service.id);
       const availableOffer = offers.find((o) => !o.answererUsername);
 
       if (!availableOffer) {
@@ -304,7 +304,7 @@ const handlers: Record<string, RpcHandler> = {
       compatibleServices[
         Math.floor(Math.random() * compatibleServices.length)
       ];
-    const offers = await storage.getOffersByService(randomService.id);
+    const offers = await storage.getOffersForService(randomService.id);
     const availableOffer = offers.find((o) => !o.answererUsername);
 
     if (!availableOffer) {
