@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/@xtr-dev/rondevu-server)](https://www.npmjs.com/package/@xtr-dev/rondevu-server)
 
-🌐 **Simple WebRTC signaling with username-based discovery**
+🌐 **Simple WebRTC signaling with RPC interface**
 
-Scalable WebRTC signaling server with cryptographic username claiming, service publishing with semantic versioning, and efficient offer/answer exchange.
+Scalable WebRTC signaling server with cryptographic username claiming, service publishing with semantic versioning, and efficient offer/answer exchange via JSON-RPC interface.
 
 **Related repositories:**
 - [@xtr-dev/rondevu-client](https://github.com/xtr-dev/rondevu-client) - TypeScript client library ([npm](https://www.npmjs.com/package/@xtr-dev/rondevu-client))
@@ -15,14 +15,14 @@ Scalable WebRTC signaling server with cryptographic username claiming, service p
 
 ## Features
 
+- **RPC Interface**: Single endpoint for all operations with batching support
 - **Username Claiming**: Cryptographic username ownership with Ed25519 signatures (365-day validity, auto-renewed on use)
-- **Anonymous Users**: Support for `anon-*` usernames for quick testing
 - **Service Publishing**: Service:version@username naming (e.g., `chat:1.0.0@alice`)
 - **Service Discovery**: Random and paginated discovery for finding services without knowing usernames
 - **Semantic Versioning**: Compatible version matching (chat:1.0.0 matches any 1.x.x)
 - **Signature-Based Authentication**: All authenticated requests use Ed25519 signatures
 - **Complete WebRTC Signaling**: Offer/answer exchange and ICE candidate relay
-- **Efficient Batch Polling**: Combined endpoint for answers and ICE candidates (50% fewer HTTP requests)
+- **Batch Operations**: Execute multiple operations in a single HTTP request
 - **Dual Storage**: SQLite (Node.js/Docker) and Cloudflare D1 (Workers) backends
 
 ## Architecture
@@ -58,67 +58,136 @@ docker build -t rondevu . && docker run -p 3000:3000 -e STORAGE_PATH=:memory: ro
 npx wrangler deploy
 ```
 
-## API Endpoints
+## RPC Interface
 
-### Public Endpoints
+All API calls are made to `POST /rpc` with JSON-RPC format.
 
-#### `GET /`
-Returns server version and info
+### Request Format
+
+**Single method call:**
+```json
+{
+  "method": "getUser",
+  "message": "getUser:alice:1733404800000",
+  "signature": "base64-encoded-signature",
+  "params": {
+    "username": "alice"
+  }
+}
+```
+
+**Batch calls:**
+```json
+[
+  {
+    "method": "getUser",
+    "message": "getUser:alice:1733404800000",
+    "signature": "base64-encoded-signature",
+    "params": { "username": "alice" }
+  },
+  {
+    "method": "claimUsername",
+    "message": "claim:bob:1733404800000",
+    "signature": "base64-encoded-signature",
+    "params": {
+      "username": "bob",
+      "publicKey": "base64-encoded-public-key"
+    }
+  }
+]
+```
+
+### Response Format
+
+**Single response:**
+```json
+{
+  "success": true,
+  "result": {
+    "username": "alice",
+    "available": false,
+    "claimedAt": 1733404800000,
+    "expiresAt": 1765027200000,
+    "publicKey": "base64-encoded-public-key"
+  }
+}
+```
+
+**Batch responses:**
+```json
+[
+  {
+    "success": true,
+    "result": { "username": "alice", "available": false }
+  },
+  {
+    "success": true,
+    "result": { "success": true, "username": "bob" }
+  }
+]
+```
+
+**Error response:**
+```json
+{
+  "success": false,
+  "error": "Username already claimed by different public key"
+}
+```
+
+## RPC Methods
+
+### `getUser`
+Check username availability
+
+**Parameters:**
+- `username` - Username to check
+
+**Message format:** `getUser:{username}:{timestamp}` (no authentication required)
+
+**Example:**
+```json
+{
+  "method": "getUser",
+  "message": "getUser:alice:1733404800000",
+  "signature": "base64-signature",
+  "params": { "username": "alice" }
+}
+```
 
 **Response:**
 ```json
 {
-  "version": "0.4.0",
-  "name": "Rondevu",
-  "description": "DNS-like WebRTC signaling with username claiming and service discovery"
+  "success": true,
+  "result": {
+    "username": "alice",
+    "available": false,
+    "claimedAt": 1733404800000,
+    "expiresAt": 1765027200000,
+    "publicKey": "base64-encoded-public-key"
+  }
 }
 ```
 
-#### `GET /health`
-Health check endpoint with version
-
-**Response:**
-```json
-{
-  "status": "ok",
-  "timestamp": 1733404800000,
-  "version": "0.4.0"
-}
-```
-
-### User Management
-
-#### `GET /users/:username`
-Check username availability and claim status
-
-**Response (Available):**
-```json
-{
-  "username": "alice",
-  "available": true
-}
-```
-
-**Response (Claimed):**
-```json
-{
-  "username": "alice",
-  "available": false,
-  "claimedAt": 1733404800000,
-  "expiresAt": 1765027200000,
-  "publicKey": "base64-encoded-ed25519-public-key"
-}
-```
-
-#### `POST /users/:username`
+### `claimUsername`
 Claim a username with cryptographic proof
 
-**Request:**
+**Parameters:**
+- `username` - Username to claim
+- `publicKey` - Base64-encoded Ed25519 public key
+
+**Message format:** `claim:{username}:{timestamp}`
+
+**Example:**
 ```json
 {
-  "publicKey": "base64-encoded-ed25519-public-key",
-  "signature": "base64-encoded-signature",
-  "message": "claim:alice:1733404800000"
+  "method": "claimUsername",
+  "message": "claim:alice:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "username": "alice",
+    "publicKey": "base64-encoded-public-key"
+  }
 }
 ```
 
@@ -126,158 +195,37 @@ Claim a username with cryptographic proof
 ```json
 {
   "success": true,
-  "username": "alice"
+  "result": {
+    "success": true,
+    "username": "alice"
+  }
 }
 ```
 
-**Validation:**
-- Username format: `^[a-z0-9][a-z0-9-]*[a-z0-9]$` (3-32 characters)
-- Signature must be valid Ed25519 signature
-- Timestamp must be within 5 minutes (replay protection)
-- Expires after 365 days, auto-renewed on use
+### `getService`
+Get service by FQN (direct lookup, random discovery, or paginated)
 
-### Service Management
+**Parameters:**
+- `serviceFqn` - Service FQN (e.g., `chat:1.0.0` or `chat:1.0.0@alice`)
+- `limit` - (optional) Number of results for paginated mode
+- `offset` - (optional) Offset for paginated mode
 
-#### `POST /services`
-Publish a service with offers (requires username and signature)
+**Message format:** `getService:{username}:{serviceFqn}:{timestamp}`
 
-**Request:**
+**Modes:**
+1. **Direct lookup** (with @username): Returns specific user's service
+2. **Random** (without @username, no limit): Returns random service
+3. **Paginated** (without @username, with limit): Returns multiple services
+
+**Example:**
 ```json
 {
-  "username": "alice",
-  "serviceFqn": "chat:1.0.0@alice",
-  "offers": [
-    { "sdp": "v=0..." },
-    { "sdp": "v=0..." }
-  ],
-  "ttl": 300000,
-  "signature": "base64-encoded-signature",
-  "message": "publish:alice:chat:1.0.0@alice:1733404800000"
-}
-```
-
-**Response:**
-```json
-{
-  "serviceId": "uuid-v4",
-  "username": "alice",
-  "serviceFqn": "chat:1.0.0@alice",
-  "offers": [
-    {
-      "offerId": "offer-hash-1",
-      "sdp": "v=0...",
-      "createdAt": 1733404800000,
-      "expiresAt": 1733405100000
-    }
-  ],
-  "createdAt": 1733404800000,
-  "expiresAt": 1733405100000
-}
-```
-
-**Service FQN Format:**
-- Format: `service:version@username`
-- Service name: Lowercase alphanumeric + dash (e.g., `chat`, `video-call`)
-- Version: Semantic versioning (e.g., `1.0.0`, `2.1.3`)
-- Username: Claimed username
-- Example: `chat:1.0.0@alice`
-
-**Validation:**
-- Service name pattern: `^[a-z0-9][a-z0-9-]*[a-z0-9]$`
-- Version pattern: `^[0-9]+\.[0-9]+\.[0-9]+$`
-- Must include @username
-
-#### `GET /services/:fqn`
-Get service by FQN - Three modes:
-
-**1. Direct Lookup (with username):**
-```
-GET /services/chat:1.0.0@alice
-```
-Returns first available offer from Alice's chat:1.0.0 service.
-
-**2. Random Discovery (without username):**
-```
-GET /services/chat:1.0.0
-```
-Returns a random available offer from any user's chat:1.0.0 service.
-
-**3. Paginated Discovery (with query params):**
-```
-GET /services/chat:1.0.0?limit=10&offset=0
-```
-Returns array of unique available offers from different users.
-
-**Semver Matching:**
-- Requesting `chat:1.0.0` matches any `1.x.x` version
-- Major version must match exactly (`chat:1.0.0` will NOT match `chat:2.0.0`)
-- For major version 0, minor must also match (`0.1.0` will NOT match `0.2.0`)
-- Returns the most recently published compatible version
-
-**Response (Single Offer):**
-```json
-{
-  "serviceId": "uuid",
-  "username": "alice",
-  "serviceFqn": "chat:1.0.0@alice",
-  "offerId": "offer-hash",
-  "sdp": "v=0...",
-  "createdAt": 1733404800000,
-  "expiresAt": 1733405100000
-}
-```
-
-**Response (Paginated):**
-```json
-{
-  "services": [
-    {
-      "serviceId": "uuid",
-      "username": "alice",
-      "serviceFqn": "chat:1.0.0@alice",
-      "offerId": "offer-hash",
-      "sdp": "v=0...",
-      "createdAt": 1733404800000,
-      "expiresAt": 1733405100000
-    }
-  ],
-  "count": 1,
-  "limit": 10,
-  "offset": 0
-}
-```
-
-#### `DELETE /services/:fqn`
-Unpublish a service (requires username, signature, and ownership)
-
-**Request:**
-```json
-{
-  "username": "alice",
-  "signature": "base64-encoded-signature",
-  "message": "deleteService:alice:chat:1.0.0@alice:1733404800000"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true
-}
-```
-
-### WebRTC Signaling
-
-#### `POST /services/:fqn/offers/:offerId/answer`
-Post answer SDP to specific offer
-
-**Request:**
-```json
-{
-  "username": "bob",
-  "sdp": "v=0...",
-  "signature": "base64-encoded-signature",
-  "message": "answerOffer:{username}:{offerId}:{timestamp}"
+  "method": "getService",
+  "message": "getService:bob:chat:1.0.0:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "serviceFqn": "chat:1.0.0@alice"
+  }
 }
 ```
 
@@ -285,118 +233,297 @@ Post answer SDP to specific offer
 ```json
 {
   "success": true,
-  "offerId": "offer-hash"
+  "result": {
+    "serviceId": "uuid",
+    "username": "alice",
+    "serviceFqn": "chat:1.0.0@alice",
+    "offerId": "offer-hash",
+    "sdp": "v=0...",
+    "createdAt": 1733404800000,
+    "expiresAt": 1733405100000
+  }
 }
 ```
 
-#### `GET /services/:fqn/offers/:offerId/answer`
-Get answer SDP (offerer polls this)
+### `publishService`
+Publish a service with offers
 
-**Query Parameters:**
-- `username` - Your username
-- `signature` - Base64-encoded Ed25519 signature
-- `message` - Signed message (format: `getAnswer:{username}:{offerId}:{timestamp}`)
+**Parameters:**
+- `serviceFqn` - Service FQN with username (e.g., `chat:1.0.0@alice`)
+- `offers` - Array of offers, each with `sdp` field
+- `ttl` - (optional) Time to live in milliseconds
+
+**Message format:** `publishService:{username}:{serviceFqn}:{timestamp}`
+
+**Example:**
+```json
+{
+  "method": "publishService",
+  "message": "publishService:alice:chat:1.0.0@alice:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "serviceFqn": "chat:1.0.0@alice",
+    "offers": [
+      { "sdp": "v=0..." },
+      { "sdp": "v=0..." }
+    ],
+    "ttl": 300000
+  }
+}
+```
 
 **Response:**
 ```json
 {
-  "sdp": "v=0...",
-  "offerId": "offer-hash",
-  "answererUsername": "bob",
-  "answeredAt": 1733404800000
-}
-```
-
-Returns 404 if not yet answered.
-
-#### `GET /poll`
-Combined polling endpoint for answers and ICE candidates
-
-**Query Parameters:**
-- `username` - Your username
-- `signature` - Base64-encoded Ed25519 signature
-- `message` - Signed message (format: `poll:{username}:{timestamp}`)
-- `since` - Optional timestamp to get only new data
-
-**Response:**
-```json
-{
-  "answers": [
-    {
-      "offerId": "offer-hash",
-      "serviceId": "service-uuid",
-      "answererUsername": "bob",
-      "sdp": "v=0...",
-      "answeredAt": 1733404800000
-    }
-  ],
-  "iceCandidates": {
-    "offer-hash": [
+  "success": true,
+  "result": {
+    "serviceId": "uuid",
+    "username": "alice",
+    "serviceFqn": "chat:1.0.0@alice",
+    "offers": [
       {
-        "candidate": { "candidate": "...", "sdpMid": "0", "sdpMLineIndex": 0 },
-        "role": "answerer",
-        "username": "bob",
-        "createdAt": 1733404800000
+        "offerId": "offer-hash-1",
+        "sdp": "v=0...",
+        "createdAt": 1733404800000,
+        "expiresAt": 1733405100000
+      }
+    ],
+    "createdAt": 1733404800000,
+    "expiresAt": 1733405100000
+  }
+}
+```
+
+### `deleteService`
+Delete a service
+
+**Parameters:**
+- `serviceFqn` - Service FQN with username
+
+**Message format:** `deleteService:{username}:{serviceFqn}:{timestamp}`
+
+**Example:**
+```json
+{
+  "method": "deleteService",
+  "message": "deleteService:alice:chat:1.0.0@alice:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "serviceFqn": "chat:1.0.0@alice"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "result": { "success": true }
+}
+```
+
+### `answerOffer`
+Answer a specific offer
+
+**Parameters:**
+- `serviceFqn` - Service FQN
+- `offerId` - Offer ID
+- `sdp` - Answer SDP
+
+**Message format:** `answerOffer:{username}:{offerId}:{timestamp}`
+
+**Example:**
+```json
+{
+  "method": "answerOffer",
+  "message": "answerOffer:bob:offer-hash:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "serviceFqn": "chat:1.0.0@alice",
+    "offerId": "offer-hash",
+    "sdp": "v=0..."
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "result": {
+    "success": true,
+    "offerId": "offer-hash"
+  }
+}
+```
+
+### `getOfferAnswer`
+Get answer for an offer (offerer polls this)
+
+**Parameters:**
+- `serviceFqn` - Service FQN
+- `offerId` - Offer ID
+
+**Message format:** `getOfferAnswer:{username}:{offerId}:{timestamp}`
+
+**Example:**
+```json
+{
+  "method": "getOfferAnswer",
+  "message": "getOfferAnswer:alice:offer-hash:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "serviceFqn": "chat:1.0.0@alice",
+    "offerId": "offer-hash"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "result": {
+    "sdp": "v=0...",
+    "offerId": "offer-hash",
+    "answererId": "bob",
+    "answeredAt": 1733404800000
+  }
+}
+```
+
+### `poll`
+Combined polling for answers and ICE candidates
+
+**Parameters:**
+- `since` - (optional) Timestamp to get only new data
+
+**Message format:** `poll:{username}:{timestamp}`
+
+**Example:**
+```json
+{
+  "method": "poll",
+  "message": "poll:alice:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "since": 1733404800000
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "result": {
+    "answers": [
+      {
+        "offerId": "offer-hash",
+        "serviceId": "service-uuid",
+        "answererId": "bob",
+        "sdp": "v=0...",
+        "answeredAt": 1733404800000
+      }
+    ],
+    "iceCandidates": {
+      "offer-hash": [
+        {
+          "candidate": { "candidate": "...", "sdpMid": "0", "sdpMLineIndex": 0 },
+          "role": "answerer",
+          "username": "bob",
+          "createdAt": 1733404800000
+        }
+      ]
+    }
+  }
+}
+```
+
+### `addIceCandidates`
+Add ICE candidates to an offer
+
+**Parameters:**
+- `serviceFqn` - Service FQN
+- `offerId` - Offer ID
+- `candidates` - Array of ICE candidates
+
+**Message format:** `addIceCandidates:{username}:{offerId}:{timestamp}`
+
+**Example:**
+```json
+{
+  "method": "addIceCandidates",
+  "message": "addIceCandidates:alice:offer-hash:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "serviceFqn": "chat:1.0.0@alice",
+    "offerId": "offer-hash",
+    "candidates": [
+      {
+        "candidate": "candidate:...",
+        "sdpMid": "0",
+        "sdpMLineIndex": 0
       }
     ]
   }
 }
 ```
 
-#### `POST /services/:fqn/offers/:offerId/ice-candidates`
-Add ICE candidates to specific offer
-
-**Request:**
+**Response:**
 ```json
 {
-  "username": "alice",
-  "candidates": [
-    {
-      "candidate": "candidate:...",
-      "sdpMid": "0",
-      "sdpMLineIndex": 0
-    }
-  ],
-  "signature": "base64-encoded-signature",
-  "message": "addIceCandidates:{username}:{offerId}:{timestamp}"
+  "success": true,
+  "result": {
+    "count": 1,
+    "offerId": "offer-hash"
+  }
+}
+```
+
+### `getIceCandidates`
+Get ICE candidates for an offer
+
+**Parameters:**
+- `serviceFqn` - Service FQN
+- `offerId` - Offer ID
+- `since` - (optional) Timestamp to get only new candidates
+
+**Message format:** `getIceCandidates:{username}:{offerId}:{timestamp}`
+
+**Example:**
+```json
+{
+  "method": "getIceCandidates",
+  "message": "getIceCandidates:alice:offer-hash:1733404800000",
+  "signature": "base64-signature",
+  "params": {
+    "serviceFqn": "chat:1.0.0@alice",
+    "offerId": "offer-hash",
+    "since": 1733404800000
+  }
 }
 ```
 
 **Response:**
 ```json
 {
-  "count": 1,
-  "offerId": "offer-hash"
+  "success": true,
+  "result": {
+    "candidates": [
+      {
+        "candidate": {
+          "candidate": "candidate:...",
+          "sdpMid": "0",
+          "sdpMLineIndex": 0
+        },
+        "createdAt": 1733404800000
+      }
+    ],
+    "offerId": "offer-hash"
+  }
 }
 ```
-
-#### `GET /services/:fqn/offers/:offerId/ice-candidates`
-Get ICE candidates for specific offer
-
-**Query Parameters:**
-- `username` - Your username
-- `signature` - Base64-encoded Ed25519 signature
-- `message` - Signed message (format: `getIceCandidates:{username}:{offerId}:{timestamp}`)
-- `since` - Optional timestamp to get only new candidates
-
-**Response:**
-```json
-{
-  "candidates": [
-    {
-      "candidate": {
-        "candidate": "candidate:...",
-        "sdpMid": "0",
-        "sdpMLineIndex": 0
-      },
-      "createdAt": 1733404800000
-    }
-  ],
-  "offerId": "offer-hash"
-}
-```
-
-**Note:** Returns candidates from the opposite role (offerer gets answerer candidates and vice versa)
 
 ## Configuration
 
@@ -456,9 +583,9 @@ Environment variables:
 
 ### Ed25519 Signature Authentication
 All authenticated requests require:
-- **username**: Your claimed username
-- **signature**: Base64-encoded Ed25519 signature of the message
 - **message**: Signed message with format-specific structure
+- **signature**: Base64-encoded Ed25519 signature of the message
+- Username is extracted from the message
 
 ### Username Claiming
 - **Algorithm**: Ed25519 signatures
@@ -474,7 +601,7 @@ All authenticated requests require:
 
 ### Service Publishing
 - **Ownership Verification**: Every publish requires username signature
-- **Message Format**: `publish:{username}:{serviceFqn}:{timestamp}`
+- **Message Format**: `publishService:{username}:{serviceFqn}:{timestamp}`
 - **Auto-Renewal**: Publishing a service extends username expiry
 
 ### ICE Candidate Filtering
@@ -482,17 +609,15 @@ All authenticated requests require:
 - Offerers receive only answerer candidates
 - Answerers receive only offerer candidates
 
-## Migration from v0.3.x
+## Migration from v0.4.x
 
 See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
 
 **Key Changes:**
-- Service FQN format changed from `service@version` to `service:version@username`
-- Removed UUID privacy layer - direct FQN-based access
-- Removed public/private service distinction
-- Added service discovery (random and paginated)
-- Unified polling endpoint (/poll replaces /offers/answered and /offers/poll)
-- ICE candidate endpoints moved to offer-specific routes
+- Moved from REST API to RPC interface with single `/rpc` endpoint
+- All methods now use POST with JSON body
+- Batch operations supported
+- Authentication is per-method instead of per-endpoint middleware
 
 ## License
 
