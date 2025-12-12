@@ -228,7 +228,7 @@ const handlers: Record<string, RpcHandler> = {
       for (const service of compatibleServices) {
         if (!usernameSet.has(service.username)) {
           usernameSet.add(service.username);
-          const offers = await storage.getOffersByService(service.id);
+          const offers = await storage.getOffersForService(service.id);
           const availableOffer = offers.find((o) => !o.answererUsername);
 
           if (availableOffer) {
