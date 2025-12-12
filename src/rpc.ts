@@ -154,7 +154,10 @@ const handlers: Record<string, RpcHandler> = {
   },
 
   /**
-   * Get service by FQN
+   * Get service by FQN - Supports 3 modes:
+   * 1. Direct lookup: FQN includes @username
+   * 2. Paginated discovery: FQN without @username, with limit/offset
+   * 3. Random discovery: FQN without @username, no limit
    */
   async getService(params, message, signature, publicKey, storage, config) {
     const { serviceFqn, limit, offset } = params;
@@ -179,50 +182,59 @@ const handlers: Record<string, RpcHandler> = {
       throw new Error('Failed to parse service FQN');
     }
 
-    // Paginated discovery mode
-    if (limit !== undefined) {
-      const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
-      const pageOffset = Math.max(0, offset || 0);
-
-      const allServices = await storage.getServicesByName(
-        parsed.service,
-        parsed.version
-      );
-      const compatibleServices = allServices.filter((s) => {
+    // Helper: Filter services by version compatibility
+    const filterCompatibleServices = (services) => {
+      return services.filter((s) => {
         const serviceVersion = parseServiceFqn(s.serviceFqn);
         return (
           serviceVersion &&
           isVersionCompatible(parsed.version, serviceVersion.version)
         );
       });
+    };
 
+    // Helper: Find available offer for service
+    const findAvailableOffer = async (service) => {
+      const offers = await storage.getOffersForService(service.id);
+      return offers.find((o) => !o.answererUsername);
+    };
+
+    // Helper: Build service response object
+    const buildServiceResponse = (service, offer) => ({
+      serviceId: service.id,
+      username: service.username,
+      serviceFqn: service.serviceFqn,
+      offerId: offer.id,
+      sdp: offer.sdp,
+      createdAt: service.createdAt,
+      expiresAt: service.expiresAt,
+    });
+
+    // Mode 1: Paginated discovery
+    if (limit !== undefined) {
+      const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
+      const pageOffset = Math.max(0, offset || 0);
+
+      const allServices = await storage.getServicesByName(parsed.service, parsed.version);
+      const compatibleServices = filterCompatibleServices(allServices);
+
+      // Get unique services per username with available offers
       const usernameSet = new Set<string>();
       const uniqueServices: any[] = [];
 
       for (const service of compatibleServices) {
         if (!usernameSet.has(service.username)) {
           usernameSet.add(service.username);
-          const offers = await storage.getOffersForService(service.id);
-          const availableOffer = offers.find((o) => !o.answererUsername);
+          const availableOffer = await findAvailableOffer(service);
 
           if (availableOffer) {
-            uniqueServices.push({
-              serviceId: service.id,
-              username: service.username,
-              serviceFqn: service.serviceFqn,
-              offerId: availableOffer.id,
-              sdp: availableOffer.sdp,
-              createdAt: service.createdAt,
-              expiresAt: service.expiresAt,
-            });
+            uniqueServices.push(buildServiceResponse(service, availableOffer));
           }
         }
       }
 
-      const paginatedServices = uniqueServices.slice(
-        pageOffset,
-        pageOffset + pageLimit
-      );
+      // Paginate results
+      const paginatedServices = uniqueServices.slice(pageOffset, pageOffset + pageLimit);
 
       return {
         services: paginatedServices,
@@ -232,68 +244,37 @@ const handlers: Record<string, RpcHandler> = {
       };
     }
 
-    // Direct lookup with username
+    // Mode 2: Direct lookup with username
     if (parsed.username) {
       const service = await storage.getServiceByFqn(serviceFqn);
       if (!service) {
         throw new Error('Service not found');
       }
 
-      const offers = await storage.getOffersForService(service.id);
-      const availableOffer = offers.find((o) => !o.answererUsername);
-
+      const availableOffer = await findAvailableOffer(service);
       if (!availableOffer) {
         throw new Error('Service has no available offers');
       }
 
-      return {
-        serviceId: service.id,
-        username: service.username,
-        serviceFqn: service.serviceFqn,
-        offerId: availableOffer.id,
-        sdp: availableOffer.sdp,
-        createdAt: service.createdAt,
-        expiresAt: service.expiresAt,
-      };
+      return buildServiceResponse(service, availableOffer);
     }
 
-    // Random discovery without username
-    const allServices = await storage.getServicesByName(
-      parsed.service,
-      parsed.version
-    );
-    const compatibleServices = allServices.filter((s) => {
-      const serviceVersion = parseServiceFqn(s.serviceFqn);
-      return (
-        serviceVersion &&
-        isVersionCompatible(parsed.version, serviceVersion.version)
-      );
-    });
+    // Mode 3: Random discovery without username
+    const allServices = await storage.getServicesByName(parsed.service, parsed.version);
+    const compatibleServices = filterCompatibleServices(allServices);
 
     if (compatibleServices.length === 0) {
       throw new Error('No services found');
     }
 
-    const randomService =
-      compatibleServices[
-        Math.floor(Math.random() * compatibleServices.length)
-      ];
-    const offers = await storage.getOffersForService(randomService.id);
-    const availableOffer = offers.find((o) => !o.answererUsername);
+    const randomService = compatibleServices[Math.floor(Math.random() * compatibleServices.length)];
+    const availableOffer = await findAvailableOffer(randomService);
 
     if (!availableOffer) {
       throw new Error('Service has no available offers');
     }
 
-    return {
-      serviceId: randomService.id,
-      username: randomService.username,
-      serviceFqn: randomService.serviceFqn,
-      offerId: availableOffer.id,
-      sdp: availableOffer.sdp,
-      createdAt: randomService.createdAt,
-      expiresAt: randomService.expiresAt,
-    };
+    return buildServiceResponse(randomService, availableOffer);
   },
 
   /**
