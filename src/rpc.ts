@@ -18,6 +18,7 @@ export interface RpcRequest {
   method: string;
   message: string;
   signature: string;
+  publicKey?: string; // Optional: for auto-claiming usernames
   params?: any;
 }
 
@@ -37,26 +38,61 @@ type RpcHandler = (
   params: any,
   message: string,
   signature: string,
+  publicKey: string | undefined,
   storage: Storage,
   config: Config
 ) => Promise<any>;
 
 /**
  * Verify authentication for a method call
+ * Automatically claims username if it doesn't exist
  */
 async function verifyAuth(
   username: string,
   message: string,
   signature: string,
+  publicKey: string | undefined,
   storage: Storage
 ): Promise<{ valid: boolean; error?: string }> {
   // Get username record to fetch public key
-  const usernameRecord = await storage.getUsername(username);
+  let usernameRecord = await storage.getUsername(username);
+
+  // Auto-claim username if it doesn't exist
   if (!usernameRecord) {
-    return {
-      valid: false,
-      error: `Username "${username}" is not claimed. Please claim username first.`,
-    };
+    if (!publicKey) {
+      return {
+        valid: false,
+        error: `Username "${username}" is not claimed and no public key provided for auto-claim.`,
+      };
+    }
+
+    // Validate username format before claiming
+    const validation = await validateUsernameClaim({
+      username,
+      publicKey,
+      signature,
+      message,
+    });
+
+    if (!validation.valid) {
+      return {
+        valid: false,
+        error: validation.error || 'Invalid username claim',
+      };
+    }
+
+    // Auto-claim the username
+    const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 365 days
+    await storage.claimUsername({
+      username,
+      publicKey,
+      expiresAt,
+    });
+
+    usernameRecord = await storage.getUsername(username);
+    if (!usernameRecord) {
+      return { valid: false, error: 'Failed to claim username' };
+    }
   }
 
   // Verify Ed25519 signature
@@ -96,7 +132,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Check if username is available
    */
-  async getUser(params, message, signature, storage, config) {
+  async getUser(params, message, signature, publicKey, storage, config) {
     const { username } = params;
     const claimed = await storage.getUsername(username);
 
@@ -119,13 +155,13 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Claim a username
    */
-  async claimUsername(params, message, signature, storage, config) {
-    const { username, publicKey } = params;
+  async claimUsername(params, message, signature, publicKey, storage, config) {
+    const { username, publicKey: paramPublicKey } = params;
 
     // Validate claim
     const validation = await validateUsernameClaim({
       username,
-      publicKey,
+      publicKey: paramPublicKey,
       signature,
       message,
     });
@@ -138,7 +174,7 @@ const handlers: Record<string, RpcHandler> = {
     const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 365 days
     await storage.claimUsername({
       username,
-      publicKey,
+      publicKey: paramPublicKey,
       expiresAt,
     });
 
@@ -148,13 +184,13 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get service by FQN
    */
-  async getService(params, message, signature, storage, config) {
+  async getService(params, message, signature, publicKey, storage, config) {
     const { serviceFqn, limit, offset } = params;
     const username = extractUsername(message);
 
     // Verify authentication
     if (username) {
-      const auth = await verifyAuth(username, message, signature, storage);
+      const auth = await verifyAuth(username, message, signature, publicKey, storage);
       if (!auth.valid) {
         throw new Error(auth.error);
       }
@@ -291,7 +327,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Publish a service
    */
-  async publishService(params, message, signature, storage, config) {
+  async publishService(params, message, signature, publicKey, storage, config) {
     const { serviceFqn, offers, ttl } = params;
     const username = extractUsername(message);
 
@@ -300,7 +336,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, storage);
+    const auth = await verifyAuth(username, message, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -381,7 +417,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Delete a service
    */
-  async deleteService(params, message, signature, storage, config) {
+  async deleteService(params, message, signature, publicKey, storage, config) {
     const { serviceFqn } = params;
     const username = extractUsername(message);
 
@@ -390,7 +426,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, storage);
+    const auth = await verifyAuth(username, message, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -416,7 +452,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Answer an offer
    */
-  async answerOffer(params, message, signature, storage, config) {
+  async answerOffer(params, message, signature, publicKey, storage, config) {
     const { serviceFqn, offerId, sdp } = params;
     const username = extractUsername(message);
 
@@ -425,7 +461,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, storage);
+    const auth = await verifyAuth(username, message, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -455,7 +491,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get answer for an offer
    */
-  async getOfferAnswer(params, message, signature, storage, config) {
+  async getOfferAnswer(params, message, signature, publicKey, storage, config) {
     const { serviceFqn, offerId } = params;
     const username = extractUsername(message);
 
@@ -464,7 +500,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, storage);
+    const auth = await verifyAuth(username, message, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -493,7 +529,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Combined polling for answers and ICE candidates
    */
-  async poll(params, message, signature, storage, config) {
+  async poll(params, message, signature, publicKey, storage, config) {
     const { since } = params;
     const username = extractUsername(message);
 
@@ -502,7 +538,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, storage);
+    const auth = await verifyAuth(username, message, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -571,7 +607,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Add ICE candidates
    */
-  async addIceCandidates(params, message, signature, storage, config) {
+  async addIceCandidates(params, message, signature, publicKey, storage, config) {
     const { serviceFqn, offerId, candidates } = params;
     const username = extractUsername(message);
 
@@ -580,7 +616,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, storage);
+    const auth = await verifyAuth(username, message, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -608,7 +644,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get ICE candidates
    */
-  async getIceCandidates(params, message, signature, storage, config) {
+  async getIceCandidates(params, message, signature, publicKey, storage, config) {
     const { serviceFqn, offerId, since } = params;
     const username = extractUsername(message);
 
@@ -617,7 +653,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, storage);
+    const auth = await verifyAuth(username, message, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -660,7 +696,7 @@ export async function handleRpc(
 
   for (const request of requests) {
     try {
-      const { method, message, signature, params } = request;
+      const { method, message, signature, publicKey, params } = request;
 
       // Validate request
       if (!method || typeof method !== 'string') {
@@ -701,6 +737,7 @@ export async function handleRpc(
         params || {},
         message,
         signature,
+        publicKey,
         storage,
         config
       );
