@@ -712,6 +712,7 @@ export async function handleRpc(
           success: false,
           error: 'Missing or invalid message',
         });
+        continue;
       }
 
       if (!signature || typeof signature !== 'string') {
