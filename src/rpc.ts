@@ -600,6 +600,13 @@ const handlers: Record<string, RpcHandler> = {
       throw new Error('Missing or invalid required parameter: candidates');
     }
 
+    // Validate each candidate is an object (don't enforce structure per CLAUDE.md)
+    candidates.forEach((candidate, index) => {
+      if (!candidate || typeof candidate !== 'object') {
+        throw new Error(`Invalid candidate at index ${index}: must be an object`);
+      }
+    });
+
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
       throw new Error('Offer not found');
