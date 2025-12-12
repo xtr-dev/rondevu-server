@@ -4,6 +4,9 @@ import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import { handleRpc, RpcRequest } from './rpc.ts';
 
+// Constants
+const MAX_BATCH_SIZE = 100;
+
 /**
  * Creates the Hono application with RPC interface
  */
@@ -62,8 +65,8 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: 'Empty request array' }, 400);
       }
 
-      if (requests.length > 100) {
-        return c.json({ error: 'Too many requests in batch (max 100)' }, 400);
+      if (requests.length > MAX_BATCH_SIZE) {
+        return c.json({ error: `Too many requests in batch (max ${MAX_BATCH_SIZE})` }, 400);
       }
 
       // Handle RPC

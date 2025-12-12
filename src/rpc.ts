@@ -12,6 +12,9 @@ import {
   validateUsername,
 } from './crypto.ts';
 
+// Constants
+const MAX_PAGE_SIZE = 100;
+
 /**
  * RPC request format
  */
@@ -178,7 +181,7 @@ const handlers: Record<string, RpcHandler> = {
 
     // Paginated discovery mode
     if (limit !== undefined) {
-      const pageLimit = Math.min(Math.max(1, limit), 100);
+      const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
       const allServices = await storage.getServicesByName(
