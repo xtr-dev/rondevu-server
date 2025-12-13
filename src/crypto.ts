@@ -14,7 +14,7 @@ ed25519.hashes.sha512Async = async (message: Uint8Array) => {
 };
 
 // Username validation
-const USERNAME_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+const USERNAME_REGEX = /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
 
