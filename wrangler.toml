@@ -17,7 +17,7 @@ OFFER_MIN_TTL = "60000"  # Min offer TTL: 1 minute
 MAX_OFFERS_PER_REQUEST = "100"  # Max offers per request
 MAX_TOPICS_PER_OFFER = "50"  # Max topics per offer
 CORS_ORIGINS = "*"  # Comma-separated list of allowed origins
-VERSION = "0.5.0"  # Semantic version
+VERSION = "0.5.1"  # Semantic version
 
 # AUTH_SECRET should be set as a secret, not a var
 # Run: npx wrangler secret put AUTH_SECRET
