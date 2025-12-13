@@ -5,6 +5,7 @@
  */
 
 import * as ed25519 from '@noble/ed25519';
+import { Buffer } from 'node:buffer';
 
 // Set SHA-512 hash function for ed25519 (required in @noble/ed25519 v3+)
 // Uses Web Crypto API (compatible with both Node.js and Cloudflare Workers)
@@ -34,20 +35,18 @@ export function generateAnonymousUsername(): string {
 
 /**
  * Convert Uint8Array to base64 string
+ * Uses Buffer for compatibility with Node.js-based clients
  */
 function bytesToBase64(bytes: Uint8Array): string {
-  const binString = Array.from(bytes, (byte) =>
-    String.fromCodePoint(byte)
-  ).join('');
-  return btoa(binString);
+  return Buffer.from(bytes).toString('base64');
 }
 
 /**
  * Convert base64 string to Uint8Array
+ * Uses Buffer for compatibility with Node.js-based clients
  */
 function base64ToBytes(base64: string): Uint8Array {
-  const binString = atob(base64);
-  return Uint8Array.from(binString, (char) => char.codePointAt(0)!);
+  return new Uint8Array(Buffer.from(base64, 'base64'));
 }
 
 /**
