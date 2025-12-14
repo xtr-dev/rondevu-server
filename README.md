@@ -254,6 +254,13 @@ All authenticated operations require Ed25519 signatures:
 
 See [ADVANCED.md](./ADVANCED.md#security) for detailed security documentation.
 
+## Changelog
+
+### v0.5.3 (Latest)
+- Fix RPC method calls using non-existent storage methods
+- Replace `storage.getServicesByName()` with `storage.discoverServices()` and `storage.getRandomService()`
+- Ensures compatibility with Storage interface specification
+
 ## License
 
 MIT
