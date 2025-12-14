@@ -215,7 +215,7 @@ const handlers: Record<string, RpcHandler> = {
       const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
-      const allServices = await storage.discoverServices(parsed.service, parsed.version, 1000, 0);
+      const allServices = await storage.discoverServices(parsed.serviceName, parsed.version, 1000, 0);
       const compatibleServices = filterCompatibleServices(allServices);
 
       // Get unique services per username with available offers
@@ -260,7 +260,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Mode 3: Random discovery without username
-    const randomService = await storage.getRandomService(parsed.service, parsed.version);
+    const randomService = await storage.getRandomService(parsed.serviceName, parsed.version);
 
     if (!randomService) {
       throw new Error('No services found');
