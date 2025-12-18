@@ -54,12 +54,14 @@ export interface Username {
 
 /**
  * Request to claim a username
+ * Note: signature and message are now verified via header-based auth before calling this
  */
 export interface ClaimUsernameRequest {
   username: string;
   publicKey: string;
-  signature: string;
-  message: string; // "claim:{username}:{timestamp}"
+  signature?: string; // Optional: verified before claim
+  message?: string; // Optional: verified before claim
+  expiresAt?: number; // Optional: override default expiry
 }
 
 /**

@@ -69,8 +69,8 @@ export function createApp(storage: Storage, config: Config) {
         return c.json({ error: `Too many requests in batch (max ${MAX_BATCH_SIZE})` }, 400);
       }
 
-      // Handle RPC
-      const responses = await handleRpc(requests, storage, config);
+      // Handle RPC (pass context for auth headers)
+      const responses = await handleRpc(requests, c, storage, config);
 
       // Return single response or array based on input
       return c.json(Array.isArray(body) ? responses : responses[0], 200);

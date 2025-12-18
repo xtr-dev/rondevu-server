@@ -16,13 +16,10 @@ import {
 const MAX_PAGE_SIZE = 100;
 
 /**
- * RPC request format
+ * RPC request format (body only - auth in headers)
  */
 export interface RpcRequest {
   method: string;
-  message: string;
-  signature: string;
-  publicKey?: string; // Optional: for auto-claiming usernames
   params?: any;
 }
 
@@ -40,24 +37,61 @@ export interface RpcResponse {
  */
 type RpcHandler = (
   params: any,
-  message: string,
+  username: string,
+  timestamp: number,
   signature: string,
   publicKey: string | undefined,
   storage: Storage,
-  config: Config
+  config: Config,
+  request: RpcRequest
 ) => Promise<any>;
+
+/**
+ * Create canonical JSON string with sorted keys for deterministic signing
+ */
+function canonicalJSON(obj: any): string {
+  if (obj === null || obj === undefined) {
+    return JSON.stringify(obj);
+  }
+  if (typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(item => canonicalJSON(item)).join(',') + ']';
+  }
+
+  const sortedKeys = Object.keys(obj).sort();
+  const pairs = sortedKeys.map(key => {
+    return JSON.stringify(key) + ':' + canonicalJSON(obj[key]);
+  });
+  return '{' + pairs.join(',') + '}';
+}
 
 /**
  * Verify authentication for a method call
  * Automatically claims username if it doesn't exist
  */
 async function verifyAuth(
+  request: RpcRequest,
   username: string,
-  message: string,
+  timestamp: number,
   signature: string,
   publicKey: string | undefined,
   storage: Storage
 ): Promise<{ valid: boolean; error?: string }> {
+  // Validate timestamp (not too old, not in future)
+  const now = Date.now();
+  const maxAge = 5 * 60 * 1000; // 5 minutes
+  const maxFuture = 60 * 1000; // 1 minute
+
+  if (timestamp < now - maxAge) {
+    return { valid: false, error: 'Timestamp too old' };
+  }
+
+  if (timestamp > now + maxFuture) {
+    return { valid: false, error: 'Timestamp in future' };
+  }
+
   // Get username record to fetch public key
   let usernameRecord = await storage.getUsername(username);
 
@@ -76,8 +110,12 @@ async function verifyAuth(
       return usernameValidation;
     }
 
-    // Verify signature against the current message (not a claim message)
-    const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
+    // Create canonical payload for verification
+    const payload = { ...request, timestamp, username };
+    const canonical = canonicalJSON(payload);
+
+    // Verify signature against the canonical payload
+    const signatureValid = await verifyEd25519Signature(publicKey, signature, canonical);
     if (!signatureValid) {
       return { valid: false, error: 'Invalid signature for auto-claim' };
     }
@@ -96,33 +134,21 @@ async function verifyAuth(
     }
   }
 
+  // Create canonical payload for verification: { method, params, timestamp, username }
+  const payload = { ...request, timestamp, username };
+  const canonical = canonicalJSON(payload);
+
   // Verify Ed25519 signature
   const isValid = await verifyEd25519Signature(
     usernameRecord.publicKey,
     signature,
-    message
+    canonical
   );
   if (!isValid) {
     return { valid: false, error: 'Invalid signature' };
   }
 
-  // Validate message format and timestamp
-  const validation = validateAuthMessage(username, message);
-  if (!validation.valid) {
-    return { valid: false, error: validation.error };
-  }
-
   return { valid: true };
-}
-
-/**
- * Extract username from message
- */
-function extractUsername(message: string): string | null {
-  // Message format: method:username:...
-  const parts = message.split(':');
-  if (parts.length < 2) return null;
-  return parts[1];
 }
 
 /**
@@ -133,13 +159,13 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Check if username is available
    */
-  async getUser(params, message, signature, publicKey, storage, config) {
-    const { username } = params;
-    const claimed = await storage.getUsername(username);
+  async getUser(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+    const { username: queriedUsername } = params;
+    const claimed = await storage.getUsername(queriedUsername);
 
     if (!claimed) {
       return {
-        username,
+        username: queriedUsername,
         available: true,
       };
     }
@@ -159,17 +185,11 @@ const handlers: Record<string, RpcHandler> = {
    * 2. Paginated discovery: FQN without @username, with limit/offset
    * 3. Random discovery: FQN without @username, no limit
    */
-  async getService(params, message, signature, publicKey, storage, config) {
+  async getService(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, limit, offset } = params;
-    const username = extractUsername(message);
 
-    // Verify authentication
-    if (username) {
-      const auth = await verifyAuth(username, message, signature, publicKey, storage);
-      if (!auth.valid) {
-        throw new Error(auth.error);
-      }
-    }
+    // Note: getService can be called without auth for discovery
+    // Auth is verified if username is provided
 
     // Parse and validate FQN
     const fqnValidation = validateServiceFqn(serviceFqn);
@@ -183,8 +203,8 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Helper: Filter services by version compatibility
-    const filterCompatibleServices = (services) => {
-      return services.filter((s) => {
+    const filterCompatibleServices = (services: any[]) => {
+      return services.filter((s: any) => {
         const serviceVersion = parseServiceFqn(s.serviceFqn);
         return (
           serviceVersion &&
@@ -194,13 +214,13 @@ const handlers: Record<string, RpcHandler> = {
     };
 
     // Helper: Find available offer for service
-    const findAvailableOffer = async (service) => {
+    const findAvailableOffer = async (service: any) => {
       const offers = await storage.getOffersForService(service.id);
-      return offers.find((o) => !o.answererUsername);
+      return offers.find((o: any) => !o.answererUsername);
     };
 
     // Helper: Build service response object
-    const buildServiceResponse = (service, offer) => ({
+    const buildServiceResponse = (service: any, offer: any) => ({
       serviceId: service.id,
       username: service.username,
       serviceFqn: service.serviceFqn,
@@ -278,16 +298,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Publish a service
    */
-  async publishService(params, message, signature, publicKey, storage, config) {
+  async publishService(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offers, ttl } = params;
-    const username = extractUsername(message);
 
     if (!username) {
       throw new Error('Username required for service publishing');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, publicKey, storage);
+    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -374,16 +393,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Delete a service
    */
-  async deleteService(params, message, signature, publicKey, storage, config) {
+  async deleteService(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn } = params;
-    const username = extractUsername(message);
 
     if (!username) {
       throw new Error('Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, publicKey, storage);
+    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -409,16 +427,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Answer an offer
    */
-  async answerOffer(params, message, signature, publicKey, storage, config) {
+  async answerOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, sdp } = params;
-    const username = extractUsername(message);
 
     if (!username) {
       throw new Error('Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, publicKey, storage);
+    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -448,16 +465,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get answer for an offer
    */
-  async getOfferAnswer(params, message, signature, publicKey, storage, config) {
+  async getOfferAnswer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId } = params;
-    const username = extractUsername(message);
 
     if (!username) {
       throw new Error('Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, publicKey, storage);
+    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -486,16 +502,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Combined polling for answers and ICE candidates
    */
-  async poll(params, message, signature, publicKey, storage, config) {
+  async poll(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { since } = params;
-    const username = extractUsername(message);
 
     if (!username) {
       throw new Error('Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, publicKey, storage);
+    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -564,16 +579,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Add ICE candidates
    */
-  async addIceCandidates(params, message, signature, publicKey, storage, config) {
+  async addIceCandidates(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, candidates } = params;
-    const username = extractUsername(message);
 
     if (!username) {
       throw new Error('Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, publicKey, storage);
+    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -608,16 +622,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get ICE candidates
    */
-  async getIceCandidates(params, message, signature, publicKey, storage, config) {
+  async getIceCandidates(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, since } = params;
-    const username = extractUsername(message);
 
     if (!username) {
       throw new Error('Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(username, message, signature, publicKey, storage);
+    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
     if (!auth.valid) {
       throw new Error(auth.error);
     }
@@ -649,18 +662,25 @@ const handlers: Record<string, RpcHandler> = {
 };
 
 /**
- * Handle RPC batch request
+ * Handle RPC batch request with header-based authentication
  */
 export async function handleRpc(
   requests: RpcRequest[],
+  ctx: Context,
   storage: Storage,
   config: Config
 ): Promise<RpcResponse[]> {
   const responses: RpcResponse[] = [];
 
+  // Read auth headers (same for all requests in batch)
+  const signature = ctx.req.header('X-Signature');
+  const timestamp = ctx.req.header('X-Timestamp');
+  const username = ctx.req.header('X-Username');
+  const publicKey = ctx.req.header('X-Public-Key');
+
   for (const request of requests) {
     try {
-      const { method, message, signature, publicKey, params } = request;
+      const { method, params } = request;
 
       // Validate request
       if (!method || typeof method !== 'string') {
@@ -671,18 +691,36 @@ export async function handleRpc(
         continue;
       }
 
-      if (!message || typeof message !== 'string') {
+      // Validate auth headers
+      if (!signature || typeof signature !== 'string') {
         responses.push({
           success: false,
-          error: 'Missing or invalid message',
+          error: 'Missing or invalid X-Signature header',
         });
         continue;
       }
 
-      if (!signature || typeof signature !== 'string') {
+      if (!timestamp || typeof timestamp !== 'string') {
         responses.push({
           success: false,
-          error: 'Missing or invalid signature',
+          error: 'Missing or invalid X-Timestamp header',
+        });
+        continue;
+      }
+
+      if (!username || typeof username !== 'string') {
+        responses.push({
+          success: false,
+          error: 'Missing or invalid X-Username header',
+        });
+        continue;
+      }
+
+      const timestampNum = parseInt(timestamp, 10);
+      if (isNaN(timestampNum)) {
+        responses.push({
+          success: false,
+          error: 'Invalid X-Timestamp header: must be a number',
         });
         continue;
       }
@@ -700,11 +738,13 @@ export async function handleRpc(
       // Execute handler
       const result = await handler(
         params || {},
-        message,
+        username,
+        timestampNum,
         signature,
         publicKey,
         storage,
-        config
+        config,
+        request
       );
 
       responses.push({
