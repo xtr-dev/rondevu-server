@@ -379,7 +379,7 @@ const handlers: Record<string, RpcHandler> = {
 
       const availableOffer = await findAvailableOffer(service);
       if (!availableOffer) {
-        throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'Offer has no available slots');
+        throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'No available offers for this service');
       }
 
       return buildServiceResponse(service, availableOffer);
@@ -395,7 +395,7 @@ const handlers: Record<string, RpcHandler> = {
     const availableOffer = await findAvailableOffer(randomService);
 
     if (!availableOffer) {
-      throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'Offer has no available slots');
+      throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'No available offers for this service');
     }
 
     return buildServiceResponse(randomService, availableOffer);
@@ -704,11 +704,23 @@ const handlers: Record<string, RpcHandler> = {
       if (!candidate || typeof candidate !== 'object') {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, `Invalid candidate at index ${index}: must be an object`);
       }
+
+      // Ensure candidate is serializable (will be stored as JSON)
+      try {
+        JSON.stringify(candidate);
+      } catch (e) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, `Candidate at index ${index} is not serializable`);
+      }
     });
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
+    }
+
+    // Validate that offer belongs to the specified service
+    if (offer.serviceFqn !== serviceFqn) {
+      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Offer does not belong to the specified service');
     }
 
     const role = offer.username === username ? 'offerer' : 'answerer';
@@ -740,6 +752,11 @@ const handlers: Record<string, RpcHandler> = {
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
+    }
+
+    // Validate that offer belongs to the specified service
+    if (offer.serviceFqn !== serviceFqn) {
+      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Offer does not belong to the specified service');
     }
 
     const isOfferer = offer.username === username;
