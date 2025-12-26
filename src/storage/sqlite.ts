@@ -503,6 +503,11 @@ export class SQLiteStorage implements Storage {
       return result;
     }
 
+    // Prevent DoS attacks from extremely large IN clauses
+    if (serviceIds.length > 1000) {
+      throw new Error('Too many service IDs (max 1000)');
+    }
+
     // Build IN clause with proper parameter binding
     const placeholders = serviceIds.map(() => '?').join(',');
     const stmt = this.db.prepare(`

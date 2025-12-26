@@ -697,7 +697,7 @@ const handlers: Record<string, RpcHandler> = {
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Invalid since parameter: must be a non-negative number');
     }
-    const sinceTimestamp = since || 0;
+    const sinceTimestamp = since !== undefined ? since : 0;
 
     // Get all answered offers
     const answeredOffers = await storage.getAnsweredOffers(username);
@@ -825,7 +825,7 @@ const handlers: Record<string, RpcHandler> = {
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Invalid since parameter: must be a non-negative number');
     }
-    const sinceTimestamp = since || 0;
+    const sinceTimestamp = since !== undefined ? since : 0;
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
