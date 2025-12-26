@@ -107,12 +107,22 @@ All API calls are made to `POST /rpc` with JSON-RPC format.
   },
   {
     "success": false,
-    "error": "Error message"
+    "error": "Error message",
+    "errorCode": "OFFER_NOT_FOUND"
   }
 ]
 ```
 
 Responses are returned in the same order as requests.
+
+**Error Codes:**
+All error responses include an `errorCode` field for programmatic error handling:
+- `AUTH_REQUIRED`, `INVALID_SIGNATURE`, `TIMESTAMP_TOO_OLD`, `TIMESTAMP_IN_FUTURE`
+- `INVALID_USERNAME`, `INVALID_FQN`, `INVALID_SDP`, `INVALID_PARAMS`, `MISSING_PARAMS`
+- `OFFER_NOT_FOUND`, `OFFER_ALREADY_ANSWERED`, `NO_AVAILABLE_OFFERS`
+- `NOT_AUTHORIZED`, `OWNERSHIP_MISMATCH`
+- `TOO_MANY_OFFERS`, `SDP_TOO_LARGE`
+- `INTERNAL_ERROR`, `UNKNOWN_METHOD`
 
 ## Core Methods
 

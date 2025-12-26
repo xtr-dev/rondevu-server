@@ -16,6 +16,57 @@ import {
 const MAX_PAGE_SIZE = 100;
 
 /**
+ * Standard error codes for RPC responses
+ */
+export const ErrorCodes = {
+  // Authentication errors
+  AUTH_REQUIRED: 'AUTH_REQUIRED',
+  INVALID_SIGNATURE: 'INVALID_SIGNATURE',
+  TIMESTAMP_TOO_OLD: 'TIMESTAMP_TOO_OLD',
+  TIMESTAMP_IN_FUTURE: 'TIMESTAMP_IN_FUTURE',
+  USERNAME_NOT_CLAIMED: 'USERNAME_NOT_CLAIMED',
+  INVALID_PUBLIC_KEY: 'INVALID_PUBLIC_KEY',
+
+  // Validation errors
+  INVALID_USERNAME: 'INVALID_USERNAME',
+  INVALID_FQN: 'INVALID_FQN',
+  INVALID_SDP: 'INVALID_SDP',
+  INVALID_PARAMS: 'INVALID_PARAMS',
+  MISSING_PARAMS: 'MISSING_PARAMS',
+
+  // Resource errors
+  OFFER_NOT_FOUND: 'OFFER_NOT_FOUND',
+  OFFER_ALREADY_ANSWERED: 'OFFER_ALREADY_ANSWERED',
+  NO_AVAILABLE_OFFERS: 'NO_AVAILABLE_OFFERS',
+  USERNAME_NOT_AVAILABLE: 'USERNAME_NOT_AVAILABLE',
+
+  // Authorization errors
+  NOT_AUTHORIZED: 'NOT_AUTHORIZED',
+  OWNERSHIP_MISMATCH: 'OWNERSHIP_MISMATCH',
+
+  // Limit errors
+  TOO_MANY_OFFERS: 'TOO_MANY_OFFERS',
+  SDP_TOO_LARGE: 'SDP_TOO_LARGE',
+
+  // Generic errors
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  UNKNOWN_METHOD: 'UNKNOWN_METHOD',
+} as const;
+
+/**
+ * Custom error class with error code support
+ */
+export class RpcError extends Error {
+  constructor(
+    public errorCode: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'RpcError';
+  }
+}
+
+/**
  * RPC request format (body only - auth in headers)
  */
 export interface RpcRequest {
@@ -30,6 +81,57 @@ export interface RpcResponse {
   success: boolean;
   result?: any;
   error?: string;
+  errorCode?: string;
+}
+
+/**
+ * RPC Method Parameter Interfaces
+ */
+export interface GetUserParams {
+  username: string;
+}
+
+export interface GetOfferParams {
+  serviceFqn: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PublishOfferParams {
+  serviceFqn: string;
+  offers: Array<{ sdp: string }>;
+  ttl?: number;
+}
+
+export interface DeleteOfferParams {
+  serviceFqn: string;
+}
+
+export interface AnswerOfferParams {
+  serviceFqn: string;
+  offerId: string;
+  sdp: string;
+}
+
+export interface GetOfferAnswerParams {
+  serviceFqn: string;
+  offerId: string;
+}
+
+export interface PollParams {
+  since?: number;
+}
+
+export interface AddIceCandidatesParams {
+  serviceFqn: string;
+  offerId: string;
+  candidates: any[];
+}
+
+export interface GetIceCandidatesParams {
+  serviceFqn: string;
+  offerId: string;
+  since?: number;
 }
 
 /**
@@ -70,6 +172,7 @@ function canonicalJSON(obj: any): string {
 /**
  * Verify authentication for a method call
  * Automatically claims username if it doesn't exist
+ * Throws RpcError on authentication failure
  */
 async function verifyAuth(
   request: RpcRequest,
@@ -78,18 +181,18 @@ async function verifyAuth(
   signature: string,
   publicKey: string | undefined,
   storage: Storage
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<void> {
   // Validate timestamp (not too old, not in future)
   const now = Date.now();
   const maxAge = 5 * 60 * 1000; // 5 minutes
   const maxFuture = 60 * 1000; // 1 minute
 
   if (timestamp < now - maxAge) {
-    return { valid: false, error: 'Timestamp too old' };
+    throw new RpcError(ErrorCodes.TIMESTAMP_TOO_OLD, 'Timestamp too old');
   }
 
   if (timestamp > now + maxFuture) {
-    return { valid: false, error: 'Timestamp in future' };
+    throw new RpcError(ErrorCodes.TIMESTAMP_IN_FUTURE, 'Timestamp in future');
   }
 
   // Get username record to fetch public key
@@ -98,16 +201,16 @@ async function verifyAuth(
   // Auto-claim username if it doesn't exist
   if (!usernameRecord) {
     if (!publicKey) {
-      return {
-        valid: false,
-        error: `Username "${username}" is not claimed and no public key provided for auto-claim.`,
-      };
+      throw new RpcError(
+        ErrorCodes.USERNAME_NOT_CLAIMED,
+        `Username "${username}" is not claimed and no public key provided for auto-claim.`
+      );
     }
 
     // Validate username format before claiming
     const usernameValidation = validateUsername(username);
     if (!usernameValidation.valid) {
-      return usernameValidation;
+      throw new RpcError(ErrorCodes.INVALID_USERNAME, usernameValidation.error || 'Invalid username');
     }
 
     // Create canonical payload for verification
@@ -117,7 +220,7 @@ async function verifyAuth(
     // Verify signature against the canonical payload
     const signatureValid = await verifyEd25519Signature(publicKey, signature, canonical);
     if (!signatureValid) {
-      return { valid: false, error: 'Invalid signature for auto-claim' };
+      throw new RpcError(ErrorCodes.INVALID_SIGNATURE, 'Invalid signature for auto-claim');
     }
 
     // Auto-claim the username
@@ -130,7 +233,7 @@ async function verifyAuth(
 
     usernameRecord = await storage.getUsername(username);
     if (!usernameRecord) {
-      return { valid: false, error: 'Failed to claim username' };
+      throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to claim username');
     }
   }
 
@@ -145,10 +248,8 @@ async function verifyAuth(
     canonical
   );
   if (!isValid) {
-    return { valid: false, error: 'Invalid signature' };
+    throw new RpcError(ErrorCodes.INVALID_SIGNATURE, 'Invalid signature');
   }
-
-  return { valid: true };
 }
 
 /**
@@ -194,12 +295,12 @@ const handlers: Record<string, RpcHandler> = {
     // Parse and validate FQN
     const fqnValidation = validateServiceFqn(serviceFqn);
     if (!fqnValidation.valid) {
-      throw new Error(fqnValidation.error || 'Invalid service FQN');
+      throw new RpcError(ErrorCodes.INVALID_FQN, fqnValidation.error || 'Invalid service FQN');
     }
 
     const parsed = parseServiceFqn(serviceFqn);
     if (!parsed) {
-      throw new Error('Failed to parse service FQN');
+      throw new RpcError(ErrorCodes.INVALID_FQN, 'Failed to parse service FQN');
     }
 
     // Helper: Filter services by version compatibility
@@ -268,12 +369,12 @@ const handlers: Record<string, RpcHandler> = {
     if (parsed.username) {
       const service = await storage.getServiceByFqn(serviceFqn);
       if (!service) {
-        throw new Error('Service not found');
+        throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
       }
 
       const availableOffer = await findAvailableOffer(service);
       if (!availableOffer) {
-        throw new Error('Service has no available offers');
+        throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'Offer has no available slots');
       }
 
       return buildServiceResponse(service, availableOffer);
@@ -283,13 +384,13 @@ const handlers: Record<string, RpcHandler> = {
     const randomService = await storage.getRandomService(parsed.serviceName, parsed.version);
 
     if (!randomService) {
-      throw new Error('No services found');
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'No offers found');
     }
 
     const availableOffer = await findAvailableOffer(randomService);
 
     if (!availableOffer) {
-      throw new Error('Service has no available offers');
+      throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'Offer has no available slots');
     }
 
     return buildServiceResponse(randomService, availableOffer);
@@ -298,41 +399,39 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Publish an offer
    */
-  async publishOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async publishOffer(params: PublishOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offers, ttl } = params;
 
     if (!username) {
-      throw new Error('Username required for offer publishing');
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required for offer publishing');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
-    if (!auth.valid) {
-      throw new Error(auth.error);
-    }
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     // Validate service FQN
     const fqnValidation = validateServiceFqn(serviceFqn);
     if (!fqnValidation.valid) {
-      throw new Error(fqnValidation.error || 'Invalid service FQN');
+      throw new RpcError(ErrorCodes.INVALID_FQN, fqnValidation.error || 'Invalid service FQN');
     }
 
     const parsed = parseServiceFqn(serviceFqn);
     if (!parsed || !parsed.username) {
-      throw new Error('Service FQN must include username');
+      throw new RpcError(ErrorCodes.INVALID_FQN, 'Service FQN must include username');
     }
 
     if (parsed.username !== username) {
-      throw new Error('Service FQN username must match authenticated username');
+      throw new RpcError(ErrorCodes.OWNERSHIP_MISMATCH, 'Service FQN username must match authenticated username');
     }
 
     // Validate offers
     if (!offers || !Array.isArray(offers) || offers.length === 0) {
-      throw new Error('Must provide at least one offer');
+      throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Must provide at least one offer');
     }
 
     if (offers.length > config.maxOffersPerRequest) {
-      throw new Error(
+      throw new RpcError(
+        ErrorCodes.TOO_MANY_OFFERS,
         `Too many offers (max ${config.maxOffersPerRequest})`
       );
     }
@@ -340,13 +439,13 @@ const handlers: Record<string, RpcHandler> = {
     // Validate each offer has valid SDP
     offers.forEach((offer, index) => {
       if (!offer || typeof offer !== 'object') {
-        throw new Error(`Invalid offer at index ${index}: must be an object`);
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, `Invalid offer at index ${index}: must be an object`);
       }
       if (!offer.sdp || typeof offer.sdp !== 'string') {
-        throw new Error(`Invalid offer at index ${index}: missing or invalid SDP`);
+        throw new RpcError(ErrorCodes.INVALID_SDP, `Invalid offer at index ${index}: missing or invalid SDP`);
       }
       if (!offer.sdp.trim()) {
-        throw new Error(`Invalid offer at index ${index}: SDP cannot be empty`);
+        throw new RpcError(ErrorCodes.INVALID_SDP, `Invalid offer at index ${index}: SDP cannot be empty`);
       }
     });
 
@@ -397,28 +496,25 @@ const handlers: Record<string, RpcHandler> = {
     const { serviceFqn } = params;
 
     if (!username) {
-      throw new Error('Username required');
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
-    if (!auth.valid) {
-      throw new Error(auth.error);
-    }
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     const parsed = parseServiceFqn(serviceFqn);
     if (!parsed || !parsed.username) {
-      throw new Error('Service FQN must include username');
+      throw new RpcError(ErrorCodes.INVALID_FQN, 'Service FQN must include username');
     }
 
     const service = await storage.getServiceByFqn(serviceFqn);
     if (!service) {
-      throw new Error('Service not found');
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
     const deleted = await storage.deleteService(service.id, username);
     if (!deleted) {
-      throw new Error('Service not found or not owned by this username');
+      throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Offer not found or not owned by this username');
     }
 
     return { success: true };
@@ -431,30 +527,27 @@ const handlers: Record<string, RpcHandler> = {
     const { serviceFqn, offerId, sdp } = params;
 
     if (!username) {
-      throw new Error('Username required');
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
-    if (!auth.valid) {
-      throw new Error(auth.error);
-    }
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     if (!sdp || typeof sdp !== 'string' || sdp.length === 0) {
-      throw new Error('Invalid SDP');
+      throw new RpcError(ErrorCodes.INVALID_SDP, 'Invalid SDP');
     }
 
     if (sdp.length > 64 * 1024) {
-      throw new Error('SDP too large (max 64KB)');
+      throw new RpcError(ErrorCodes.SDP_TOO_LARGE, 'SDP too large (max 64KB)');
     }
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
-      throw new Error('Offer not found');
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
     if (offer.answererUsername) {
-      throw new Error('Offer already answered');
+      throw new RpcError(ErrorCodes.OFFER_ALREADY_ANSWERED, 'Offer already answered');
     }
 
     await storage.answerOffer(offerId, username, sdp);
@@ -469,26 +562,23 @@ const handlers: Record<string, RpcHandler> = {
     const { serviceFqn, offerId } = params;
 
     if (!username) {
-      throw new Error('Username required');
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
-    if (!auth.valid) {
-      throw new Error(auth.error);
-    }
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
-      throw new Error('Offer not found');
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
     if (offer.username !== username) {
-      throw new Error('Not authorized to access this offer');
+      throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Not authorized to access this offer');
     }
 
     if (!offer.answererUsername || !offer.answerSdp) {
-      throw new Error('Offer not yet answered');
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not yet answered');
     }
 
     return {
@@ -506,14 +596,11 @@ const handlers: Record<string, RpcHandler> = {
     const { since } = params;
 
     if (!username) {
-      throw new Error('Username required');
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
-    if (!auth.valid) {
-      throw new Error(auth.error);
-    }
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     const sinceTimestamp = since || 0;
 
@@ -583,29 +670,26 @@ const handlers: Record<string, RpcHandler> = {
     const { serviceFqn, offerId, candidates } = params;
 
     if (!username) {
-      throw new Error('Username required');
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
-    if (!auth.valid) {
-      throw new Error(auth.error);
-    }
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     if (!Array.isArray(candidates) || candidates.length === 0) {
-      throw new Error('Missing or invalid required parameter: candidates');
+      throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Missing or invalid required parameter: candidates');
     }
 
     // Validate each candidate is an object (don't enforce structure per CLAUDE.md)
     candidates.forEach((candidate, index) => {
       if (!candidate || typeof candidate !== 'object') {
-        throw new Error(`Invalid candidate at index ${index}: must be an object`);
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, `Invalid candidate at index ${index}: must be an object`);
       }
     });
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
-      throw new Error('Offer not found');
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
     const role = offer.username === username ? 'offerer' : 'answerer';
@@ -626,20 +710,17 @@ const handlers: Record<string, RpcHandler> = {
     const { serviceFqn, offerId, since } = params;
 
     if (!username) {
-      throw new Error('Username required');
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
 
     // Verify authentication
-    const auth = await verifyAuth(request, username, timestamp, signature, publicKey, storage);
-    if (!auth.valid) {
-      throw new Error(auth.error);
-    }
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     const sinceTimestamp = since || 0;
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
-      throw new Error('Offer not found');
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
     const isOfferer = offer.username === username;
@@ -731,6 +812,7 @@ export async function handleRpc(
         responses.push({
           success: false,
           error: `Unknown method: ${method}`,
+          errorCode: ErrorCodes.UNKNOWN_METHOD,
         });
         continue;
       }
@@ -752,10 +834,19 @@ export async function handleRpc(
         result,
       });
     } catch (err) {
-      responses.push({
-        success: false,
-        error: (err as Error).message || 'Internal server error',
-      });
+      if (err instanceof RpcError) {
+        responses.push({
+          success: false,
+          error: err.message,
+          errorCode: err.errorCode,
+        });
+      } else {
+        responses.push({
+          success: false,
+          error: (err as Error).message || 'Internal server error',
+          errorCode: ErrorCodes.INTERNAL_ERROR,
+        });
+      }
     }
   }
 

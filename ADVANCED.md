@@ -79,6 +79,15 @@ Claim a username with cryptographic proof
 }
 ```
 
+**Error Response Example:**
+```json
+{
+  "success": false,
+  "error": "Timestamp too old",
+  "errorCode": "TIMESTAMP_TOO_OLD"
+}
+```
+
 ### `getOffer`
 Get offer by FQN (direct lookup, random discovery, or paginated)
 
@@ -488,6 +497,43 @@ All authenticated requests require:
 - Offerers receive only answerer candidates
 - Answerers receive only offerer candidates
 
+## Error Codes
+
+All error responses include an `errorCode` field for programmatic handling:
+
+**Authentication Errors:**
+- `AUTH_REQUIRED` - Authentication required but not provided
+- `INVALID_SIGNATURE` - Signature verification failed
+- `TIMESTAMP_TOO_OLD` - Request timestamp too old (>5 min)
+- `TIMESTAMP_IN_FUTURE` - Request timestamp in future (>1 min)
+- `USERNAME_NOT_CLAIMED` - Username not claimed and no public key for auto-claim
+- `INVALID_PUBLIC_KEY` - Public key format invalid
+
+**Validation Errors:**
+- `INVALID_USERNAME` - Username format invalid
+- `INVALID_FQN` - Service FQN format invalid
+- `INVALID_SDP` - SDP format invalid or empty
+- `INVALID_PARAMS` - Request parameters invalid
+- `MISSING_PARAMS` - Required parameters missing
+
+**Resource Errors:**
+- `OFFER_NOT_FOUND` - Requested offer not found
+- `OFFER_ALREADY_ANSWERED` - Offer already has an answer
+- `NO_AVAILABLE_OFFERS` - No unanswered offers available
+- `USERNAME_NOT_AVAILABLE` - Username already claimed
+
+**Authorization Errors:**
+- `NOT_AUTHORIZED` - User not authorized for this operation
+- `OWNERSHIP_MISMATCH` - Resource ownership mismatch
+
+**Limit Errors:**
+- `TOO_MANY_OFFERS` - Too many offers in request
+- `SDP_TOO_LARGE` - SDP exceeds 64KB limit
+
+**Generic Errors:**
+- `INTERNAL_ERROR` - Server internal error
+- `UNKNOWN_METHOD` - RPC method not found
+
 ## Migration from v0.4.x
 
 See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
@@ -499,6 +545,7 @@ See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
 - Responses are always arrays matching request order
 - Authentication uses headers (X-Username, X-Timestamp, X-Signature, X-Public-Key)
 - Configurable batch size limit via `MAX_BATCH_SIZE` environment variable
+- All error responses include `errorCode` field for programmatic handling
 
 ## License
 
