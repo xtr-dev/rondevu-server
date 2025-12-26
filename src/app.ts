@@ -56,18 +56,30 @@ export function createApp(storage: Storage, config: Config) {
 
       // Only accept batch arrays
       if (!Array.isArray(body)) {
-        return c.json({ error: 'Request must be an array of RPC calls' }, 400);
+        return c.json([{
+          success: false,
+          error: 'Request must be an array of RPC calls',
+          errorCode: 'INVALID_PARAMS'
+        }], 400);
       }
 
       const requests: RpcRequest[] = body;
 
       // Validate requests
       if (requests.length === 0) {
-        return c.json({ error: 'Empty request array' }, 400);
+        return c.json([{
+          success: false,
+          error: 'Empty request array',
+          errorCode: 'INVALID_PARAMS'
+        }], 400);
       }
 
       if (requests.length > config.maxBatchSize) {
-        return c.json({ error: `Too many requests in batch (max ${config.maxBatchSize})` }, 400);
+        return c.json([{
+          success: false,
+          error: `Too many requests in batch (max ${config.maxBatchSize})`,
+          errorCode: 'INVALID_PARAMS'
+        }], 400);
       }
 
       // Handle RPC (pass context for auth headers)

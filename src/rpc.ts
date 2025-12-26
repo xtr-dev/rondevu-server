@@ -625,41 +625,23 @@ const handlers: Record<string, RpcHandler> = {
     // Get all user's offers
     const allOffers = await storage.getOffersByUsername(username);
 
-    // For each offer, get ICE candidates from both sides
+    // For each offer, get ICE candidates from the other peer only
+    // Server filters by role - offerers get answerer candidates, answerers get offerer candidates
     const iceCandidatesByOffer: Record<string, any[]> = {};
 
     for (const offer of allOffers) {
-      const offererCandidates = await storage.getIceCandidates(
+      const isOfferer = offer.username === username;
+      const role = isOfferer ? 'answerer' : 'offerer';
+
+      // Get candidates from the other peer (CLAUDE.md: store as raw JSON without modification)
+      const candidates = await storage.getIceCandidates(
         offer.id,
-        'offerer',
+        role,
         sinceTimestamp
       );
-      const answererCandidates = await storage.getIceCandidates(
-        offer.id,
-        'answerer',
-        sinceTimestamp
-      );
 
-      const allCandidates = [
-        ...offererCandidates.map((c: any) => ({
-          ...c,
-          role: 'offerer' as const,
-        })),
-        ...answererCandidates.map((c: any) => ({
-          ...c,
-          role: 'answerer' as const,
-        })),
-      ];
-
-      if (allCandidates.length > 0) {
-        const isOfferer = offer.username === username;
-        const filtered = allCandidates.filter((c) =>
-          isOfferer ? c.role === 'answerer' : c.role === 'offerer'
-        );
-
-        if (filtered.length > 0) {
-          iceCandidatesByOffer[offer.id] = filtered;
-        }
+      if (candidates.length > 0) {
+        iceCandidatesByOffer[offer.id] = candidates;
       }
     }
 
