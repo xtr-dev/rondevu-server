@@ -417,20 +417,28 @@ const handlers: Record<string, RpcHandler> = {
       const compatibleServices = filterCompatibleServices(allServices);
 
       // Get unique services per username with available offers
-      // TODO: Performance optimization needed - N+1 query pattern
-      // Current approach calls storage.getOffersForService for each service sequentially
-      // Consider: batching offer lookups or adding a storage method to fetch offers for multiple services
-      const usernameSet = new Set<string>();
+      // Batch fetch all offers to avoid N+1 query pattern
       const uniqueServices: any[] = [];
 
+      // Collect unique service IDs (one per username)
+      const servicesByUsername = new Map<string, any>();
       for (const service of compatibleServices) {
-        if (!usernameSet.has(service.username)) {
-          usernameSet.add(service.username);
-          const availableOffer = await findAvailableOffer(service);
+        if (!servicesByUsername.has(service.username)) {
+          servicesByUsername.set(service.username, service);
+        }
+      }
 
-          if (availableOffer) {
-            uniqueServices.push(buildServiceResponse(service, availableOffer));
-          }
+      // Batch fetch offers for all services
+      const serviceIds = Array.from(servicesByUsername.values()).map(s => s.id);
+      const offersMap = await storage.getOffersForMultipleServices(serviceIds);
+
+      // Build response for services with available offers
+      for (const service of servicesByUsername.values()) {
+        const offers = offersMap.get(service.id) || [];
+        const availableOffer = offers.find((o: any) => !o.answererUsername);
+
+        if (availableOffer) {
+          uniqueServices.push(buildServiceResponse(service, availableOffer));
         }
       }
 

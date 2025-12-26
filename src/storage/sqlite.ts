@@ -495,6 +495,39 @@ export class SQLiteStorage implements Storage {
     return rows.map(row => this.rowToOffer(row));
   }
 
+  async getOffersForMultipleServices(serviceIds: string[]): Promise<Map<string, Offer[]>> {
+    const result = new Map<string, Offer[]>();
+
+    // Return empty map if no service IDs provided
+    if (serviceIds.length === 0) {
+      return result;
+    }
+
+    // Build IN clause with proper parameter binding
+    const placeholders = serviceIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT * FROM offers
+      WHERE service_id IN (${placeholders}) AND expires_at > ?
+      ORDER BY created_at ASC
+    `);
+
+    const now = Date.now();
+    const rows = stmt.all(...serviceIds, now) as any[];
+
+    // Group offers by service_id
+    for (const row of rows) {
+      const offer = this.rowToOffer(row);
+      const serviceId = row.service_id;
+
+      if (!result.has(serviceId)) {
+        result.set(serviceId, []);
+      }
+      result.get(serviceId)!.push(offer);
+    }
+
+    return result;
+  }
+
   async getServiceById(serviceId: string): Promise<Service | null> {
     const stmt = this.db.prepare(`
       SELECT * FROM services

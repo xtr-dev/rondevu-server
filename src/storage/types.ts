@@ -223,6 +223,13 @@ export interface Storage {
   getOffersForService(serviceId: string): Promise<Offer[]>;
 
   /**
+   * Gets all offers for multiple services (batch operation)
+   * @param serviceIds Array of service IDs
+   * @returns Map of service ID to offers array
+   */
+  getOffersForMultipleServices(serviceIds: string[]): Promise<Map<string, Offer[]>>;
+
+  /**
    * Gets a service by its service ID
    * @param serviceId Service ID
    * @returns Service if found, null otherwise

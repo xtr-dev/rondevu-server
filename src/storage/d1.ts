@@ -466,6 +466,49 @@ export class D1Storage implements Storage {
     return result.results.map(row => this.rowToOffer(row as any));
   }
 
+  async getOffersForMultipleServices(serviceIds: string[]): Promise<Map<string, Offer[]>> {
+    const resultMap = new Map<string, Offer[]>();
+
+    // Return empty map if no service IDs provided
+    if (serviceIds.length === 0) {
+      return resultMap;
+    }
+
+    // Build IN clause with proper parameter binding
+    const placeholders = serviceIds.map(() => '?').join(',');
+    const query = `
+      SELECT * FROM offers
+      WHERE service_id IN (${placeholders}) AND expires_at > ?
+      ORDER BY created_at ASC
+    `;
+
+    // D1 requires binding each parameter individually
+    let preparedQuery = this.db.prepare(query);
+    for (const serviceId of serviceIds) {
+      preparedQuery = preparedQuery.bind(serviceId);
+    }
+    preparedQuery = preparedQuery.bind(Date.now());
+
+    const result = await preparedQuery.all();
+
+    if (!result.results) {
+      return resultMap;
+    }
+
+    // Group offers by service_id
+    for (const row of result.results) {
+      const offer = this.rowToOffer(row as any);
+      const serviceId = (row as any).service_id;
+
+      if (!resultMap.has(serviceId)) {
+        resultMap.set(serviceId, []);
+      }
+      resultMap.get(serviceId)!.push(offer);
+    }
+
+    return resultMap;
+  }
+
   async getServiceById(serviceId: string): Promise<Service | null> {
     const result = await this.db.prepare(`
       SELECT * FROM services
