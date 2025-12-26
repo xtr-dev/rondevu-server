@@ -504,6 +504,7 @@ export class SQLiteStorage implements Storage {
     }
 
     // Prevent DoS attacks from extremely large IN clauses
+    // Limit aligns with MAX_DISCOVERY_RESULTS (1000) in rpc.ts
     if (serviceIds.length > 1000) {
       throw new Error('Too many service IDs (max 1000)');
     }
