@@ -79,7 +79,7 @@ export function createApp(storage: Storage, config: Config) {
           success: false,
           error: `Too many requests in batch (max ${config.maxBatchSize})`,
           errorCode: 'INVALID_PARAMS'
-        }], 400);
+        }], 413); // 413 Payload Too Large
       }
 
       // Handle RPC (pass context for auth headers)
