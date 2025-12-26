@@ -17,6 +17,7 @@ const MAX_PAGE_SIZE = 100;
 const MAX_SDP_SIZE = 64 * 1024; // 64KB
 const MAX_CANDIDATES_PER_REQUEST = 100;
 const MAX_DISCOVERY_RESULTS = 1000;
+const DISCOVERY_OFFSET = 0;
 
 /**
  * Standard error codes for RPC responses
@@ -341,10 +342,18 @@ const handlers: Record<string, RpcHandler> = {
       const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
-      const allServices = await storage.discoverServices(parsed.serviceName, parsed.version, MAX_DISCOVERY_RESULTS, 0);
+      const allServices = await storage.discoverServices(
+        parsed.serviceName,
+        parsed.version,
+        MAX_DISCOVERY_RESULTS,
+        DISCOVERY_OFFSET
+      );
       const compatibleServices = filterCompatibleServices(allServices);
 
       // Get unique services per username with available offers
+      // TODO: Performance optimization needed - N+1 query pattern
+      // Current approach calls storage.getOffersForService for each service sequentially
+      // Consider: batching offer lookups or adding a storage method to fetch offers for multiple services
       const usernameSet = new Set<string>();
       const uniqueServices: any[] = [];
 
@@ -611,10 +620,10 @@ const handlers: Record<string, RpcHandler> = {
     await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
     // Validate since parameter
-    const sinceTimestamp = since || 0;
-    if (typeof sinceTimestamp !== 'number' || sinceTimestamp < 0 || !Number.isFinite(sinceTimestamp)) {
+    if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Invalid since parameter: must be a non-negative number');
     }
+    const sinceTimestamp = since || 0;
 
     // Get all answered offers
     const answeredOffers = await storage.getAnsweredOffers(username);

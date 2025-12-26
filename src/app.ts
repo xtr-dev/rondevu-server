@@ -89,10 +89,11 @@ export function createApp(storage: Storage, config: Config) {
       return c.json(responses, 200);
     } catch (err) {
       console.error('RPC error:', err);
-      return c.json({
+      return c.json([{
         success: false,
         error: 'Invalid request format',
-      }, 400);
+        errorCode: 'INVALID_PARAMS'
+      }], 400);
     }
   });
 
