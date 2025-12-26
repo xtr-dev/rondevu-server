@@ -519,6 +519,7 @@ All error responses include an `errorCode` field for programmatic handling:
 **Resource Errors:**
 - `OFFER_NOT_FOUND` - Requested offer not found
 - `OFFER_ALREADY_ANSWERED` - Offer already has an answer
+- `OFFER_NOT_ANSWERED` - Offer has not been answered yet
 - `NO_AVAILABLE_OFFERS` - No unanswered offers available
 - `USERNAME_NOT_AVAILABLE` - Username already claimed
 

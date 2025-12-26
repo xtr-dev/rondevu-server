@@ -14,6 +14,9 @@ import {
 
 // Constants
 const MAX_PAGE_SIZE = 100;
+const MAX_SDP_SIZE = 64 * 1024; // 64KB
+const MAX_CANDIDATES_PER_REQUEST = 100;
+const MAX_DISCOVERY_RESULTS = 1000;
 
 /**
  * Standard error codes for RPC responses
@@ -37,6 +40,7 @@ export const ErrorCodes = {
   // Resource errors
   OFFER_NOT_FOUND: 'OFFER_NOT_FOUND',
   OFFER_ALREADY_ANSWERED: 'OFFER_ALREADY_ANSWERED',
+  OFFER_NOT_ANSWERED: 'OFFER_NOT_ANSWERED',
   NO_AVAILABLE_OFFERS: 'NO_AVAILABLE_OFFERS',
   USERNAME_NOT_AVAILABLE: 'USERNAME_NOT_AVAILABLE',
 
@@ -260,7 +264,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Check if username is available
    */
-  async getUser(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getUser(params: GetUserParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { username: queriedUsername } = params;
     const claimed = await storage.getUsername(queriedUsername);
 
@@ -286,7 +290,7 @@ const handlers: Record<string, RpcHandler> = {
    * 2. Paginated discovery: FQN without @username, with limit/offset
    * 3. Random discovery: FQN without @username, no limit
    */
-  async getOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getOffer(params: GetOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, limit, offset } = params;
 
     // Note: getOffer can be called without auth for discovery
@@ -336,7 +340,7 @@ const handlers: Record<string, RpcHandler> = {
       const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
-      const allServices = await storage.discoverServices(parsed.serviceName, parsed.version, 1000, 0);
+      const allServices = await storage.discoverServices(parsed.serviceName, parsed.version, MAX_DISCOVERY_RESULTS, 0);
       const compatibleServices = filterCompatibleServices(allServices);
 
       // Get unique services per username with available offers
@@ -492,7 +496,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Delete an offer
    */
-  async deleteOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async deleteOffer(params: DeleteOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn } = params;
 
     if (!username) {
@@ -523,7 +527,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Answer an offer
    */
-  async answerOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async answerOffer(params: AnswerOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, sdp } = params;
 
     if (!username) {
@@ -537,8 +541,8 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.INVALID_SDP, 'Invalid SDP');
     }
 
-    if (sdp.length > 64 * 1024) {
-      throw new RpcError(ErrorCodes.SDP_TOO_LARGE, 'SDP too large (max 64KB)');
+    if (sdp.length > MAX_SDP_SIZE) {
+      throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large (max ${MAX_SDP_SIZE} bytes)`);
     }
 
     const offer = await storage.getOfferById(offerId);
@@ -558,7 +562,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get answer for an offer
    */
-  async getOfferAnswer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getOfferAnswer(params: GetOfferAnswerParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId } = params;
 
     if (!username) {
@@ -578,7 +582,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     if (!offer.answererUsername || !offer.answerSdp) {
-      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not yet answered');
+      throw new RpcError(ErrorCodes.OFFER_NOT_ANSWERED, 'Offer not yet answered');
     }
 
     return {
@@ -592,7 +596,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Combined polling for answers and ICE candidates
    */
-  async poll(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async poll(params: PollParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { since } = params;
 
     if (!username) {
@@ -602,7 +606,11 @@ const handlers: Record<string, RpcHandler> = {
     // Verify authentication
     await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
+    // Validate since parameter
     const sinceTimestamp = since || 0;
+    if (typeof sinceTimestamp !== 'number' || sinceTimestamp < 0 || !Number.isFinite(sinceTimestamp)) {
+      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Invalid since parameter: must be a non-negative number');
+    }
 
     // Get all answered offers
     const answeredOffers = await storage.getAnsweredOffers(username);
@@ -666,7 +674,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Add ICE candidates
    */
-  async addIceCandidates(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async addIceCandidates(params: AddIceCandidatesParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, candidates } = params;
 
     if (!username) {
@@ -678,6 +686,13 @@ const handlers: Record<string, RpcHandler> = {
 
     if (!Array.isArray(candidates) || candidates.length === 0) {
       throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Missing or invalid required parameter: candidates');
+    }
+
+    if (candidates.length > MAX_CANDIDATES_PER_REQUEST) {
+      throw new RpcError(
+        ErrorCodes.INVALID_PARAMS,
+        `Too many candidates (max ${MAX_CANDIDATES_PER_REQUEST})`
+      );
     }
 
     // Validate each candidate is an object (don't enforce structure per CLAUDE.md)
@@ -706,7 +721,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get ICE candidates
    */
-  async getIceCandidates(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getIceCandidates(params: GetIceCandidatesParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, since } = params;
 
     if (!username) {
