@@ -341,13 +341,17 @@ export class D1Storage implements Storage {
       }
 
       // Handle UNIQUE constraint on public_key
-      if (err.message?.includes('UNIQUE constraint failed: usernames.public_key')) {
+      // D1/SQLite error format: "UNIQUE constraint failed: usernames.public_key"
+      // Note: Tested with Cloudflare D1 (SQLite 3.x compatible)
+      if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('public_key')) {
         throw new StorageError(
           StorageErrorCode.PUBLIC_KEY_CONFLICT,
           'This public key has already claimed a different username',
           err
         );
       }
+
+      // Unexpected error - rethrow
       throw err;
     }
   }

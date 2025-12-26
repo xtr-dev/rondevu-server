@@ -325,41 +325,62 @@ export class SQLiteStorage implements Storage {
     const now = Date.now();
     const expiresAt = now + YEAR_IN_MS;
 
-    // Try to insert or update
-    const stmt = this.db.prepare(`
-      INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
-      VALUES (?, ?, ?, ?, ?, NULL)
-      ON CONFLICT(username) DO UPDATE SET
-        expires_at = ?,
-        last_used = ?
-      WHERE public_key = ?
-    `);
+    try {
+      // Try to insert or update
+      const stmt = this.db.prepare(`
+        INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
+        VALUES (?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(username) DO UPDATE SET
+          expires_at = ?,
+          last_used = ?
+        WHERE public_key = ?
+      `);
 
-    const result = stmt.run(
-      request.username,
-      request.publicKey,
-      now,
-      expiresAt,
-      now,
-      expiresAt,
-      now,
-      request.publicKey
-    );
-
-    if (result.changes === 0) {
-      throw new StorageError(
-        StorageErrorCode.USERNAME_CONFLICT,
-        'Username already claimed by different public key'
+      const result = stmt.run(
+        request.username,
+        request.publicKey,
+        now,
+        expiresAt,
+        now,
+        expiresAt,
+        now,
+        request.publicKey
       );
-    }
 
-    return {
-      username: request.username,
-      publicKey: request.publicKey,
-      claimedAt: now,
-      expiresAt,
-      lastUsed: now,
-    };
+      if (result.changes === 0) {
+        throw new StorageError(
+          StorageErrorCode.USERNAME_CONFLICT,
+          'Username already claimed by different public key'
+        );
+      }
+
+      return {
+        username: request.username,
+        publicKey: request.publicKey,
+        claimedAt: now,
+        expiresAt,
+        lastUsed: now,
+      };
+    } catch (err: any) {
+      // Re-throw StorageErrors as-is
+      if (err instanceof StorageError) {
+        throw err;
+      }
+
+      // Handle UNIQUE constraint on public_key
+      // SQLite error format: "UNIQUE constraint failed: usernames.public_key"
+      // Note: Tested with better-sqlite3 v9.x and SQLite 3.x
+      if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('public_key')) {
+        throw new StorageError(
+          StorageErrorCode.PUBLIC_KEY_CONFLICT,
+          'This public key has already claimed a different username',
+          err
+        );
+      }
+
+      // Unexpected error - rethrow
+      throw err;
+    }
   }
 
   async getUsername(username: string): Promise<Username | null> {

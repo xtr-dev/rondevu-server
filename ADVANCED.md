@@ -497,6 +497,63 @@ All authenticated requests require:
 - Offerers receive only answerer candidates
 - Answerers receive only offerer candidates
 
+### DoS Protection and Rate Limiting
+
+The server implements several layers of protection against denial-of-service attacks:
+
+**Built-in Limits:**
+- `MAX_BATCH_SIZE` (default: 100) - Maximum RPC requests per batch
+- `MAX_OFFERS_PER_REQUEST` (default: 100) - Maximum offers per publishOffer call
+- `MAX_CANDIDATES_PER_REQUEST` (default: 100) - Maximum ICE candidates per addIceCandidates call
+- `MAX_SDP_SIZE` (default: 64KB) - Maximum SDP size per offer
+- `MAX_CANDIDATE_SIZE` (default: 4KB) - Maximum size per ICE candidate
+- `MAX_CANDIDATE_DEPTH` (default: 10) - Maximum JSON nesting depth for candidates
+
+**Potential Attack Vectors:**
+⚠️ **Nested Batch Operations**: While individual limits exist, a client could send:
+- 100 `publishOffer` requests × 100 offers each = 10,000 total offers
+- 100 `addIceCandidates` requests × 100 candidates each = 10,000 total candidates
+
+**Recommended Mitigations:**
+1. **Rate Limiting**: Implement per-user/per-IP rate limiting at the infrastructure level (e.g., Cloudflare Rate Limiting, nginx limit_req)
+2. **Authentication-Based Quotas**: Track total offers/candidates per username per time window
+3. **Cost-Based Limits**: Assign costs to operations (publish = 10 units, addCandidates = 5 units) and enforce budget per request
+4. **Connection Limits**: Limit concurrent connections per IP/username
+5. **Cloudflare Workers**: Built-in CPU time limits (10-50ms) provide natural DoS protection
+
+**Example Rate Limit Configuration (nginx):**
+```nginx
+limit_req_zone $binary_remote_addr zone=rpc_limit:10m rate=10r/s;
+
+location /rpc {
+    limit_req zone=rpc_limit burst=20 nodelay;
+    proxy_pass http://rondevu_backend;
+}
+```
+
+**Example Cloudflare Workers Rate Limiting:**
+```typescript
+// In src/worker.ts or middleware
+const rateLimiter = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(identifier: string, maxRequests: number, windowMs: number): boolean {
+  const now = Date.now();
+  const limit = rateLimiter.get(identifier);
+
+  if (!limit || now > limit.resetAt) {
+    rateLimiter.set(identifier, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+
+  if (limit.count >= maxRequests) {
+    return false;
+  }
+
+  limit.count++;
+  return true;
+}
+```
+
 ## Error Codes
 
 All error responses include an `errorCode` field for programmatic handling:
