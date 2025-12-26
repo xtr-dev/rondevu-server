@@ -275,10 +275,31 @@ async function verifyAuth(
   let usernameRecord = await storage.getUsername(username);
 
   // Auto-claim username if it doesn't exist
-  // RACE CONDITION HANDLING: Two concurrent requests can both pass this check,
-  // but the database enforces uniqueness constraints. The second request will
-  // fail with USERNAME_CONFLICT, which we catch and return as USERNAME_NOT_AVAILABLE.
-  // This is intentional and correct behavior - no additional locking needed.
+  //
+  // SECURITY ANALYSIS - RACE CONDITION HANDLING:
+  //
+  // Scenario: Two concurrent requests (A and B) for unclaimed username "alice":
+  //   Request A: publicKey = "aaa...", signature = valid for "aaa..."
+  //   Request B: publicKey = "bbb...", signature = valid for "bbb..."
+  //
+  // Race sequence:
+  //   1. Both requests call getUsername("alice") → returns null
+  //   2. Both requests enter this if block
+  //   3. Both requests validate their signatures (both pass)
+  //   4. Request A calls claimUsername() → succeeds, claims with "aaa..."
+  //   5. Request B calls claimUsername() → FAILS with USERNAME_CONFLICT
+  //   6. Request B catches USERNAME_CONFLICT, fetches the claimed record
+  //   7. Request B checks if publicKey matches → "bbb..." ≠ "aaa..." → fails correctly
+  //
+  // Security properties:
+  //   ✓ Database enforces uniqueness (UNIQUE constraint on username)
+  //   ✓ Losing request correctly fails with USERNAME_NOT_AVAILABLE
+  //   ✓ Winning request succeeds normally
+  //   ✓ Special case: If same publicKey used twice, second request succeeds (idempotent)
+  //   ✓ Signature verification ensures only the actual key owner can succeed
+  //   ✓ No authentication bypass possible - signature must match claimed public key
+  //
+  // This is intentional and secure - no application-level locking needed.
   if (!usernameRecord) {
     if (!publicKey) {
       throw new RpcError(
@@ -1031,13 +1052,14 @@ export async function handleRpc(
   const username = ctx.req.header('X-Username');
   const publicKey = ctx.req.header('X-Public-Key');
 
-  // Calculate total operations across all requests to prevent DoS via nested batching
-  // Example attack: 100 publishOffer × 100 offers each = 10,000 total offers
+  // CRITICAL: Pre-calculate total operations BEFORE processing any requests
+  // This prevents DoS where first N requests complete before limit triggers
+  // Example attack prevented: 100 publishOffer × 100 offers = 10,000 operations
   const MAX_TOTAL_OPERATIONS = 1000;
   let totalOperations = 0;
 
+  // Count all operations across all requests first
   for (const request of requests) {
-    // Count operations for this request
     const { method, params } = request;
     if (method === 'publishOffer' && params?.offers && Array.isArray(params.offers)) {
       totalOperations += params.offers.length;
@@ -1046,21 +1068,16 @@ export async function handleRpc(
     } else {
       totalOperations += 1; // Single operation
     }
-
-    if (totalOperations > MAX_TOTAL_OPERATIONS) {
-      responses.push({
-        success: false,
-        error: `Total operations across batch exceed limit (max ${MAX_TOTAL_OPERATIONS})`,
-        errorCode: ErrorCodes.BATCH_TOO_LARGE,
-      });
-      // Stop processing further requests
-      break;
-    }
   }
 
-  // If we exceeded the limit, return early with the error
+  // Reject entire batch if total operations exceed limit
+  // This happens BEFORE processing any requests
   if (totalOperations > MAX_TOTAL_OPERATIONS) {
-    return responses;
+    return [{
+      success: false,
+      error: `Total operations across batch exceed limit: ${totalOperations} > ${MAX_TOTAL_OPERATIONS}`,
+      errorCode: ErrorCodes.BATCH_TOO_LARGE,
+    }];
   }
 
   // Process all requests
@@ -1175,9 +1192,12 @@ export async function handleRpc(
           errorCode: err.errorCode,
         });
       } else {
+        // Generic error - don't leak internal details
+        // Log the actual error for debugging
+        console.error('Unexpected RPC error:', err);
         responses.push({
           success: false,
-          error: (err as Error).message || 'Internal server error',
+          error: 'Internal server error',
           errorCode: ErrorCodes.INTERNAL_ERROR,
         });
       }
