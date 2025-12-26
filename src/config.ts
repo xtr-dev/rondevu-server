@@ -18,6 +18,8 @@ export interface Config {
   maxCandidateSize: number;
   maxCandidateDepth: number;
   maxCandidatesPerRequest: number;
+  timestampMaxAge: number;
+  timestampMaxFuture: number;
 }
 
 /**
@@ -41,6 +43,8 @@ export function loadConfig(): Config {
     maxSdpSize: parseInt(process.env.MAX_SDP_SIZE || String(64 * 1024), 10), // 64KB
     maxCandidateSize: parseInt(process.env.MAX_CANDIDATE_SIZE || String(4 * 1024), 10), // 4KB
     maxCandidateDepth: parseInt(process.env.MAX_CANDIDATE_DEPTH || '10', 10),
-    maxCandidatesPerRequest: parseInt(process.env.MAX_CANDIDATES_PER_REQUEST || '100', 10)
+    maxCandidatesPerRequest: parseInt(process.env.MAX_CANDIDATES_PER_REQUEST || '100', 10),
+    timestampMaxAge: parseInt(process.env.TIMESTAMP_MAX_AGE || '300000', 10), // 5 minutes
+    timestampMaxFuture: parseInt(process.env.TIMESTAMP_MAX_FUTURE || '60000', 10) // 1 minute
   };
 }

@@ -257,18 +257,17 @@ async function verifyAuth(
   timestamp: number,
   signature: string,
   publicKey: string | undefined,
-  storage: Storage
+  storage: Storage,
+  config: Config
 ): Promise<void> {
   // Validate timestamp (not too old, not in future)
   const now = Date.now();
-  const maxAge = 5 * 60 * 1000; // 5 minutes
-  const maxFuture = 60 * 1000; // 1 minute
 
-  if (timestamp < now - maxAge) {
+  if (timestamp < now - config.timestampMaxAge) {
     throw new RpcError(ErrorCodes.TIMESTAMP_TOO_OLD, 'Timestamp too old');
   }
 
-  if (timestamp > now + maxFuture) {
+  if (timestamp > now + config.timestampMaxFuture) {
     throw new RpcError(ErrorCodes.TIMESTAMP_IN_FUTURE, 'Timestamp in future');
   }
 
@@ -618,7 +617,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
 
     // Validate service FQN
     const fqnValidation = validateServiceFqn(serviceFqn);
@@ -714,7 +713,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
 
     const parsed = parseServiceFqn(serviceFqn);
     if (!parsed || !parsed.username) {
@@ -749,7 +748,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
 
     if (!sdp || typeof sdp !== 'string' || sdp.length === 0) {
       throw new RpcError(ErrorCodes.INVALID_SDP, 'Invalid SDP');
@@ -788,7 +787,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
@@ -822,7 +821,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
 
     // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
@@ -886,7 +885,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
 
     if (!Array.isArray(candidates) || candidates.length === 0) {
       throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Missing or invalid required parameter: candidates');
@@ -967,7 +966,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage);
+    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
 
     // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
@@ -1032,6 +1031,39 @@ export async function handleRpc(
   const username = ctx.req.header('X-Username');
   const publicKey = ctx.req.header('X-Public-Key');
 
+  // Calculate total operations across all requests to prevent DoS via nested batching
+  // Example attack: 100 publishOffer × 100 offers each = 10,000 total offers
+  const MAX_TOTAL_OPERATIONS = 1000;
+  let totalOperations = 0;
+
+  for (const request of requests) {
+    // Count operations for this request
+    const { method, params } = request;
+    if (method === 'publishOffer' && params?.offers && Array.isArray(params.offers)) {
+      totalOperations += params.offers.length;
+    } else if (method === 'addIceCandidates' && params?.candidates && Array.isArray(params.candidates)) {
+      totalOperations += params.candidates.length;
+    } else {
+      totalOperations += 1; // Single operation
+    }
+
+    if (totalOperations > MAX_TOTAL_OPERATIONS) {
+      responses.push({
+        success: false,
+        error: `Total operations across batch exceed limit (max ${MAX_TOTAL_OPERATIONS})`,
+        errorCode: ErrorCodes.BATCH_TOO_LARGE,
+      });
+      // Stop processing further requests
+      break;
+    }
+  }
+
+  // If we exceeded the limit, return early with the error
+  if (totalOperations > MAX_TOTAL_OPERATIONS) {
+    return responses;
+  }
+
+  // Process all requests
   for (const request of requests) {
     try {
       const { method, params } = request;
