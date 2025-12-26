@@ -90,6 +90,8 @@ All API calls are made to `POST /rpc` with JSON-RPC format.
 ]
 ```
 
+**Note:** Batch requests are limited to 100 operations by default (configurable via `MAX_BATCH_SIZE` environment variable).
+
 **Authentication headers (for authenticated methods):**
 - `X-Username`: Your username
 - `X-Timestamp`: Current timestamp (milliseconds)

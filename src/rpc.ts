@@ -54,6 +54,15 @@ function getJsonDepth(obj: any, maxDepth: number, currentDepth = 0): number {
 }
 
 /**
+ * Validate Ed25519 public key format (64-character hex string)
+ * @param key Public key to validate
+ * @returns true if valid format
+ */
+function validatePublicKeyFormat(key: string): boolean {
+  return /^[0-9a-f]{64}$/i.test(key);
+}
+
+/**
  * Standard error codes for RPC responses
  */
 export const ErrorCodes = {
@@ -253,6 +262,11 @@ async function verifyAuth(
       );
     }
 
+    // Validate public key format
+    if (!validatePublicKeyFormat(publicKey)) {
+      throw new RpcError(ErrorCodes.INVALID_PUBLIC_KEY, 'Public key must be 64-character hex string');
+    }
+
     // Validate username format before claiming
     const usernameValidation = validateUsername(username);
     if (!usernameValidation.valid) {
@@ -355,7 +369,7 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Validate public key format (must be hex-encoded Ed25519 key - 64 chars)
-    if (!/^[0-9a-f]{64}$/i.test(claimPublicKey)) {
+    if (!validatePublicKeyFormat(claimPublicKey)) {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Public key must be 64-character hex string');
     }
 

@@ -89,9 +89,15 @@ export function createApp(storage: Storage, config: Config) {
       return c.json(responses, 200);
     } catch (err) {
       console.error('RPC error:', err);
+
+      // Distinguish between JSON parse errors and validation errors
+      const errorMsg = err instanceof SyntaxError
+        ? 'Invalid JSON in request body'
+        : 'Request must be valid JSON array';
+
       return c.json([{
         success: false,
-        error: 'Request must be valid JSON array',
+        error: errorMsg,
         errorCode: 'INVALID_PARAMS'
       }], 400);
     }
