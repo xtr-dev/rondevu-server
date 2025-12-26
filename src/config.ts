@@ -14,6 +14,10 @@ export interface Config {
   cleanupInterval: number;
   maxOffersPerRequest: number;
   maxBatchSize: number;
+  maxSdpSize: number;
+  maxCandidateSize: number;
+  maxCandidateDepth: number;
+  maxCandidatesPerRequest: number;
 }
 
 /**
@@ -33,6 +37,10 @@ export function loadConfig(): Config {
     offerMinTtl: parseInt(process.env.OFFER_MIN_TTL || '60000', 10),
     cleanupInterval: parseInt(process.env.CLEANUP_INTERVAL || '60000', 10),
     maxOffersPerRequest: parseInt(process.env.MAX_OFFERS_PER_REQUEST || '100', 10),
-    maxBatchSize: parseInt(process.env.MAX_BATCH_SIZE || '100', 10)
+    maxBatchSize: parseInt(process.env.MAX_BATCH_SIZE || '100', 10),
+    maxSdpSize: parseInt(process.env.MAX_SDP_SIZE || String(64 * 1024), 10), // 64KB
+    maxCandidateSize: parseInt(process.env.MAX_CANDIDATE_SIZE || String(4 * 1024), 10), // 4KB
+    maxCandidateDepth: parseInt(process.env.MAX_CANDIDATE_DEPTH || '10', 10),
+    maxCandidatesPerRequest: parseInt(process.env.MAX_CANDIDATES_PER_REQUEST || '100', 10)
   };
 }

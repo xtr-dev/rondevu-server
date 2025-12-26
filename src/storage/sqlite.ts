@@ -9,6 +9,8 @@ import {
   ClaimUsernameRequest,
   Service,
   CreateServiceRequest,
+  StorageError,
+  StorageErrorCode,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 import { parseServiceFqn } from '../crypto.ts';
@@ -345,7 +347,10 @@ export class SQLiteStorage implements Storage {
     );
 
     if (result.changes === 0) {
-      throw new Error('Username already claimed by different public key');
+      throw new StorageError(
+        StorageErrorCode.USERNAME_CONFLICT,
+        'Username already claimed by different public key'
+      );
     }
 
     return {

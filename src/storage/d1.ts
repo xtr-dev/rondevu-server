@@ -8,6 +8,8 @@ import {
   ClaimUsernameRequest,
   Service,
   CreateServiceRequest,
+  StorageError,
+  StorageErrorCode,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 import { parseServiceFqn } from '../crypto.ts';
@@ -319,7 +321,10 @@ export class D1Storage implements Storage {
       ).run();
 
       if ((result.meta.changes || 0) === 0) {
-        throw new Error('Username already claimed by different public key');
+        throw new StorageError(
+          StorageErrorCode.USERNAME_CONFLICT,
+          'Username already claimed by different public key'
+        );
       }
 
       return {
@@ -330,9 +335,18 @@ export class D1Storage implements Storage {
         lastUsed: now,
       };
     } catch (err: any) {
+      // Re-throw StorageErrors as-is
+      if (err instanceof StorageError) {
+        throw err;
+      }
+
       // Handle UNIQUE constraint on public_key
       if (err.message?.includes('UNIQUE constraint failed: usernames.public_key')) {
-        throw new Error('This public key has already claimed a different username');
+        throw new StorageError(
+          StorageErrorCode.PUBLIC_KEY_CONFLICT,
+          'This public key has already claimed a different username',
+          err
+        );
       }
       throw err;
     }
@@ -396,46 +410,57 @@ export class D1Storage implements Storage {
       WHERE service_name = ? AND version = ? AND username = ?
     `).bind(serviceName, version, username).first();
 
+    // Use batch() for atomic execution of service creation and username touch
+    // This ensures consistency - either all succeed or all fail
+    const statements = [];
+
     if (existingService) {
       // Delete related offers first (no FK cascade from offers to services)
-      await this.db.prepare(`
-        DELETE FROM offers WHERE service_id = ?
-      `).bind(existingService.id).run();
+      statements.push(
+        this.db.prepare(`DELETE FROM offers WHERE service_id = ?`).bind(existingService.id)
+      );
 
       // Delete the service
-      await this.db.prepare(`
-        DELETE FROM services WHERE id = ?
-      `).bind(existingService.id).run();
+      statements.push(
+        this.db.prepare(`DELETE FROM services WHERE id = ?`).bind(existingService.id)
+      );
     }
 
     // Insert new service with extracted fields
-    await this.db.prepare(`
-      INSERT INTO services (id, service_fqn, service_name, version, username, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      serviceId,
-      request.serviceFqn,
-      serviceName,
-      version,
-      username,
-      now,
-      request.expiresAt
-    ).run();
+    statements.push(
+      this.db.prepare(`
+        INSERT INTO services (id, service_fqn, service_name, version, username, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        serviceId,
+        request.serviceFqn,
+        serviceName,
+        version,
+        username,
+        now,
+        request.expiresAt
+      )
+    );
 
-    // Create offers with serviceId
+    // Touch username to extend expiry (inline logic)
+    const expiresAt = now + YEAR_IN_MS;
+    statements.push(
+      this.db.prepare(`
+        UPDATE usernames
+        SET last_used = ?, expires_at = ?
+        WHERE username = ? AND expires_at > ?
+      `).bind(now, expiresAt, username, now)
+    );
+
+    // Execute all statements atomically
+    await this.db.batch(statements);
+
+    // Create offers with serviceId (after atomic transaction)
     const offerRequests = request.offers.map(offer => ({
       ...offer,
       serviceId,
     }));
     const offers = await this.createOffers(offerRequests);
-
-    // Touch username to extend expiry (inline logic)
-    const expiresAt = now + YEAR_IN_MS;
-    await this.db.prepare(`
-      UPDATE usernames
-      SET last_used = ?, expires_at = ?
-      WHERE username = ? AND expires_at > ?
-    `).bind(now, expiresAt, username, now).run();
 
     return {
       service: {

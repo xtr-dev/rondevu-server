@@ -1,5 +1,5 @@
 import { Context } from 'hono';
-import { Storage } from './storage/types.ts';
+import { Storage, StorageError, StorageErrorCode } from './storage/types.ts';
 import { Config } from './config.ts';
 import {
   validateUsernameClaim,
@@ -12,17 +12,16 @@ import {
   validateUsername,
 } from './crypto.ts';
 
-// Constants
+// Constants (non-configurable)
 const MAX_PAGE_SIZE = 100;
-const MAX_SDP_SIZE = 64 * 1024; // 64KB
-const MAX_CANDIDATE_SIZE = 4 * 1024; // 4KB per ICE candidate
-const MAX_CANDIDATE_DEPTH = 10; // Max nesting level for ICE candidates
-const MAX_CANDIDATES_PER_REQUEST = 100;
 const MAX_DISCOVERY_RESULTS = 1000;
 const DISCOVERY_OFFSET = 0;
 // Multiplier for estimated fetch size to account for filtering
 // Rationale: version (50%), dedup (30%), availability (40%) reductions
 const DISCOVERY_FETCH_MULTIPLIER = 5;
+
+// NOTE: MAX_SDP_SIZE, MAX_CANDIDATE_SIZE, MAX_CANDIDATE_DEPTH, and MAX_CANDIDATES_PER_REQUEST
+// are now configurable via environment variables (see config.ts)
 
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
@@ -267,6 +266,10 @@ async function verifyAuth(
   let usernameRecord = await storage.getUsername(username);
 
   // Auto-claim username if it doesn't exist
+  // RACE CONDITION HANDLING: Two concurrent requests can both pass this check,
+  // but the database enforces uniqueness constraints. The second request will
+  // fail with USERNAME_CONFLICT, which we catch and return as USERNAME_NOT_AVAILABLE.
+  // This is intentional and correct behavior - no additional locking needed.
   if (!usernameRecord) {
     if (!publicKey) {
       throw new RpcError(
@@ -311,8 +314,14 @@ async function verifyAuth(
       }
     } catch (err: any) {
       // Handle race condition: another request claimed with different public key
-      if (err.message && err.message.includes('already claimed')) {
+      // Using type-safe error detection instead of fragile string matching
+      if (err instanceof StorageError && err.code === StorageErrorCode.USERNAME_CONFLICT) {
         throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed by different public key');
+      }
+
+      // Handle public key already used for different username
+      if (err instanceof StorageError && err.code === StorageErrorCode.PUBLIC_KEY_CONFLICT) {
+        throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'This public key has already claimed a different username');
       }
 
       // Wrap unexpected errors to prevent leaking internal details
@@ -615,8 +624,8 @@ const handlers: Record<string, RpcHandler> = {
       if (!offer.sdp.trim()) {
         throw new RpcError(ErrorCodes.INVALID_SDP, `Invalid offer at index ${index}: SDP cannot be empty`);
       }
-      if (offer.sdp.length > MAX_SDP_SIZE) {
-        throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large at index ${index} (max ${MAX_SDP_SIZE} bytes)`);
+      if (offer.sdp.length > config.maxSdpSize) {
+        throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large at index ${index} (max ${config.maxSdpSize} bytes)`);
       }
     });
 
@@ -712,8 +721,8 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.INVALID_SDP, 'Invalid SDP');
     }
 
-    if (sdp.length > MAX_SDP_SIZE) {
-      throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large (max ${MAX_SDP_SIZE} bytes)`);
+    if (sdp.length > config.maxSdpSize) {
+      throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large (max ${config.maxSdpSize} bytes)`);
     }
 
     const offer = await storage.getOfferById(offerId);
@@ -849,10 +858,10 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Missing or invalid required parameter: candidates');
     }
 
-    if (candidates.length > MAX_CANDIDATES_PER_REQUEST) {
+    if (candidates.length > config.maxCandidatesPerRequest) {
       throw new RpcError(
         ErrorCodes.INVALID_PARAMS,
-        `Too many candidates (max ${MAX_CANDIDATES_PER_REQUEST})`
+        `Too many candidates (max ${config.maxCandidatesPerRequest})`
       );
     }
 
@@ -863,11 +872,11 @@ const handlers: Record<string, RpcHandler> = {
       }
 
       // Check JSON depth to prevent stack overflow from deeply nested objects
-      const depth = getJsonDepth(candidate, MAX_CANDIDATE_DEPTH + 1);
-      if (depth > MAX_CANDIDATE_DEPTH) {
+      const depth = getJsonDepth(candidate, config.maxCandidateDepth + 1);
+      if (depth > config.maxCandidateDepth) {
         throw new RpcError(
           ErrorCodes.INVALID_PARAMS,
-          `Candidate at index ${index} too deeply nested (max depth ${MAX_CANDIDATE_DEPTH})`
+          `Candidate at index ${index} too deeply nested (max depth ${config.maxCandidateDepth})`
         );
       }
 
@@ -880,10 +889,10 @@ const handlers: Record<string, RpcHandler> = {
       }
 
       // Validate candidate size to prevent abuse
-      if (candidateJson.length > MAX_CANDIDATE_SIZE) {
+      if (candidateJson.length > config.maxCandidateSize) {
         throw new RpcError(
           ErrorCodes.INVALID_PARAMS,
-          `Candidate at index ${index} too large (max ${MAX_CANDIDATE_SIZE} bytes)`
+          `Candidate at index ${index} too large (max ${config.maxCandidateSize} bytes)`
         );
       }
     });
