@@ -15,6 +15,7 @@ import {
 // Constants
 const MAX_PAGE_SIZE = 100;
 const MAX_SDP_SIZE = 64 * 1024; // 64KB
+const MAX_CANDIDATE_SIZE = 4 * 1024; // 4KB per ICE candidate
 const MAX_CANDIDATES_PER_REQUEST = 100;
 const MAX_DISCOVERY_RESULTS = 1000;
 const DISCOVERY_OFFSET = 0;
@@ -761,11 +762,20 @@ const handlers: Record<string, RpcHandler> = {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, `Invalid candidate at index ${index}: must be an object`);
       }
 
-      // Ensure candidate is serializable (will be stored as JSON)
+      // Ensure candidate is serializable and check size (will be stored as JSON)
+      let candidateJson: string;
       try {
-        JSON.stringify(candidate);
+        candidateJson = JSON.stringify(candidate);
       } catch (e) {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, `Candidate at index ${index} is not serializable`);
+      }
+
+      // Validate candidate size to prevent abuse
+      if (candidateJson.length > MAX_CANDIDATE_SIZE) {
+        throw new RpcError(
+          ErrorCodes.INVALID_PARAMS,
+          `Candidate at index ${index} too large (max ${MAX_CANDIDATE_SIZE} bytes)`
+        );
       }
     });
 
