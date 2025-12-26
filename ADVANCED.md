@@ -586,7 +586,8 @@ All error responses include an `errorCode` field for programmatic handling:
 
 **Limit Errors:**
 - `TOO_MANY_OFFERS` - Too many offers in request
-- `SDP_TOO_LARGE` - SDP exceeds 64KB limit
+- `SDP_TOO_LARGE` - SDP exceeds size limit (configurable, default 64KB)
+- `BATCH_TOO_LARGE` - Batch request exceeds MAX_BATCH_SIZE limit
 
 **Generic Errors:**
 - `INTERNAL_ERROR` - Server internal error

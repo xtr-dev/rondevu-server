@@ -78,7 +78,7 @@ export function createApp(storage: Storage, config: Config) {
         return c.json([{
           success: false,
           error: `Too many requests in batch (max ${config.maxBatchSize})`,
-          errorCode: 'INVALID_PARAMS'
+          errorCode: 'BATCH_TOO_LARGE'
         }], 413); // 413 Payload Too Large
       }
 

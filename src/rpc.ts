@@ -16,8 +16,13 @@ import {
 const MAX_PAGE_SIZE = 100;
 const MAX_DISCOVERY_RESULTS = 1000;
 const DISCOVERY_OFFSET = 0;
-// Multiplier for estimated fetch size to account for filtering
-// Rationale: version (50%), dedup (30%), availability (40%) reductions
+// Multiplier for estimated fetch size to account for filtering losses
+// Filtering pipeline reduces results through multiple stages:
+//   - Version filtering: ~50% pass (keeps compatible versions)
+//   - Deduplication: ~70% retained (removes duplicate usernames)
+//   - Availability check: ~60% available (has unanswered offers)
+// Combined retention: 0.5 × 0.7 × 0.6 = 0.21 (21%)
+// Required multiplier: 1/0.21 ≈ 4.76, rounded to 5x for safety margin
 const DISCOVERY_FETCH_MULTIPLIER = 5;
 
 // NOTE: MAX_SDP_SIZE, MAX_CANDIDATE_SIZE, MAX_CANDIDATE_DEPTH, and MAX_CANDIDATES_PER_REQUEST
@@ -25,18 +30,22 @@ const DISCOVERY_FETCH_MULTIPLIER = 5;
 
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
+ * CRITICAL: Checks depth BEFORE recursing to prevent stack overflow
  * @param obj Object to check
  * @param maxDepth Maximum allowed depth
  * @param currentDepth Current recursion depth
- * @returns Actual depth of the object
+ * @returns Actual depth of the object (returns maxDepth + 1 if exceeded)
  */
 function getJsonDepth(obj: any, maxDepth: number, currentDepth = 0): number {
-  if (currentDepth > maxDepth) {
+  // Check for primitives/null first
+  if (obj === null || typeof obj !== 'object') {
     return currentDepth;
   }
 
-  if (obj === null || typeof obj !== 'object') {
-    return currentDepth;
+  // CRITICAL: Check depth BEFORE recursing to prevent stack overflow
+  // If we're already at max depth, don't recurse further
+  if (currentDepth >= maxDepth) {
+    return currentDepth + 1; // Indicate exceeded
   }
 
   let maxChildDepth = currentDepth;
@@ -107,6 +116,7 @@ export const ErrorCodes = {
   // Limit errors
   TOO_MANY_OFFERS: 'TOO_MANY_OFFERS',
   SDP_TOO_LARGE: 'SDP_TOO_LARGE',
+  BATCH_TOO_LARGE: 'BATCH_TOO_LARGE',
 
   // Generic errors
   INTERNAL_ERROR: 'INTERNAL_ERROR',
@@ -316,19 +326,25 @@ async function verifyAuth(
       // Handle race condition: another request claimed with different public key
       // Using type-safe error detection instead of fragile string matching
       if (err instanceof StorageError && err.code === StorageErrorCode.USERNAME_CONFLICT) {
-        throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed by different public key');
-      }
-
-      // Handle public key already used for different username
-      if (err instanceof StorageError && err.code === StorageErrorCode.PUBLIC_KEY_CONFLICT) {
+        // Race condition: Someone else claimed this username with a different key
+        // Try to fetch the record to verify it wasn't us (same public key)
+        const existingRecord = await storage.getUsername(username);
+        if (existingRecord && existingRecord.publicKey === publicKey) {
+          // Same public key - we won the race, use the existing record
+          usernameRecord = existingRecord;
+        } else {
+          // Different public key - we lost the race
+          throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed by different public key');
+        }
+      } else if (err instanceof StorageError && err.code === StorageErrorCode.PUBLIC_KEY_CONFLICT) {
+        // Handle public key already used for different username
         throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'This public key has already claimed a different username');
-      }
-
-      // Wrap unexpected errors to prevent leaking internal details
-      if (err instanceof RpcError) {
+      } else if (err instanceof RpcError) {
+        // Wrap unexpected errors to prevent leaking internal details
         throw err;
+      } else {
+        throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to auto-claim username');
       }
-      throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to auto-claim username');
     }
   }
 
@@ -487,6 +503,14 @@ const handlers: Record<string, RpcHandler> = {
 
     // Mode 1: Paginated discovery
     if (limit !== undefined) {
+      // Validate numeric parameters
+      if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'limit must be a non-negative integer');
+      }
+      if (offset !== undefined && (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0)) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'offset must be a non-negative integer');
+      }
+
       const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
@@ -523,6 +547,11 @@ const handlers: Record<string, RpcHandler> = {
 
       // Build response for services with available offers
       for (const service of servicesByUsername.values()) {
+        // Skip user's own services (authenticated users shouldn't discover themselves)
+        if (username && service.username === username) {
+          continue;
+        }
+
         const offers = offersMap.get(service.id) || [];
         const availableOffer = offers.find((o: any) => !o.answererUsername);
 
@@ -549,6 +578,9 @@ const handlers: Record<string, RpcHandler> = {
         throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
       }
 
+      // Users can explicitly request their own services by username
+      // This is intentional - direct lookup allows fetching own offers
+
       const availableOffer = await findAvailableOffer(service);
       if (!availableOffer) {
         throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'No available offers for this service');
@@ -558,6 +590,8 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Mode 3: Random discovery without username
+    // Note: This could return user's own service in random mode
+    // This is acceptable as random discovery is intentionally unpredictable
     const randomService = await storage.getRandomService(parsed.serviceName, parsed.version);
 
     if (!randomService) {
