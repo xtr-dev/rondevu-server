@@ -96,6 +96,12 @@ export interface GetUserParams {
   username: string;
 }
 
+export interface ClaimUsernameParams {
+  username: string;
+  publicKey: string;
+  expiresAt?: number;
+}
+
 export interface GetOfferParams {
   serviceFqn: string;
   limit?: number;
@@ -283,6 +289,65 @@ const handlers: Record<string, RpcHandler> = {
       claimedAt: claimed.claimedAt,
       expiresAt: claimed.expiresAt,
       publicKey: claimed.publicKey,
+    };
+  },
+
+  /**
+   * Explicitly claim a username with a public key
+   */
+  async claimUsername(params: ClaimUsernameParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+    const { username: claimUsername, publicKey: claimPublicKey, expiresAt } = params;
+
+    // Validate that header username matches claim username
+    if (username !== claimUsername) {
+      throw new RpcError(
+        ErrorCodes.AUTH_REQUIRED,
+        'X-Username header must match username being claimed'
+      );
+    }
+
+    // Validate username format
+    const usernameValidation = validateUsername(claimUsername);
+    if (!usernameValidation.valid) {
+      throw new RpcError(ErrorCodes.INVALID_USERNAME, usernameValidation.error || 'Invalid username');
+    }
+
+    // Validate public key format (must be hex-encoded Ed25519 key - 64 chars)
+    if (!/^[0-9a-f]{64}$/i.test(claimPublicKey)) {
+      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Public key must be 64-character hex string');
+    }
+
+    // Check if username is already claimed
+    const existing = await storage.getUsername(claimUsername);
+    if (existing) {
+      throw new RpcError(ErrorCodes.USERNAME_ALREADY_CLAIMED, 'Username already claimed');
+    }
+
+    // Create canonical payload for verification
+    const payload = { ...request, timestamp, username: claimUsername };
+    const canonical = canonicalJSON(payload);
+
+    // Verify signature using the provided public key
+    const signatureValid = await verifyEd25519Signature(claimPublicKey, signature, canonical);
+    if (!signatureValid) {
+      throw new RpcError(ErrorCodes.INVALID_SIGNATURE, 'Invalid signature for username claim');
+    }
+
+    // Claim the username with provided or default expiration
+    const defaultExpiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 365 days
+    const finalExpiresAt = expiresAt || defaultExpiresAt;
+
+    await storage.claimUsername({
+      username: claimUsername,
+      publicKey: claimPublicKey,
+      expiresAt: finalExpiresAt,
+    });
+
+    return {
+      username: claimUsername,
+      publicKey: claimPublicKey,
+      claimedAt: Date.now(),
+      expiresAt: finalExpiresAt,
     };
   },
 
@@ -738,6 +803,10 @@ const handlers: Record<string, RpcHandler> = {
     // Verify authentication
     await verifyAuth(request, username, timestamp, signature, publicKey, storage);
 
+    // Validate since parameter
+    if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
+      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Invalid since parameter: must be a non-negative number');
+    }
     const sinceTimestamp = since || 0;
 
     const offer = await storage.getOfferById(offerId);

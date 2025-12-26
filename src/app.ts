@@ -91,7 +91,7 @@ export function createApp(storage: Storage, config: Config) {
       console.error('RPC error:', err);
       return c.json([{
         success: false,
-        error: 'Invalid request format',
+        error: 'Request must be valid JSON array',
         errorCode: 'INVALID_PARAMS'
       }], 400);
     }
