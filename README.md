@@ -17,8 +17,8 @@ Scalable WebRTC signaling server with cryptographic username claiming, service p
 
 - **RPC Interface**: Single endpoint for all operations with batching support
 - **Username Claiming**: Cryptographic username ownership with Ed25519 signatures (365-day validity, auto-renewed on use)
-- **Service Publishing**: Service:version@username naming (e.g., `chat:1.0.0@alice`)
-- **Service Discovery**: Random and paginated discovery for finding services without knowing usernames
+- **Offer Publishing**: Service:version@username naming (e.g., `chat:1.0.0@alice`)
+- **Offer Discovery**: Random and paginated discovery for finding offers without knowing usernames
 - **Semantic Versioning**: Compatible version matching (chat:1.0.0 matches any 1.x.x)
 - **Signature-Based Authentication**: All authenticated requests use Ed25519 signatures
 - **Complete WebRTC Signaling**: Offer/answer exchange and ICE candidate relay
@@ -28,7 +28,7 @@ Scalable WebRTC signaling server with cryptographic username claiming, service p
 ## Architecture
 
 ```
-Username Claiming → Service Publishing → Service Discovery → WebRTC Connection
+Username Claiming → Offer Publishing → Offer Discovery → WebRTC Connection
 
 alice claims "alice" with Ed25519 signature
   ↓
@@ -74,7 +74,7 @@ All API calls are made to `POST /rpc` with JSON-RPC format.
     "params": { "username": "alice" }
   },
   {
-    "method": "getService",
+    "method": "getOffer",
     "params": { "serviceFqn": "chat:1.0.0" }
   }
 ]
@@ -130,15 +130,15 @@ Headers: X-Username, X-Timestamp, X-Signature
 ]
 ```
 
-### Service Publishing
+### Offer Publishing
 
 ```typescript
-// Publish service (requires authentication)
+// Publish offer (requires authentication)
 POST /rpc
 Headers: X-Username, X-Timestamp, X-Signature
 [
   {
-    "method": "publishService",
+    "method": "publishOffer",
     "params": {
       "serviceFqn": "chat:1.0.0@alice",
       "offers": [{ "sdp": "webrtc-offer-sdp" }],
@@ -148,14 +148,14 @@ Headers: X-Username, X-Timestamp, X-Signature
 ]
 ```
 
-### Service Discovery
+### Offer Discovery
 
 ```typescript
-// Get specific service
+// Get specific offer
 POST /rpc
 [
   {
-    "method": "getService",
+    "method": "getOffer",
     "params": { "serviceFqn": "chat:1.0.0@alice" }
   }
 ]
@@ -164,7 +164,7 @@ POST /rpc
 POST /rpc
 [
   {
-    "method": "getService",
+    "method": "getOffer",
     "params": { "serviceFqn": "chat:1.0.0" }
   }
 ]
@@ -173,7 +173,7 @@ POST /rpc
 POST /rpc
 [
   {
-    "method": "getService",
+    "method": "getOffer",
     "params": {
       "serviceFqn": "chat:1.0.0",
       "limit": 10,

@@ -180,15 +180,15 @@ const handlers: Record<string, RpcHandler> = {
   },
 
   /**
-   * Get service by FQN - Supports 3 modes:
+   * Get offer by FQN - Supports 3 modes:
    * 1. Direct lookup: FQN includes @username
    * 2. Paginated discovery: FQN without @username, with limit/offset
    * 3. Random discovery: FQN without @username, no limit
    */
-  async getService(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, limit, offset } = params;
 
-    // Note: getService can be called without auth for discovery
+    // Note: getOffer can be called without auth for discovery
     // Auth is verified if username is provided
 
     // Parse and validate FQN
@@ -296,13 +296,13 @@ const handlers: Record<string, RpcHandler> = {
   },
 
   /**
-   * Publish a service
+   * Publish an offer
    */
-  async publishService(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async publishOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offers, ttl } = params;
 
     if (!username) {
-      throw new Error('Username required for service publishing');
+      throw new Error('Username required for offer publishing');
     }
 
     // Verify authentication
@@ -391,9 +391,9 @@ const handlers: Record<string, RpcHandler> = {
   },
 
   /**
-   * Delete a service
+   * Delete an offer
    */
-  async deleteService(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async deleteOffer(params, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn } = params;
 
     if (!username) {
