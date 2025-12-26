@@ -418,6 +418,7 @@ Environment variables:
 | `OFFER_MAX_TTL` | `86400000` | Maximum offer TTL in ms (24 hours) |
 | `CLEANUP_INTERVAL` | `60000` | Cleanup interval in ms (1 minute) |
 | `MAX_OFFERS_PER_REQUEST` | `100` | Maximum offers per create request |
+| `MAX_BATCH_SIZE` | `100` | Maximum number of RPC requests per batch |
 
 ## Database Schema
 
@@ -493,9 +494,11 @@ See [MIGRATION.md](../MIGRATION.md) for detailed migration guide.
 
 **Key Changes:**
 - Moved from REST API to RPC interface with single `/rpc` endpoint
-- All methods now use POST with JSON body
-- Batch operations supported
-- Authentication is per-method instead of per-endpoint middleware
+- All methods now use POST with JSON body (must be an array)
+- Batch-only: All requests must be wrapped in an array, even single operations
+- Responses are always arrays matching request order
+- Authentication uses headers (X-Username, X-Timestamp, X-Signature, X-Public-Key)
+- Configurable batch size limit via `MAX_BATCH_SIZE` environment variable
 
 ## License
 

@@ -62,60 +62,57 @@ npx wrangler deploy
 
 All API calls are made to `POST /rpc` with JSON-RPC format.
 
+**Important:** The API only accepts batch requests (arrays). All requests must be wrapped in an array, even for single operations.
+
 ### Request Format
 
-**Single method call:**
-```json
-{
-  "method": "getUser",
-  "message": "getUser:alice:1733404800000",
-  "signature": "base64-encoded-signature",
-  "params": {
-    "username": "alice"
-  }
-}
-```
-
-**Batch calls:**
+**Request (must be an array):**
 ```json
 [
   {
     "method": "getUser",
-    "message": "getUser:alice:1733404800000",
-    "signature": "base64-encoded-signature",
     "params": { "username": "alice" }
   },
   {
-    "method": "claimUsername",
-    "message": "claim:bob:1733404800000",
-    "signature": "base64-encoded-signature",
-    "params": {
-      "username": "bob",
-      "publicKey": "base64-encoded-public-key"
-    }
+    "method": "getService",
+    "params": { "serviceFqn": "chat:1.0.0" }
   }
 ]
 ```
 
+**Single operation (still requires array):**
+```json
+[
+  {
+    "method": "getUser",
+    "params": { "username": "alice" }
+  }
+]
+```
+
+**Authentication headers (for authenticated methods):**
+- `X-Username`: Your username
+- `X-Timestamp`: Current timestamp (milliseconds)
+- `X-Signature`: Ed25519 signature
+- `X-Public-Key`: (Optional) For auto-claim
+
 ### Response Format
 
-**Single response:**
+**Responses (always an array):**
 ```json
-{
-  "success": true,
-  "result": { /* method-specific data */ }
-}
+[
+  {
+    "success": true,
+    "result": { /* method-specific data */ }
+  },
+  {
+    "success": false,
+    "error": "Error message"
+  }
+]
 ```
 
-**Error response:**
-```json
-{
-  "success": false,
-  "error": "Error message"
-}
-```
-
-**Batch responses:** Array of responses matching request array order.
+Responses are returned in the same order as requests.
 
 ## Core Methods
 
@@ -124,39 +121,31 @@ All API calls are made to `POST /rpc` with JSON-RPC format.
 ```typescript
 // Check username availability
 POST /rpc
-{
-  "method": "getUser",
-  "params": { "username": "alice" }
-}
-
-// Claim username (requires signature)
-POST /rpc
-{
-  "method": "claimUsername",
-  "message": "claim:alice:1733404800000",
-  "signature": "base64-signature",
-  "params": {
-    "username": "alice",
-    "publicKey": "base64-public-key"
+Headers: X-Username, X-Timestamp, X-Signature
+[
+  {
+    "method": "getUser",
+    "params": { "username": "alice" }
   }
-}
+]
 ```
 
 ### Service Publishing
 
 ```typescript
-// Publish service (requires signature)
+// Publish service (requires authentication)
 POST /rpc
-{
-  "method": "publishService",
-  "message": "publishService:alice:chat:1.0.0@alice:1733404800000",
-  "signature": "base64-signature",
-  "params": {
-    "serviceFqn": "chat:1.0.0@alice",
-    "offers": [{ "sdp": "webrtc-offer-sdp" }],
-    "ttl": 300000
+Headers: X-Username, X-Timestamp, X-Signature
+[
+  {
+    "method": "publishService",
+    "params": {
+      "serviceFqn": "chat:1.0.0@alice",
+      "offers": [{ "sdp": "webrtc-offer-sdp" }],
+      "ttl": 300000
+    }
   }
-}
+]
 ```
 
 ### Service Discovery
@@ -164,63 +153,76 @@ POST /rpc
 ```typescript
 // Get specific service
 POST /rpc
-{
-  "method": "getService",
-  "params": { "serviceFqn": "chat:1.0.0@alice" }
-}
+[
+  {
+    "method": "getService",
+    "params": { "serviceFqn": "chat:1.0.0@alice" }
+  }
+]
 
 // Random discovery
 POST /rpc
-{
-  "method": "getService",
-  "params": { "serviceFqn": "chat:1.0.0" }
-}
+[
+  {
+    "method": "getService",
+    "params": { "serviceFqn": "chat:1.0.0" }
+  }
+]
 
 // Paginated discovery
 POST /rpc
-{
-  "method": "getService",
-  "params": {
-    "serviceFqn": "chat:1.0.0",
-    "limit": 10,
-    "offset": 0
+[
+  {
+    "method": "getService",
+    "params": {
+      "serviceFqn": "chat:1.0.0",
+      "limit": 10,
+      "offset": 0
+    }
   }
-}
+]
 ```
 
 ### WebRTC Signaling
 
 ```typescript
-// Answer offer (requires signature)
+// Answer offer (requires authentication)
 POST /rpc
-{
-  "method": "answerOffer",
-  "message": "answer:bob:offer-id:1733404800000",
-  "signature": "base64-signature",
-  "params": {
-    "serviceFqn": "chat:1.0.0@alice",
-    "offerId": "offer-id",
-    "sdp": "webrtc-answer-sdp"
+Headers: X-Username, X-Timestamp, X-Signature
+[
+  {
+    "method": "answerOffer",
+    "params": {
+      "serviceFqn": "chat:1.0.0@alice",
+      "offerId": "offer-id",
+      "sdp": "webrtc-answer-sdp"
+    }
   }
-}
+]
 
-// Add ICE candidates (requires signature)
+// Add ICE candidates (requires authentication)
 POST /rpc
-{
-  "method": "addIceCandidates",
-  "params": {
-    "serviceFqn": "chat:1.0.0@alice",
-    "offerId": "offer-id",
-    "candidates": [{ /* RTCIceCandidateInit */ }]
+Headers: X-Username, X-Timestamp, X-Signature
+[
+  {
+    "method": "addIceCandidates",
+    "params": {
+      "serviceFqn": "chat:1.0.0@alice",
+      "offerId": "offer-id",
+      "candidates": [{ /* RTCIceCandidateInit */ }]
+    }
   }
-}
+]
 
-// Poll for answers and ICE candidates (requires signature)
+// Poll for answers and ICE candidates (requires authentication)
 POST /rpc
-{
-  "method": "poll",
-  "params": { "since": 1733404800000 }
-}
+Headers: X-Username, X-Timestamp, X-Signature
+[
+  {
+    "method": "poll",
+    "params": { "since": 1733404800000 }
+  }
+]
 ```
 
 ## Configuration
@@ -232,6 +234,7 @@ Quick reference for common environment variables:
 | `PORT` | `3000` | Server port (Node.js/Docker) |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `STORAGE_PATH` | `./rondevu.db` | SQLite database path (use `:memory:` for in-memory) |
+| `MAX_BATCH_SIZE` | `100` | Maximum number of requests per batch |
 
 📚 See [ADVANCED.md](./ADVANCED.md#configuration) for complete configuration reference.
 

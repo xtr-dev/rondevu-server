@@ -4,9 +4,6 @@ import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import { handleRpc, RpcRequest } from './rpc.ts';
 
-// Constants
-const MAX_BATCH_SIZE = 100;
-
 /**
  * Creates the Hono application with RPC interface
  */
@@ -51,29 +48,33 @@ export function createApp(storage: Storage, config: Config) {
 
   /**
    * POST /rpc
-   * RPC endpoint - accepts single or batch method calls
+   * RPC endpoint - accepts batch method calls only
    */
   app.post('/rpc', async (c) => {
     try {
       const body = await c.req.json();
 
-      // Support both single request and batch array
-      const requests: RpcRequest[] = Array.isArray(body) ? body : [body];
+      // Only accept batch arrays
+      if (!Array.isArray(body)) {
+        return c.json({ error: 'Request must be an array of RPC calls' }, 400);
+      }
+
+      const requests: RpcRequest[] = body;
 
       // Validate requests
       if (requests.length === 0) {
         return c.json({ error: 'Empty request array' }, 400);
       }
 
-      if (requests.length > MAX_BATCH_SIZE) {
-        return c.json({ error: `Too many requests in batch (max ${MAX_BATCH_SIZE})` }, 400);
+      if (requests.length > config.maxBatchSize) {
+        return c.json({ error: `Too many requests in batch (max ${config.maxBatchSize})` }, 400);
       }
 
       // Handle RPC (pass context for auth headers)
       const responses = await handleRpc(requests, c, storage, config);
 
-      // Return single response or array based on input
-      return c.json(Array.isArray(body) ? responses : responses[0], 200);
+      // Always return array
+      return c.json(responses, 200);
     } catch (err) {
       console.error('RPC error:', err);
       return c.json({
