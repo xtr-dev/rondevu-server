@@ -320,7 +320,7 @@ const handlers: Record<string, RpcHandler> = {
     // Check if username is already claimed
     const existing = await storage.getUsername(claimUsername);
     if (existing) {
-      throw new RpcError(ErrorCodes.USERNAME_ALREADY_CLAIMED, 'Username already claimed');
+      throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed');
     }
 
     // Create canonical payload for verification
