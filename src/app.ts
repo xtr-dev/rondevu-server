@@ -22,7 +22,7 @@ export function createApp(storage: Storage, config: Config) {
       return config.corsOrigins[0];
     },
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Origin'],
+    allowHeaders: ['Content-Type', 'Origin', 'X-Username', 'X-Timestamp', 'X-Signature', 'X-Public-Key'],
     exposeHeaders: ['Content-Type'],
     credentials: false,
     maxAge: 86400,

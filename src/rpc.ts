@@ -742,6 +742,9 @@ const handlers: Record<string, RpcHandler> = {
   },
 };
 
+// Methods that don't require authentication
+const UNAUTHENTICATED_METHODS = new Set(['getUser', 'getOffer']);
+
 /**
  * Handle RPC batch request with header-based authentication
  */
@@ -768,40 +771,7 @@ export async function handleRpc(
         responses.push({
           success: false,
           error: 'Missing or invalid method',
-        });
-        continue;
-      }
-
-      // Validate auth headers
-      if (!signature || typeof signature !== 'string') {
-        responses.push({
-          success: false,
-          error: 'Missing or invalid X-Signature header',
-        });
-        continue;
-      }
-
-      if (!timestamp || typeof timestamp !== 'string') {
-        responses.push({
-          success: false,
-          error: 'Missing or invalid X-Timestamp header',
-        });
-        continue;
-      }
-
-      if (!username || typeof username !== 'string') {
-        responses.push({
-          success: false,
-          error: 'Missing or invalid X-Username header',
-        });
-        continue;
-      }
-
-      const timestampNum = parseInt(timestamp, 10);
-      if (isNaN(timestampNum)) {
-        responses.push({
-          success: false,
-          error: 'Invalid X-Timestamp header: must be a number',
+          errorCode: ErrorCodes.INVALID_PARAMS,
         });
         continue;
       }
@@ -817,22 +787,84 @@ export async function handleRpc(
         continue;
       }
 
-      // Execute handler
-      const result = await handler(
-        params || {},
-        username,
-        timestampNum,
-        signature,
-        publicKey,
-        storage,
-        config,
-        request
-      );
+      // Validate auth headers only for methods that require authentication
+      const requiresAuth = !UNAUTHENTICATED_METHODS.has(method);
 
-      responses.push({
-        success: true,
-        result,
-      });
+      if (requiresAuth) {
+        if (!signature || typeof signature !== 'string') {
+          responses.push({
+            success: false,
+            error: 'Missing or invalid X-Signature header',
+            errorCode: ErrorCodes.AUTH_REQUIRED,
+          });
+          continue;
+        }
+
+        if (!timestamp || typeof timestamp !== 'string') {
+          responses.push({
+            success: false,
+            error: 'Missing or invalid X-Timestamp header',
+            errorCode: ErrorCodes.AUTH_REQUIRED,
+          });
+          continue;
+        }
+
+        if (!username || typeof username !== 'string') {
+          responses.push({
+            success: false,
+            error: 'Missing or invalid X-Username header',
+            errorCode: ErrorCodes.AUTH_REQUIRED,
+          });
+          continue;
+        }
+
+        const timestampNum = parseInt(timestamp, 10);
+        if (isNaN(timestampNum)) {
+          responses.push({
+            success: false,
+            error: 'Invalid X-Timestamp header: must be a number',
+            errorCode: ErrorCodes.INVALID_PARAMS,
+          });
+          continue;
+        }
+
+        // Execute handler with auth
+        const result = await handler(
+          params || {},
+          username,
+          timestampNum,
+          signature,
+          publicKey,
+          storage,
+          config,
+          request
+        );
+
+        responses.push({
+          success: true,
+          result,
+        });
+      } else {
+        // Execute handler without strict auth requirement
+        // Parse timestamp if provided, otherwise use 0
+        const timestampNum = timestamp ? parseInt(timestamp, 10) : 0;
+
+        const result = await handler(
+          params || {},
+          username || '',
+          timestampNum,
+          signature || '',
+          publicKey,
+          storage,
+          config,
+          request
+        );
+
+        responses.push({
+          success: true,
+          result,
+        });
+      }
     } catch (err) {
       if (err instanceof RpcError) {
         responses.push({
