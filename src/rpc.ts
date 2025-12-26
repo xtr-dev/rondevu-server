@@ -140,9 +140,10 @@ export interface GetIceCandidatesParams {
 
 /**
  * RPC method handler
+ * Generic type parameter allows individual handlers to specify their param types
  */
-type RpcHandler = (
-  params: any,
+type RpcHandler<TParams = any> = (
+  params: TParams,
   username: string,
   timestamp: number,
   signature: string,
@@ -450,6 +451,9 @@ const handlers: Record<string, RpcHandler> = {
       }
       if (!offer.sdp.trim()) {
         throw new RpcError(ErrorCodes.INVALID_SDP, `Invalid offer at index ${index}: SDP cannot be empty`);
+      }
+      if (offer.sdp.length > MAX_SDP_SIZE) {
+        throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large at index ${index} (max ${MAX_SDP_SIZE} bytes)`);
       }
     });
 
