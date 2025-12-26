@@ -370,7 +370,7 @@ const handlers: Record<string, RpcHandler> = {
 
     // Validate public key format (must be hex-encoded Ed25519 key - 64 chars)
     if (!validatePublicKeyFormat(claimPublicKey)) {
-      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Public key must be 64-character hex string');
+      throw new RpcError(ErrorCodes.INVALID_PUBLIC_KEY, 'Public key must be 64-character hex string');
     }
 
     // Check if username is already claimed
@@ -464,8 +464,12 @@ const handlers: Record<string, RpcHandler> = {
       const pageOffset = Math.max(0, offset || 0);
 
       // Fetch enough services to fill the page after filtering
-      // Estimate: 5x multiplier accounts for version filtering, deduplication, and offer availability
-      // This reduces unnecessary database load while ensuring sufficient results
+      // 5x multiplier rationale:
+      // - Version compatibility filtering: ~50% reduction (semver filtering)
+      // - Username deduplication: ~30% reduction (multiple services per user)
+      // - Offer availability filtering: ~40% reduction (already answered offers)
+      // - Combined: 5x provides buffer to fill requested page after all filters
+      // - Reduces DB load vs fetching MAX_DISCOVERY_RESULTS (1000) every time
       const estimatedFetchSize = Math.min((pageLimit + pageOffset) * 5, MAX_DISCOVERY_RESULTS);
 
       const allServices = await storage.discoverServices(
@@ -906,7 +910,15 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Offer does not belong to the specified service');
     }
 
+    // Validate that user is authorized to access this offer's candidates
+    // Only the offerer and answerer can access ICE candidates
     const isOfferer = offer.username === username;
+    const isAnswerer = offer.answererUsername === username;
+
+    if (!isOfferer && !isAnswerer) {
+      throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Not authorized to access ICE candidates for this offer');
+    }
+
     const role = isOfferer ? 'answerer' : 'offerer';
 
     const candidates = await storage.getIceCandidates(

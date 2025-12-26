@@ -503,6 +503,11 @@ export class SQLiteStorage implements Storage {
       return result;
     }
 
+    // Validate array contains only strings (defense-in-depth)
+    if (!Array.isArray(serviceIds) || !serviceIds.every(id => typeof id === 'string')) {
+      throw new Error('Invalid service IDs: must be array of strings');
+    }
+
     // Prevent DoS attacks from extremely large IN clauses
     // Limit aligns with MAX_DISCOVERY_RESULTS (1000) in rpc.ts
     if (serviceIds.length > 1000) {
