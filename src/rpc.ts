@@ -63,6 +63,16 @@ function validatePublicKeyFormat(key: string): boolean {
 }
 
 /**
+ * Validate parameter is a non-empty string
+ * Prevents type coercion issues and injection attacks
+ */
+function validateStringParam(value: any, paramName: string): void {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new RpcError(ErrorCodes.INVALID_PARAMS, `${paramName} must be a non-empty string`);
+  }
+}
+
+/**
  * Standard error codes for RPC responses
  */
 export const ErrorCodes = {
@@ -301,7 +311,12 @@ async function verifyAuth(
       if (err.message && err.message.includes('already claimed')) {
         throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed by different public key');
       }
-      throw err;
+
+      // Wrap unexpected errors to prevent leaking internal details
+      if (err instanceof RpcError) {
+        throw err;
+      }
+      throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to auto-claim username');
     }
   }
 
@@ -681,6 +696,10 @@ const handlers: Record<string, RpcHandler> = {
   async answerOffer(params: AnswerOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, sdp } = params;
 
+    // Validate input parameters
+    validateStringParam(serviceFqn, 'serviceFqn');
+    validateStringParam(offerId, 'offerId');
+
     if (!username) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
@@ -715,6 +734,10 @@ const handlers: Record<string, RpcHandler> = {
    */
   async getOfferAnswer(params: GetOfferAnswerParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId } = params;
+
+    // Validate input parameters
+    validateStringParam(serviceFqn, 'serviceFqn');
+    validateStringParam(offerId, 'offerId');
 
     if (!username) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
@@ -810,6 +833,10 @@ const handlers: Record<string, RpcHandler> = {
   async addIceCandidates(params: AddIceCandidatesParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, candidates } = params;
 
+    // Validate input parameters
+    validateStringParam(serviceFqn, 'serviceFqn');
+    validateStringParam(offerId, 'offerId');
+
     if (!username) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
     }
@@ -886,6 +913,10 @@ const handlers: Record<string, RpcHandler> = {
    */
   async getIceCandidates(params: GetIceCandidatesParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, since } = params;
+
+    // Validate input parameters
+    validateStringParam(serviceFqn, 'serviceFqn');
+    validateStringParam(offerId, 'offerId');
 
     if (!username) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
