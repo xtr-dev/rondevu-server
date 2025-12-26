@@ -16,9 +16,42 @@ import {
 const MAX_PAGE_SIZE = 100;
 const MAX_SDP_SIZE = 64 * 1024; // 64KB
 const MAX_CANDIDATE_SIZE = 4 * 1024; // 4KB per ICE candidate
+const MAX_CANDIDATE_DEPTH = 10; // Max nesting level for ICE candidates
 const MAX_CANDIDATES_PER_REQUEST = 100;
 const MAX_DISCOVERY_RESULTS = 1000;
 const DISCOVERY_OFFSET = 0;
+
+/**
+ * Check JSON object depth to prevent stack overflow from deeply nested objects
+ * @param obj Object to check
+ * @param maxDepth Maximum allowed depth
+ * @param currentDepth Current recursion depth
+ * @returns Actual depth of the object
+ */
+function getJsonDepth(obj: any, maxDepth: number, currentDepth = 0): number {
+  if (currentDepth > maxDepth) {
+    return currentDepth;
+  }
+
+  if (obj === null || typeof obj !== 'object') {
+    return currentDepth;
+  }
+
+  let maxChildDepth = currentDepth;
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const childDepth = getJsonDepth(obj[key], maxDepth, currentDepth + 1);
+      maxChildDepth = Math.max(maxChildDepth, childDepth);
+
+      // Early exit if exceeded
+      if (maxChildDepth > maxDepth) {
+        return maxChildDepth;
+      }
+    }
+  }
+
+  return maxChildDepth;
+}
 
 /**
  * Standard error codes for RPC responses
@@ -236,17 +269,25 @@ async function verifyAuth(
       throw new RpcError(ErrorCodes.INVALID_SIGNATURE, 'Invalid signature for auto-claim');
     }
 
-    // Auto-claim the username
+    // Auto-claim the username (race condition safe - database enforces uniqueness)
     const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 365 days
-    await storage.claimUsername({
-      username,
-      publicKey,
-      expiresAt,
-    });
+    try {
+      await storage.claimUsername({
+        username,
+        publicKey,
+        expiresAt,
+      });
 
-    usernameRecord = await storage.getUsername(username);
-    if (!usernameRecord) {
-      throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to claim username');
+      usernameRecord = await storage.getUsername(username);
+      if (!usernameRecord) {
+        throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to claim username');
+      }
+    } catch (err: any) {
+      // Handle race condition: another request claimed with different public key
+      if (err.message && err.message.includes('already claimed')) {
+        throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed by different public key');
+      }
+      throw err;
     }
   }
 
@@ -408,10 +449,15 @@ const handlers: Record<string, RpcHandler> = {
       const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
+      // Fetch enough services to fill the page after filtering
+      // Estimate: 5x multiplier accounts for version filtering, deduplication, and offer availability
+      // This reduces unnecessary database load while ensuring sufficient results
+      const estimatedFetchSize = Math.min((pageLimit + pageOffset) * 5, MAX_DISCOVERY_RESULTS);
+
       const allServices = await storage.discoverServices(
         parsed.serviceName,
         parsed.version,
-        MAX_DISCOVERY_RESULTS,
+        estimatedFetchSize,
         DISCOVERY_OFFSET
       );
       const compatibleServices = filterCompatibleServices(allServices);
@@ -768,6 +814,15 @@ const handlers: Record<string, RpcHandler> = {
     candidates.forEach((candidate, index) => {
       if (!candidate || typeof candidate !== 'object') {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, `Invalid candidate at index ${index}: must be an object`);
+      }
+
+      // Check JSON depth to prevent stack overflow from deeply nested objects
+      const depth = getJsonDepth(candidate, MAX_CANDIDATE_DEPTH + 1);
+      if (depth > MAX_CANDIDATE_DEPTH) {
+        throw new RpcError(
+          ErrorCodes.INVALID_PARAMS,
+          `Candidate at index ${index} too deeply nested (max depth ${MAX_CANDIDATE_DEPTH})`
+        );
       }
 
       // Ensure candidate is serializable and check size (will be stored as JSON)
