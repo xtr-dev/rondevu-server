@@ -20,6 +20,9 @@ const MAX_CANDIDATE_DEPTH = 10; // Max nesting level for ICE candidates
 const MAX_CANDIDATES_PER_REQUEST = 100;
 const MAX_DISCOVERY_RESULTS = 1000;
 const DISCOVERY_OFFSET = 0;
+// Multiplier for estimated fetch size to account for filtering
+// Rationale: version (50%), dedup (30%), availability (40%) reductions
+const DISCOVERY_FETCH_MULTIPLIER = 5;
 
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
@@ -479,13 +482,11 @@ const handlers: Record<string, RpcHandler> = {
       const pageOffset = Math.max(0, offset || 0);
 
       // Fetch enough services to fill the page after filtering
-      // 5x multiplier rationale:
-      // - Version compatibility filtering: ~50% reduction (semver filtering)
-      // - Username deduplication: ~30% reduction (multiple services per user)
-      // - Offer availability filtering: ~40% reduction (already answered offers)
-      // - Combined: 5x provides buffer to fill requested page after all filters
-      // - Reduces DB load vs fetching MAX_DISCOVERY_RESULTS (1000) every time
-      const estimatedFetchSize = Math.min((pageLimit + pageOffset) * 5, MAX_DISCOVERY_RESULTS);
+      // See DISCOVERY_FETCH_MULTIPLIER constant for rationale
+      const estimatedFetchSize = Math.min(
+        (pageLimit + pageOffset) * DISCOVERY_FETCH_MULTIPLIER,
+        MAX_DISCOVERY_RESULTS
+      );
 
       const allServices = await storage.discoverServices(
         parsed.serviceName,
