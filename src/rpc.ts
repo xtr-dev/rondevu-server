@@ -610,8 +610,19 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     // Mode 3: Random discovery without username
-    // Note: This could return user's own service in random mode
-    // This is acceptable as random discovery is intentionally unpredictable
+    //
+    // DESIGN NOTE: Discovery Mode Asymmetry
+    // - Paginated mode (limit provided): Filters out user's own services (line 571)
+    // - Random mode (no limit): Does NOT filter own services
+    // - Direct mode (username in FQN): Allows fetching own services (intentional)
+    //
+    // Rationale for random mode NOT filtering:
+    //   * Random selection happens at database level for performance
+    //   * Adding filter would require fetching multiple candidates and re-rolling
+    //   * Probability of selecting own service is typically low (1/N services)
+    //   * Use case: Self-discovery is valid for testing/monitoring
+    //
+    // This asymmetry is intentional and acceptable.
     const randomService = await storage.getRandomService(parsed.serviceName, parsed.version);
 
     if (!randomService) {
@@ -1055,7 +1066,6 @@ export async function handleRpc(
   // CRITICAL: Pre-calculate total operations BEFORE processing any requests
   // This prevents DoS where first N requests complete before limit triggers
   // Example attack prevented: 100 publishOffer × 100 offers = 10,000 operations
-  const MAX_TOTAL_OPERATIONS = 1000;
   let totalOperations = 0;
 
   // Count all operations across all requests first
@@ -1072,12 +1082,13 @@ export async function handleRpc(
 
   // Reject entire batch if total operations exceed limit
   // This happens BEFORE processing any requests
-  if (totalOperations > MAX_TOTAL_OPERATIONS) {
-    return [{
+  // Return error for EACH request to maintain response array alignment
+  if (totalOperations > config.maxTotalOperations) {
+    return requests.map(() => ({
       success: false,
-      error: `Total operations across batch exceed limit: ${totalOperations} > ${MAX_TOTAL_OPERATIONS}`,
+      error: `Total operations across batch exceed limit: ${totalOperations} > ${config.maxTotalOperations}`,
       errorCode: ErrorCodes.BATCH_TOO_LARGE,
-    }];
+    }));
   }
 
   // Process all requests

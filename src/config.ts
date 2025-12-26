@@ -20,6 +20,7 @@ export interface Config {
   maxCandidatesPerRequest: number;
   timestampMaxAge: number;
   timestampMaxFuture: number;
+  maxTotalOperations: number;
 }
 
 /**
@@ -45,6 +46,7 @@ export function loadConfig(): Config {
     maxCandidateDepth: parseInt(process.env.MAX_CANDIDATE_DEPTH || '10', 10),
     maxCandidatesPerRequest: parseInt(process.env.MAX_CANDIDATES_PER_REQUEST || '100', 10),
     timestampMaxAge: parseInt(process.env.TIMESTAMP_MAX_AGE || '300000', 10), // 5 minutes
-    timestampMaxFuture: parseInt(process.env.TIMESTAMP_MAX_FUTURE || '60000', 10) // 1 minute
+    timestampMaxFuture: parseInt(process.env.TIMESTAMP_MAX_FUTURE || '60000', 10), // 1 minute
+    maxTotalOperations: parseInt(process.env.MAX_TOTAL_OPERATIONS || '1000', 10) // Total ops across batch
   };
 }
