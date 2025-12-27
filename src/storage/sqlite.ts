@@ -5,12 +5,10 @@ import {
   Offer,
   IceCandidate,
   CreateOfferRequest,
-  Username,
-  ClaimUsernameRequest,
+  Credential,
+  GenerateCredentialsRequest,
   Service,
   CreateServiceRequest,
-  StorageError,
-  StorageErrorCode,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 import { parseServiceFqn } from '../crypto.ts';

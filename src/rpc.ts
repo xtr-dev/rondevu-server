@@ -1,5 +1,5 @@
 import { Context } from 'hono';
-import { Storage, StorageError, StorageErrorCode } from './storage/types.ts';
+import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import {
   validateServiceFqn,
@@ -238,9 +238,9 @@ const handlers: Record<string, RpcHandler> = {
 
   /**
    * Get offer by FQN - Supports 3 modes:
-   * 1. Direct lookup: FQN includes @username
-   * 2. Paginated discovery: FQN without @username, with limit/offset
-   * 3. Random discovery: FQN without @username, no limit
+   * 1. Direct lookup: FQN includes @name (e.g., chat:1.0.0@brave-tiger-7a3f)
+   * 2. Paginated discovery: FQN without @name, with limit/offset
+   * 3. Random discovery: FQN without @name, no limit
    */
   async getOffer(params: GetOfferParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn, limit, offset } = params;

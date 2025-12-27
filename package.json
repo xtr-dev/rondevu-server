@@ -1,7 +1,7 @@
 {
   "name": "@xtr-dev/rondevu-server",
   "version": "0.5.4",
-  "description": "DNS-like WebRTC signaling server with username claiming and service discovery",
+  "description": "DNS-like WebRTC signaling server with credential-based authentication and service discovery",
   "main": "dist/index.js",
   "scripts": {
     "build": "node build.js",
@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.6",
-    "@noble/ed25519": "^3.0.0",
     "@xtr-dev/rondevu-client": "^0.13.0",
     "better-sqlite3": "^12.4.1",
     "hono": "^4.10.4"

@@ -1,29 +1,4 @@
 /**
- * Custom error types for storage layer operations
- * Provides type-safe error handling across different storage backends
- */
-export enum StorageErrorCode {
-  USERNAME_CONFLICT = 'USERNAME_CONFLICT', // Username already claimed by different key
-  PUBLIC_KEY_CONFLICT = 'PUBLIC_KEY_CONFLICT', // Public key already claimed different username
-  CONSTRAINT_VIOLATION = 'CONSTRAINT_VIOLATION', // Generic constraint violation
-}
-
-/**
- * Custom error class for storage layer
- * Allows RPC layer to handle errors without relying on string matching
- */
-export class StorageError extends Error {
-  constructor(
-    public code: StorageErrorCode,
-    message: string,
-    public cause?: Error
-  ) {
-    super(message);
-    this.name = 'StorageError';
-  }
-}
-
-/**
  * Represents a WebRTC signaling offer
  */
 export interface Offer {
@@ -86,14 +61,14 @@ export interface GenerateCredentialsRequest {
 
 /**
  * Represents a published service (can have multiple offers)
- * New format: service:version@username (e.g., chat:1.0.0@alice)
+ * Format: service:version@name (e.g., chat:1.0.0@brave-tiger-7a3f)
  */
 export interface Service {
   id: string; // UUID v4
-  serviceFqn: string; // Full FQN: chat:1.0.0@alice
+  serviceFqn: string; // Full FQN: chat:1.0.0@brave-tiger-7a3f
   serviceName: string; // Extracted: chat
   version: string; // Extracted: 1.0.0
-  username: string; // Extracted: alice
+  username: string; // Extracted: brave-tiger-7a3f (kept as "username" for compatibility)
   createdAt: number;
   expiresAt: number;
 }

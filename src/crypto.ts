@@ -1,25 +1,14 @@
 /**
- * Crypto utilities for Ed25519-based authentication
- * Uses @noble/ed25519 for Ed25519 signature verification
+ * Crypto utilities for credential generation and validation
  * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
  */
 
-import * as ed25519 from '@noble/ed25519';
 import { Buffer } from 'node:buffer';
 
-// Set SHA-512 hash function for ed25519 (required in @noble/ed25519 v3+)
-// Uses Web Crypto API (compatible with both Node.js and Cloudflare Workers)
-ed25519.hashes.sha512Async = async (message: Uint8Array) => {
-  return new Uint8Array(await crypto.subtle.digest('SHA-512', message as BufferSource));
-};
-
-// Username validation
+// Username validation (used for service FQN parsing)
 const USERNAME_REGEX = /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
-
-// Timestamp validation (5 minutes tolerance)
-const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 
 /**
  * Generates a random credential name
@@ -71,63 +60,10 @@ export function generateAnonymousUsername(): string {
   return `anon-${timestamp}-${hex}`;
 }
 
-/**
- * Convert Uint8Array to base64 string
- * Uses Buffer for compatibility with Node.js-based clients
- */
-function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
-}
+// ===== Username Validation =====
 
 /**
- * Convert base64 string to Uint8Array
- * Uses Buffer for compatibility with Node.js-based clients
- */
-function base64ToBytes(base64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(base64, 'base64'));
-}
-
-/**
- * Validates a generic auth message format
- * Expected format: action:username:params:timestamp
- * Validates that the message contains the expected username and has a valid timestamp
- */
-export function validateAuthMessage(
-  expectedUsername: string,
-  message: string
-): { valid: boolean; error?: string } {
-  const parts = message.split(':');
-
-  if (parts.length < 3) {
-    return { valid: false, error: 'Invalid message format: must have at least action:username:timestamp' };
-  }
-
-  // Extract username (second part) and timestamp (last part)
-  const messageUsername = parts[1];
-  const timestamp = parseInt(parts[parts.length - 1], 10);
-
-  // Validate username matches
-  if (messageUsername !== expectedUsername) {
-    return { valid: false, error: 'Username in message does not match authenticated username' };
-  }
-
-  // Validate timestamp
-  if (isNaN(timestamp)) {
-    return { valid: false, error: 'Invalid timestamp in message' };
-  }
-
-  const timestampCheck = validateTimestamp(timestamp);
-  if (!timestampCheck.valid) {
-    return timestampCheck;
-  }
-
-  return { valid: true };
-}
-
-// ===== Username and Ed25519 Signature Utilities =====
-
-/**
- * Validates username format
+ * Validates username format (used for service FQN parsing)
  * Rules: 3-32 chars, lowercase alphanumeric + dash, must start/end with alphanumeric
  */
 export function validateUsername(username: string): { valid: boolean; error?: string } {
@@ -274,145 +210,4 @@ export function parseServiceFqn(fqn: string): { serviceName: string; version: st
     version,
     username,
   };
-}
-
-/**
- * Validates timestamp is within acceptable range (prevents replay attacks)
- */
-export function validateTimestamp(timestamp: number): { valid: boolean; error?: string } {
-  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
-    return { valid: false, error: 'Timestamp must be a finite number' };
-  }
-
-  const now = Date.now();
-  const diff = Math.abs(now - timestamp);
-
-  if (diff > TIMESTAMP_TOLERANCE_MS) {
-    return { valid: false, error: `Timestamp too old or too far in future (tolerance: ${TIMESTAMP_TOLERANCE_MS / 1000}s)` };
-  }
-
-  return { valid: true };
-}
-
-/**
- * Verifies Ed25519 signature
- * @param publicKey Base64-encoded Ed25519 public key (32 bytes)
- * @param signature Base64-encoded Ed25519 signature (64 bytes)
- * @param message Message that was signed (UTF-8 string)
- * @returns true if signature is valid, false otherwise
- */
-export async function verifyEd25519Signature(
-  publicKey: string,
-  signature: string,
-  message: string
-): Promise<boolean> {
-  try {
-    // Decode base64 to bytes
-    const publicKeyBytes = base64ToBytes(publicKey);
-    const signatureBytes = base64ToBytes(signature);
-
-    // Encode message as UTF-8
-    const encoder = new TextEncoder();
-    const messageBytes = encoder.encode(message);
-
-    // Verify signature using @noble/ed25519 (async version)
-    const isValid = await ed25519.verifyAsync(signatureBytes, messageBytes, publicKeyBytes);
-    return isValid;
-  } catch (err) {
-    console.error('Ed25519 signature verification failed:', err);
-    return false;
-  }
-}
-
-/**
- * Validates a username claim request
- * Verifies format, timestamp, and signature
- */
-export async function validateUsernameClaim(
-  username: string,
-  publicKey: string,
-  signature: string,
-  message: string
-): Promise<{ valid: boolean; error?: string }> {
-  // Validate username format
-  const usernameCheck = validateUsername(username);
-  if (!usernameCheck.valid) {
-    return usernameCheck;
-  }
-
-  // Parse message format: "claim:{username}:{timestamp}"
-  const parts = message.split(':');
-  if (parts.length !== 3 || parts[0] !== 'claim' || parts[1] !== username) {
-    return { valid: false, error: 'Invalid message format (expected: claim:{username}:{timestamp})' };
-  }
-
-  const timestamp = parseInt(parts[2], 10);
-  if (isNaN(timestamp)) {
-    return { valid: false, error: 'Invalid timestamp in message' };
-  }
-
-  // Validate timestamp
-  const timestampCheck = validateTimestamp(timestamp);
-  if (!timestampCheck.valid) {
-    return timestampCheck;
-  }
-
-  // Verify signature
-  const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
-  if (!signatureValid) {
-    return { valid: false, error: 'Invalid signature' };
-  }
-
-  return { valid: true };
-}
-
-/**
- * Validates a service publish signature
- * Message format: publish:{username}:{serviceFqn}:{timestamp}
- */
-export async function validateServicePublish(
-  username: string,
-  serviceFqn: string,
-  publicKey: string,
-  signature: string,
-  message: string
-): Promise<{ valid: boolean; error?: string }> {
-  // Validate username format
-  const usernameCheck = validateUsername(username);
-  if (!usernameCheck.valid) {
-    return usernameCheck;
-  }
-
-  // Parse message format: "publish:{username}:{serviceFqn}:{timestamp}"
-  // Note: serviceFqn can contain colons (e.g., "chat:2.0.0@user"), so we need careful parsing
-  const parts = message.split(':');
-  if (parts.length < 4 || parts[0] !== 'publish' || parts[1] !== username) {
-    return { valid: false, error: 'Invalid message format (expected: publish:{username}:{serviceFqn}:{timestamp})' };
-  }
-
-  // The timestamp is the last part
-  const timestamp = parseInt(parts[parts.length - 1], 10);
-  if (isNaN(timestamp)) {
-    return { valid: false, error: 'Invalid timestamp in message' };
-  }
-
-  // The serviceFqn is everything between username and timestamp
-  const extractedServiceFqn = parts.slice(2, parts.length - 1).join(':');
-  if (extractedServiceFqn !== serviceFqn) {
-    return { valid: false, error: `Service FQN mismatch (expected: ${serviceFqn}, got: ${extractedServiceFqn})` };
-  }
-
-  // Validate timestamp
-  const timestampCheck = validateTimestamp(timestamp);
-  if (!timestampCheck.valid) {
-    return timestampCheck;
-  }
-
-  // Verify signature
-  const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
-  if (!signatureValid) {
-    return { valid: false, error: 'Invalid signature' };
-  }
-
-  return { valid: true };
 }
