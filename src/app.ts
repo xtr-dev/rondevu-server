@@ -22,7 +22,7 @@ export function createApp(storage: Storage, config: Config) {
       return config.corsOrigins[0];
     },
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Origin', 'X-Username', 'X-Timestamp', 'X-Signature', 'X-Public-Key'],
+    allowHeaders: ['Content-Type', 'Origin', 'X-Name', 'X-Secret'],
     exposeHeaders: ['Content-Type'],
     credentials: false,
     maxAge: 86400,
@@ -33,7 +33,7 @@ export function createApp(storage: Storage, config: Config) {
     return c.json({
       version: config.version,
       name: 'Rondevu',
-      description: 'WebRTC signaling with RPC interface and Ed25519 authentication',
+      description: 'WebRTC signaling with RPC interface and simple secret-based authentication',
     }, 200);
   });
 

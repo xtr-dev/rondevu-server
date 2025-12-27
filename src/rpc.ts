@@ -2,13 +2,9 @@ import { Context } from 'hono';
 import { Storage, StorageError, StorageErrorCode } from './storage/types.ts';
 import { Config } from './config.ts';
 import {
-  validateUsernameClaim,
-  validateServicePublish,
   validateServiceFqn,
   parseServiceFqn,
   isVersionCompatible,
-  verifyEd25519Signature,
-  validateAuthMessage,
   validateUsername,
 } from './crypto.ts';
 
@@ -65,15 +61,6 @@ function getJsonDepth(obj: any, maxDepth: number, currentDepth = 0): number {
 }
 
 /**
- * Validate Ed25519 public key format (64-character hex string)
- * @param key Public key to validate
- * @returns true if valid format
- */
-function validatePublicKeyFormat(key: string): boolean {
-  return /^[0-9a-f]{64}$/i.test(key);
-}
-
-/**
  * Validate parameter is a non-empty string
  * Prevents type coercion issues and injection attacks
  */
@@ -89,14 +76,10 @@ function validateStringParam(value: any, paramName: string): void {
 export const ErrorCodes = {
   // Authentication errors
   AUTH_REQUIRED: 'AUTH_REQUIRED',
-  INVALID_SIGNATURE: 'INVALID_SIGNATURE',
-  TIMESTAMP_TOO_OLD: 'TIMESTAMP_TOO_OLD',
-  TIMESTAMP_IN_FUTURE: 'TIMESTAMP_IN_FUTURE',
-  USERNAME_NOT_CLAIMED: 'USERNAME_NOT_CLAIMED',
-  INVALID_PUBLIC_KEY: 'INVALID_PUBLIC_KEY',
+  INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
 
   // Validation errors
-  INVALID_USERNAME: 'INVALID_USERNAME',
+  INVALID_NAME: 'INVALID_NAME',
   INVALID_FQN: 'INVALID_FQN',
   INVALID_SDP: 'INVALID_SDP',
   INVALID_PARAMS: 'INVALID_PARAMS',
@@ -107,7 +90,6 @@ export const ErrorCodes = {
   OFFER_ALREADY_ANSWERED: 'OFFER_ALREADY_ANSWERED',
   OFFER_NOT_ANSWERED: 'OFFER_NOT_ANSWERED',
   NO_AVAILABLE_OFFERS: 'NO_AVAILABLE_OFFERS',
-  USERNAME_NOT_AVAILABLE: 'USERNAME_NOT_AVAILABLE',
 
   // Authorization errors
   NOT_AUTHORIZED: 'NOT_AUTHORIZED',
@@ -157,13 +139,7 @@ export interface RpcResponse {
 /**
  * RPC Method Parameter Interfaces
  */
-export interface GetUserParams {
-  username: string;
-}
-
-export interface ClaimUsernameParams {
-  username: string;
-  publicKey: string;
+export interface GenerateCredentialsParams {
   expiresAt?: number;
 }
 
@@ -216,170 +192,25 @@ export interface GetIceCandidatesParams {
  */
 type RpcHandler<TParams = any> = (
   params: TParams,
-  username: string,
-  timestamp: number,
-  signature: string,
-  publicKey: string | undefined,
+  name: string,
+  secret: string,
   storage: Storage,
   config: Config,
   request: RpcRequest
 ) => Promise<any>;
 
 /**
- * Create canonical JSON string with sorted keys for deterministic signing
- */
-function canonicalJSON(obj: any): string {
-  if (obj === null || obj === undefined) {
-    return JSON.stringify(obj);
-  }
-  if (typeof obj !== 'object') {
-    return JSON.stringify(obj);
-  }
-  if (Array.isArray(obj)) {
-    return '[' + obj.map(item => canonicalJSON(item)).join(',') + ']';
-  }
-
-  const sortedKeys = Object.keys(obj).sort();
-  const pairs = sortedKeys.map(key => {
-    return JSON.stringify(key) + ':' + canonicalJSON(obj[key]);
-  });
-  return '{' + pairs.join(',') + '}';
-}
-
-/**
- * Verify authentication for a method call
- * Automatically claims username if it doesn't exist
+ * Verify credentials for a method call
  * Throws RpcError on authentication failure
  */
-async function verifyAuth(
-  request: RpcRequest,
-  username: string,
-  timestamp: number,
-  signature: string,
-  publicKey: string | undefined,
-  storage: Storage,
-  config: Config
+async function verifyCredentials(
+  name: string,
+  secret: string,
+  storage: Storage
 ): Promise<void> {
-  // Validate timestamp (not too old, not in future)
-  const now = Date.now();
-
-  if (timestamp < now - config.timestampMaxAge) {
-    throw new RpcError(ErrorCodes.TIMESTAMP_TOO_OLD, 'Timestamp too old');
-  }
-
-  if (timestamp > now + config.timestampMaxFuture) {
-    throw new RpcError(ErrorCodes.TIMESTAMP_IN_FUTURE, 'Timestamp in future');
-  }
-
-  // Get username record to fetch public key
-  let usernameRecord = await storage.getUsername(username);
-
-  // Auto-claim username if it doesn't exist
-  //
-  // SECURITY ANALYSIS - RACE CONDITION HANDLING:
-  //
-  // Scenario: Two concurrent requests (A and B) for unclaimed username "alice":
-  //   Request A: publicKey = "aaa...", signature = valid for "aaa..."
-  //   Request B: publicKey = "bbb...", signature = valid for "bbb..."
-  //
-  // Race sequence:
-  //   1. Both requests call getUsername("alice") → returns null
-  //   2. Both requests enter this if block
-  //   3. Both requests validate their signatures (both pass)
-  //   4. Request A calls claimUsername() → succeeds, claims with "aaa..."
-  //   5. Request B calls claimUsername() → FAILS with USERNAME_CONFLICT
-  //   6. Request B catches USERNAME_CONFLICT, fetches the claimed record
-  //   7. Request B checks if publicKey matches → "bbb..." ≠ "aaa..." → fails correctly
-  //
-  // Security properties:
-  //   ✓ Database enforces uniqueness (UNIQUE constraint on username)
-  //   ✓ Losing request correctly fails with USERNAME_NOT_AVAILABLE
-  //   ✓ Winning request succeeds normally
-  //   ✓ Special case: If same publicKey used twice, second request succeeds (idempotent)
-  //   ✓ Signature verification ensures only the actual key owner can succeed
-  //   ✓ No authentication bypass possible - signature must match claimed public key
-  //
-  // This is intentional and secure - no application-level locking needed.
-  if (!usernameRecord) {
-    if (!publicKey) {
-      throw new RpcError(
-        ErrorCodes.USERNAME_NOT_CLAIMED,
-        `Username "${username}" is not claimed and no public key provided for auto-claim.`
-      );
-    }
-
-    // Validate public key format
-    if (!validatePublicKeyFormat(publicKey)) {
-      throw new RpcError(ErrorCodes.INVALID_PUBLIC_KEY, 'Public key must be 64-character hex string');
-    }
-
-    // Validate username format before claiming
-    const usernameValidation = validateUsername(username);
-    if (!usernameValidation.valid) {
-      throw new RpcError(ErrorCodes.INVALID_USERNAME, usernameValidation.error || 'Invalid username');
-    }
-
-    // Create canonical payload for verification
-    const payload = { ...request, timestamp, username };
-    const canonical = canonicalJSON(payload);
-
-    // Verify signature against the canonical payload
-    const signatureValid = await verifyEd25519Signature(publicKey, signature, canonical);
-    if (!signatureValid) {
-      throw new RpcError(ErrorCodes.INVALID_SIGNATURE, 'Invalid signature for auto-claim');
-    }
-
-    // Auto-claim the username (race condition safe - database enforces uniqueness)
-    const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 365 days
-    try {
-      await storage.claimUsername({
-        username,
-        publicKey,
-        expiresAt,
-      });
-
-      usernameRecord = await storage.getUsername(username);
-      if (!usernameRecord) {
-        throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to claim username');
-      }
-    } catch (err: any) {
-      // Handle race condition: another request claimed with different public key
-      // Using type-safe error detection instead of fragile string matching
-      if (err instanceof StorageError && err.code === StorageErrorCode.USERNAME_CONFLICT) {
-        // Race condition: Someone else claimed this username with a different key
-        // Try to fetch the record to verify it wasn't us (same public key)
-        const existingRecord = await storage.getUsername(username);
-        if (existingRecord && existingRecord.publicKey === publicKey) {
-          // Same public key - we won the race, use the existing record
-          usernameRecord = existingRecord;
-        } else {
-          // Different public key - we lost the race
-          throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed by different public key');
-        }
-      } else if (err instanceof StorageError && err.code === StorageErrorCode.PUBLIC_KEY_CONFLICT) {
-        // Handle public key already used for different username
-        throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'This public key has already claimed a different username');
-      } else if (err instanceof RpcError) {
-        // Wrap unexpected errors to prevent leaking internal details
-        throw err;
-      } else {
-        throw new RpcError(ErrorCodes.INTERNAL_ERROR, 'Failed to auto-claim username');
-      }
-    }
-  }
-
-  // Create canonical payload for verification: { method, params, timestamp, username }
-  const payload = { ...request, timestamp, username };
-  const canonical = canonicalJSON(payload);
-
-  // Verify Ed25519 signature
-  const isValid = await verifyEd25519Signature(
-    usernameRecord.publicKey,
-    signature,
-    canonical
-  );
+  const isValid = await storage.verifyCredential(name, secret);
   if (!isValid) {
-    throw new RpcError(ErrorCodes.INVALID_SIGNATURE, 'Invalid signature');
+    throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials');
   }
 }
 
@@ -389,84 +220,19 @@ async function verifyAuth(
 
 const handlers: Record<string, RpcHandler> = {
   /**
-   * Check if username is available
+   * Generate new credentials (name + secret pair)
+   * No authentication required - this is how users get started
    */
-  async getUser(params: GetUserParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
-    const { username: queriedUsername } = params;
-    const claimed = await storage.getUsername(queriedUsername);
-
-    if (!claimed) {
-      return {
-        username: queriedUsername,
-        available: true,
-      };
-    }
-
-    return {
-      username: claimed.username,
-      available: false,
-      claimedAt: claimed.claimedAt,
-      expiresAt: claimed.expiresAt,
-      publicKey: claimed.publicKey,
-    };
-  },
-
-  /**
-   * Explicitly claim a username with a public key
-   */
-  async claimUsername(params: ClaimUsernameParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
-    const { username: claimUsername, publicKey: claimPublicKey, expiresAt } = params;
-
-    // Validate that header username matches claim username
-    if (username !== claimUsername) {
-      throw new RpcError(
-        ErrorCodes.AUTH_REQUIRED,
-        'X-Username header must match username being claimed'
-      );
-    }
-
-    // Validate username format
-    const usernameValidation = validateUsername(claimUsername);
-    if (!usernameValidation.valid) {
-      throw new RpcError(ErrorCodes.INVALID_USERNAME, usernameValidation.error || 'Invalid username');
-    }
-
-    // Validate public key format (must be hex-encoded Ed25519 key - 64 chars)
-    if (!validatePublicKeyFormat(claimPublicKey)) {
-      throw new RpcError(ErrorCodes.INVALID_PUBLIC_KEY, 'Public key must be 64-character hex string');
-    }
-
-    // Check if username is already claimed
-    const existing = await storage.getUsername(claimUsername);
-    if (existing) {
-      throw new RpcError(ErrorCodes.USERNAME_NOT_AVAILABLE, 'Username already claimed');
-    }
-
-    // Create canonical payload for verification
-    const payload = { ...request, timestamp, username: claimUsername };
-    const canonical = canonicalJSON(payload);
-
-    // Verify signature using the provided public key
-    const signatureValid = await verifyEd25519Signature(claimPublicKey, signature, canonical);
-    if (!signatureValid) {
-      throw new RpcError(ErrorCodes.INVALID_SIGNATURE, 'Invalid signature for username claim');
-    }
-
-    // Claim the username with provided or default expiration
-    const defaultExpiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 365 days
-    const finalExpiresAt = expiresAt || defaultExpiresAt;
-
-    await storage.claimUsername({
-      username: claimUsername,
-      publicKey: claimPublicKey,
-      expiresAt: finalExpiresAt,
+  async generateCredentials(params: GenerateCredentialsParams, name, secret, storage, config, request: RpcRequest) {
+    const credential = await storage.generateCredentials({
+      expiresAt: params.expiresAt,
     });
 
     return {
-      username: claimUsername,
-      publicKey: claimPublicKey,
-      claimedAt: Date.now(),
-      expiresAt: finalExpiresAt,
+      name: credential.name,
+      secret: credential.secret,
+      createdAt: credential.createdAt,
+      expiresAt: credential.expiresAt,
     };
   },
 
@@ -476,11 +242,11 @@ const handlers: Record<string, RpcHandler> = {
    * 2. Paginated discovery: FQN without @username, with limit/offset
    * 3. Random discovery: FQN without @username, no limit
    */
-  async getOffer(params: GetOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getOffer(params: GetOfferParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn, limit, offset } = params;
 
     // Note: getOffer can be called without auth for discovery
-    // Auth is verified if username is provided
+    // Auth is verified if name is provided
 
     // Parse and validate FQN
     const fqnValidation = validateServiceFqn(serviceFqn);
@@ -568,7 +334,7 @@ const handlers: Record<string, RpcHandler> = {
       // Build response for services with available offers
       for (const service of servicesByUsername.values()) {
         // Skip user's own services (authenticated users shouldn't discover themselves)
-        if (username && service.username === username) {
+        if (name && service.username === name) {
           continue;
         }
 
@@ -641,15 +407,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Publish an offer
    */
-  async publishOffer(params: PublishOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async publishOffer(params: PublishOfferParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn, offers, ttl } = params;
 
-    if (!username) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required for offer publishing');
+    if (!name) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required for offer publishing');
     }
 
-    // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
+    // Verify credentials
+    await verifyCredentials(name, secret, storage);
 
     // Validate service FQN
     const fqnValidation = validateServiceFqn(serviceFqn);
@@ -662,8 +428,8 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.INVALID_FQN, 'Service FQN must include username');
     }
 
-    if (parsed.username !== username) {
-      throw new RpcError(ErrorCodes.OWNERSHIP_MISMATCH, 'Service FQN username must match authenticated username');
+    if (parsed.username !== name) {
+      throw new RpcError(ErrorCodes.OWNERSHIP_MISMATCH, 'Service FQN username must match authenticated name');
     }
 
     // Validate offers
@@ -707,7 +473,7 @@ const handlers: Record<string, RpcHandler> = {
 
     // Prepare offer requests with TTL
     const offerRequests = offers.map(offer => ({
-      username,
+      username: name,
       serviceFqn,
       sdp: offer.sdp,
       expiresAt,
@@ -737,15 +503,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Delete an offer
    */
-  async deleteOffer(params: DeleteOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async deleteOffer(params: DeleteOfferParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn } = params;
 
-    if (!username) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
+    if (!name) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
 
-    // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
+    // Verify credentials
+    await verifyCredentials(name, secret, storage);
 
     const parsed = parseServiceFqn(serviceFqn);
     if (!parsed || !parsed.username) {
@@ -757,9 +523,9 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
-    const deleted = await storage.deleteService(service.id, username);
+    const deleted = await storage.deleteService(service.id, name);
     if (!deleted) {
-      throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Offer not found or not owned by this username');
+      throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Offer not found or not owned by this name');
     }
 
     return { success: true };
@@ -768,19 +534,19 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Answer an offer
    */
-  async answerOffer(params: AnswerOfferParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async answerOffer(params: AnswerOfferParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, sdp } = params;
 
     // Validate input parameters
     validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
-    if (!username) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
+    if (!name) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
 
-    // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
+    // Verify credentials
+    await verifyCredentials(name, secret, storage);
 
     if (!sdp || typeof sdp !== 'string' || sdp.length === 0) {
       throw new RpcError(ErrorCodes.INVALID_SDP, 'Invalid SDP');
@@ -799,7 +565,7 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_ALREADY_ANSWERED, 'Offer already answered');
     }
 
-    await storage.answerOffer(offerId, username, sdp);
+    await storage.answerOffer(offerId, name, sdp);
 
     return { success: true, offerId };
   },
@@ -807,26 +573,26 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get answer for an offer
    */
-  async getOfferAnswer(params: GetOfferAnswerParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getOfferAnswer(params: GetOfferAnswerParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId } = params;
 
     // Validate input parameters
     validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
-    if (!username) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
+    if (!name) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
 
-    // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
+    // Verify credentials
+    await verifyCredentials(name, secret, storage);
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
-    if (offer.username !== username) {
+    if (offer.username !== name) {
       throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Not authorized to access this offer');
     }
 
@@ -845,15 +611,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Combined polling for answers and ICE candidates
    */
-  async poll(params: PollParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async poll(params: PollParams, name, secret, storage, config, request: RpcRequest) {
     const { since } = params;
 
-    if (!username) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
+    if (!name) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
 
-    // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
+    // Verify credentials
+    await verifyCredentials(name, secret, storage);
 
     // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
@@ -862,32 +628,27 @@ const handlers: Record<string, RpcHandler> = {
     const sinceTimestamp = since !== undefined ? since : 0;
 
     // Get all answered offers
-    const answeredOffers = await storage.getAnsweredOffers(username);
+    const answeredOffers = await storage.getAnsweredOffers(name);
     const filteredAnswers = answeredOffers.filter(
       (offer) => offer.answeredAt && offer.answeredAt > sinceTimestamp
     );
 
     // Get all user's offers
-    const allOffers = await storage.getOffersByUsername(username);
+    const allOffers = await storage.getOffersByUsername(name);
 
-    // For each offer, get ICE candidates from the other peer only
+    // Batch fetch ICE candidates for all offers using JOIN to avoid N+1 query problem
     // Server filters by role - offerers get answerer candidates, answerers get offerer candidates
+    const offerIds = allOffers.map(offer => offer.id);
+    const iceCandidatesMap = await storage.getIceCandidatesForMultipleOffers(
+      offerIds,
+      name,
+      sinceTimestamp
+    );
+
+    // Convert Map to Record for response
     const iceCandidatesByOffer: Record<string, any[]> = {};
-
-    for (const offer of allOffers) {
-      const isOfferer = offer.username === username;
-      const role = isOfferer ? 'answerer' : 'offerer';
-
-      // Get candidates from the other peer (CLAUDE.md: store as raw JSON without modification)
-      const candidates = await storage.getIceCandidates(
-        offer.id,
-        role,
-        sinceTimestamp
-      );
-
-      if (candidates.length > 0) {
-        iceCandidatesByOffer[offer.id] = candidates;
-      }
+    for (const [offerId, candidates] of iceCandidatesMap.entries()) {
+      iceCandidatesByOffer[offerId] = candidates;
     }
 
     return {
@@ -905,19 +666,19 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Add ICE candidates
    */
-  async addIceCandidates(params: AddIceCandidatesParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async addIceCandidates(params: AddIceCandidatesParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, candidates } = params;
 
     // Validate input parameters
     validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
-    if (!username) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
+    if (!name) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
 
-    // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
+    // Verify credentials
+    await verifyCredentials(name, secret, storage);
 
     if (!Array.isArray(candidates) || candidates.length === 0) {
       throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Missing or invalid required parameter: candidates');
@@ -972,10 +733,10 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Offer does not belong to the specified service');
     }
 
-    const role = offer.username === username ? 'offerer' : 'answerer';
+    const role = offer.username === name ? 'offerer' : 'answerer';
     const count = await storage.addIceCandidates(
       offerId,
-      username,
+      name,
       role,
       candidates
     );
@@ -986,19 +747,19 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get ICE candidates
    */
-  async getIceCandidates(params: GetIceCandidatesParams, username, timestamp, signature, publicKey, storage, config, request: RpcRequest) {
+  async getIceCandidates(params: GetIceCandidatesParams, name, secret, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, since } = params;
 
     // Validate input parameters
     validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
-    if (!username) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Username required');
+    if (!name) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
 
-    // Verify authentication
-    await verifyAuth(request, username, timestamp, signature, publicKey, storage, config);
+    // Verify credentials
+    await verifyCredentials(name, secret, storage);
 
     // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
@@ -1018,8 +779,8 @@ const handlers: Record<string, RpcHandler> = {
 
     // Validate that user is authorized to access this offer's candidates
     // Only the offerer and answerer can access ICE candidates
-    const isOfferer = offer.username === username;
-    const isAnswerer = offer.answererUsername === username;
+    const isOfferer = offer.username === name;
+    const isAnswerer = offer.answererUsername === name;
 
     if (!isOfferer && !isAnswerer) {
       throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Not authorized to access ICE candidates for this offer');
@@ -1044,7 +805,7 @@ const handlers: Record<string, RpcHandler> = {
 };
 
 // Methods that don't require authentication
-const UNAUTHENTICATED_METHODS = new Set(['getUser', 'getOffer']);
+const UNAUTHENTICATED_METHODS = new Set(['generateCredentials', 'getOffer']);
 
 /**
  * Handle RPC batch request with header-based authentication
@@ -1058,10 +819,8 @@ export async function handleRpc(
   const responses: RpcResponse[] = [];
 
   // Read auth headers (same for all requests in batch)
-  const signature = ctx.req.header('X-Signature');
-  const timestamp = ctx.req.header('X-Timestamp');
-  const username = ctx.req.header('X-Username');
-  const publicKey = ctx.req.header('X-Public-Key');
+  const name = ctx.req.header('X-Name');
+  const secret = ctx.req.header('X-Secret');
 
   // CRITICAL: Pre-calculate total operations BEFORE processing any requests
   // This prevents DoS where first N requests complete before limit triggers
@@ -1121,39 +880,20 @@ export async function handleRpc(
       const requiresAuth = !UNAUTHENTICATED_METHODS.has(method);
 
       if (requiresAuth) {
-        if (!signature || typeof signature !== 'string') {
+        if (!name || typeof name !== 'string') {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-Signature header',
+            error: 'Missing or invalid X-Name header',
             errorCode: ErrorCodes.AUTH_REQUIRED,
           });
           continue;
         }
 
-        if (!timestamp || typeof timestamp !== 'string') {
+        if (!secret || typeof secret !== 'string') {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-Timestamp header',
+            error: 'Missing or invalid X-Secret header',
             errorCode: ErrorCodes.AUTH_REQUIRED,
-          });
-          continue;
-        }
-
-        if (!username || typeof username !== 'string') {
-          responses.push({
-            success: false,
-            error: 'Missing or invalid X-Username header',
-            errorCode: ErrorCodes.AUTH_REQUIRED,
-          });
-          continue;
-        }
-
-        const timestampNum = parseInt(timestamp, 10);
-        if (isNaN(timestampNum)) {
-          responses.push({
-            success: false,
-            error: 'Invalid X-Timestamp header: must be a number',
-            errorCode: ErrorCodes.INVALID_PARAMS,
           });
           continue;
         }
@@ -1161,10 +901,8 @@ export async function handleRpc(
         // Execute handler with auth
         const result = await handler(
           params || {},
-          username,
-          timestampNum,
-          signature,
-          publicKey,
+          name,
+          secret,
           storage,
           config,
           request
@@ -1176,15 +914,10 @@ export async function handleRpc(
         });
       } else {
         // Execute handler without strict auth requirement
-        // Parse timestamp if provided, otherwise use 0
-        const timestampNum = timestamp ? parseInt(timestamp, 10) : 0;
-
         const result = await handler(
           params || {},
-          username || '',
-          timestampNum,
-          signature || '',
-          publicKey,
+          name || '',
+          secret || '',
           storage,
           config,
           request

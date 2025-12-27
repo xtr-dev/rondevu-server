@@ -74,19 +74,18 @@ export class SQLiteStorage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_ice_username ON ice_candidates(username);
       CREATE INDEX IF NOT EXISTS idx_ice_created ON ice_candidates(created_at);
 
-      -- Usernames table
-      CREATE TABLE IF NOT EXISTS usernames (
-        username TEXT PRIMARY KEY,
-        public_key TEXT NOT NULL UNIQUE,
-        claimed_at INTEGER NOT NULL,
+      -- Credentials table (replaces usernames with simpler name + secret auth)
+      CREATE TABLE IF NOT EXISTS credentials (
+        name TEXT PRIMARY KEY,
+        secret TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         last_used INTEGER NOT NULL,
-        metadata TEXT,
-        CHECK(length(username) >= 3 AND length(username) <= 32)
+        CHECK(length(name) >= 3 AND length(name) <= 32)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_usernames_expires ON usernames(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_usernames_public_key ON usernames(public_key);
+      CREATE INDEX IF NOT EXISTS idx_credentials_expires ON credentials(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_credentials_secret ON credentials(secret);
 
       -- Services table (new schema with extracted fields for discovery)
       CREATE TABLE IF NOT EXISTS services (
@@ -97,7 +96,7 @@ export class SQLiteStorage implements Storage {
         username TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
-        FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
+        FOREIGN KEY (username) REFERENCES credentials(name) ON DELETE CASCADE,
         UNIQUE(service_fqn)
       );
 
@@ -319,108 +318,176 @@ export class SQLiteStorage implements Storage {
     }));
   }
 
-  // ===== Username Management =====
+  async getIceCandidatesForMultipleOffers(
+    offerIds: string[],
+    username: string,
+    since?: number
+  ): Promise<Map<string, IceCandidate[]>> {
+    const result = new Map<string, IceCandidate[]>();
 
-  async claimUsername(request: ClaimUsernameRequest): Promise<Username> {
-    const now = Date.now();
-    const expiresAt = now + YEAR_IN_MS;
-
-    try {
-      // Try to insert or update
-      const stmt = this.db.prepare(`
-        INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
-        VALUES (?, ?, ?, ?, ?, NULL)
-        ON CONFLICT(username) DO UPDATE SET
-          expires_at = ?,
-          last_used = ?
-        WHERE public_key = ?
-      `);
-
-      const result = stmt.run(
-        request.username,
-        request.publicKey,
-        now,
-        expiresAt,
-        now,
-        expiresAt,
-        now,
-        request.publicKey
-      );
-
-      if (result.changes === 0) {
-        throw new StorageError(
-          StorageErrorCode.USERNAME_CONFLICT,
-          'Username already claimed by different public key'
-        );
-      }
-
-      return {
-        username: request.username,
-        publicKey: request.publicKey,
-        claimedAt: now,
-        expiresAt,
-        lastUsed: now,
-      };
-    } catch (err: any) {
-      // Re-throw StorageErrors as-is
-      if (err instanceof StorageError) {
-        throw err;
-      }
-
-      // Handle UNIQUE constraint on public_key
-      // SQLite error format: "UNIQUE constraint failed: usernames.public_key"
-      // Note: Tested with better-sqlite3 v9.x and SQLite 3.x
-      if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('public_key')) {
-        throw new StorageError(
-          StorageErrorCode.PUBLIC_KEY_CONFLICT,
-          'This public key has already claimed a different username',
-          err
-        );
-      }
-
-      // Unexpected error - rethrow
-      throw err;
+    // Return empty map if no offer IDs provided
+    if (offerIds.length === 0) {
+      return result;
     }
+
+    // Validate array contains only strings
+    if (!Array.isArray(offerIds) || !offerIds.every(id => typeof id === 'string')) {
+      throw new Error('Invalid offer IDs: must be array of strings');
+    }
+
+    // Prevent DoS attacks from extremely large IN clauses
+    if (offerIds.length > 1000) {
+      throw new Error('Too many offer IDs (max 1000)');
+    }
+
+    // Build query that fetches candidates from the OTHER peer only
+    // For each offer, determine if user is offerer or answerer and get opposite role
+    const placeholders = offerIds.map(() => '?').join(',');
+
+    let query = `
+      SELECT ic.*, o.username as offer_username
+      FROM ice_candidates ic
+      INNER JOIN offers o ON o.id = ic.offer_id
+      WHERE ic.offer_id IN (${placeholders})
+      AND (
+        (o.username = ? AND ic.role = 'answerer')
+        OR (o.answerer_username = ? AND ic.role = 'offerer')
+      )
+    `;
+
+    const params: any[] = [...offerIds, username, username];
+
+    if (since !== undefined) {
+      query += ' AND ic.created_at > ?';
+      params.push(since);
+    }
+
+    query += ' ORDER BY ic.created_at ASC';
+
+    const stmt = this.db.prepare(query);
+    const rows = stmt.all(...params) as any[];
+
+    // Group candidates by offer_id
+    for (const row of rows) {
+      const candidate: IceCandidate = {
+        id: row.id,
+        offerId: row.offer_id,
+        username: row.username,
+        role: row.role,
+        candidate: JSON.parse(row.candidate),
+        createdAt: row.created_at,
+      };
+
+      if (!result.has(row.offer_id)) {
+        result.set(row.offer_id, []);
+      }
+      result.get(row.offer_id)!.push(candidate);
+    }
+
+    return result;
   }
 
-  async getUsername(username: string): Promise<Username | null> {
+  // ===== Credential Management =====
+
+  async generateCredentials(request: GenerateCredentialsRequest): Promise<Credential> {
+    const now = Date.now();
+    const expiresAt = request.expiresAt || (now + YEAR_IN_MS);
+
+    // Generate unique name and secret
+    const { generateCredentialName, generateSecret } = await import('../crypto.ts');
+
+    // Retry until we find a unique name (collision very unlikely)
+    let name: string;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      name = generateCredentialName();
+
+      // Check if name already exists
+      const existing = this.db.prepare(`
+        SELECT name FROM credentials WHERE name = ?
+      `).get(name);
+
+      if (!existing) {
+        break;
+      }
+
+      attempts++;
+    }
+
+    if (attempts >= maxAttempts) {
+      throw new Error('Failed to generate unique credential name after 10 attempts');
+    }
+
+    const secret = generateSecret();
+
+    // Insert credential
     const stmt = this.db.prepare(`
-      SELECT * FROM usernames
-      WHERE username = ? AND expires_at > ?
+      INSERT INTO credentials (name, secret, created_at, expires_at, last_used)
+      VALUES (?, ?, ?, ?, ?)
     `);
 
-    const row = stmt.get(username, Date.now()) as any;
+    stmt.run(name!, secret, now, expiresAt, now);
+
+    return {
+      name: name!,
+      secret,
+      createdAt: now,
+      expiresAt,
+      lastUsed: now,
+    };
+  }
+
+  async getCredential(name: string): Promise<Credential | null> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM credentials
+      WHERE name = ? AND expires_at > ?
+    `);
+
+    const row = stmt.get(name, Date.now()) as any;
 
     if (!row) {
       return null;
     }
 
     return {
-      username: row.username,
-      publicKey: row.public_key,
-      claimedAt: row.claimed_at,
+      name: row.name,
+      secret: row.secret,
+      createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastUsed: row.last_used,
-      metadata: row.metadata || undefined,
     };
   }
 
-  async touchUsername(username: string): Promise<boolean> {
+  async verifyCredential(name: string, secret: string): Promise<boolean> {
+    const credential = await this.getCredential(name);
+
+    if (!credential) {
+      return false;
+    }
+
+    if (credential.secret !== secret) {
+      return false;
+    }
+
+    // Extend expiry on successful verification
     const now = Date.now();
     const expiresAt = now + YEAR_IN_MS;
 
     const stmt = this.db.prepare(`
-      UPDATE usernames
+      UPDATE credentials
       SET last_used = ?, expires_at = ?
-      WHERE username = ? AND expires_at > ?
+      WHERE name = ?
     `);
 
-    const result = stmt.run(now, expiresAt, username, now);
-    return result.changes > 0;
+    stmt.run(now, expiresAt, name);
+
+    return true;
   }
 
-  async deleteExpiredUsernames(now: number): Promise<number> {
-    const stmt = this.db.prepare('DELETE FROM usernames WHERE expires_at < ?');
+  async deleteExpiredCredentials(now: number): Promise<number> {
+    const stmt = this.db.prepare('DELETE FROM credentials WHERE expires_at < ?');
     const result = stmt.run(now);
     return result.changes;
   }
@@ -478,12 +545,12 @@ export class SQLiteStorage implements Storage {
         request.expiresAt
       );
 
-      // Touch username to extend expiry (inline logic)
+      // Touch credential to extend expiry (inline logic)
       const expiresAt = now + YEAR_IN_MS;
       this.db.prepare(`
-        UPDATE usernames
+        UPDATE credentials
         SET last_used = ?, expires_at = ?
-        WHERE username = ? AND expires_at > ?
+        WHERE name = ? AND expires_at > ?
       `).run(now, expiresAt, username, now);
     });
 

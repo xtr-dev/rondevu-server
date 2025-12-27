@@ -22,9 +22,47 @@ const USERNAME_MAX_LENGTH = 32;
 const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 
 /**
+ * Generates a random credential name
+ * Format: {adjective}-{noun}-{random}
+ * Example: "brave-tiger-7a3f", "quick-river-9b2e"
+ */
+export function generateCredentialName(): string {
+  const adjectives = [
+    'brave', 'calm', 'eager', 'fancy', 'gentle', 'happy', 'jolly', 'kind',
+    'lively', 'merry', 'nice', 'proud', 'quiet', 'swift', 'witty', 'young',
+    'bright', 'clever', 'daring', 'fair', 'grand', 'humble', 'noble', 'quick'
+  ];
+
+  const nouns = [
+    'tiger', 'eagle', 'river', 'mountain', 'ocean', 'forest', 'desert', 'valley',
+    'thunder', 'wind', 'fire', 'stone', 'cloud', 'star', 'moon', 'sun',
+    'wolf', 'bear', 'hawk', 'lion', 'fox', 'deer', 'owl', 'swan'
+  ];
+
+  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+
+  // Generate 4-character hex suffix for uniqueness
+  const random = crypto.getRandomValues(new Uint8Array(2));
+  const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  return `${adjective}-${noun}-${hex}`;
+}
+
+/**
+ * Generates a random secret (API key style)
+ * Format: 32-character hex string (128 bits of entropy)
+ */
+export function generateSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * Generates an anonymous username for users who don't want to claim one
  * Format: anon-{timestamp}-{random}
  * This reduces collision probability to near-zero
+ * @deprecated Use generateCredentialName() instead
  */
 export function generateAnonymousUsername(): string {
   const timestamp = Date.now().toString(36);

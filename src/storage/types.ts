@@ -66,26 +66,21 @@ export interface CreateOfferRequest {
 }
 
 /**
- * Represents a claimed username with cryptographic proof
+ * Represents a credential (random name + secret pair)
+ * Replaces the old username/publicKey system for simpler authentication
  */
-export interface Username {
-  username: string;
-  publicKey: string; // Base64-encoded Ed25519 public key
-  claimedAt: number;
-  expiresAt: number; // 365 days from claim/last use
+export interface Credential {
+  name: string; // Random name (e.g., "brave-tiger-7a3f")
+  secret: string; // Random secret (API key style)
+  createdAt: number;
+  expiresAt: number; // 365 days from creation/last use
   lastUsed: number;
-  metadata?: string; // JSON optional user metadata
 }
 
 /**
- * Request to claim a username
- * Note: signature and message are now verified via header-based auth before calling this
+ * Request to generate new credentials
  */
-export interface ClaimUsernameRequest {
-  username: string;
-  publicKey: string;
-  signature?: string; // Optional: verified before claim
-  message?: string; // Optional: verified before claim
+export interface GenerateCredentialsRequest {
   expiresAt?: number; // Optional: override default expiry
 }
 
@@ -216,28 +211,49 @@ export interface Storage {
     since?: number
   ): Promise<IceCandidate[]>;
 
-  // ===== Username Management =====
-
   /**
-   * Claims a username (or refreshes expiry if already owned)
-   * @param request Username claim request with signature
-   * @returns Created/updated username record
+   * Retrieves ICE candidates for multiple offers (batch operation)
+   * @param offerIds Array of offer identifiers
+   * @param username Username requesting the candidates
+   * @param since Optional timestamp - only return candidates after this time
+   * @returns Map of offer ID to ICE candidates
    */
-  claimUsername(request: ClaimUsernameRequest): Promise<Username>;
+  getIceCandidatesForMultipleOffers(
+    offerIds: string[],
+    username: string,
+    since?: number
+  ): Promise<Map<string, IceCandidate[]>>;
+
+  // ===== Credential Management =====
 
   /**
-   * Gets a username record
-   * @param username Username to look up
-   * @returns Username record if claimed, null otherwise
+   * Generates a new credential (random name + secret)
+   * @param request Credential generation request
+   * @returns Created credential record
    */
-  getUsername(username: string): Promise<Username | null>;
+  generateCredentials(request: GenerateCredentialsRequest): Promise<Credential>;
 
   /**
-   * Deletes all expired usernames
+   * Gets a credential by name
+   * @param name Credential name
+   * @returns Credential record if found, null otherwise
+   */
+  getCredential(name: string): Promise<Credential | null>;
+
+  /**
+   * Verifies a credential (checks secret and extends expiry if valid)
+   * @param name Credential name
+   * @param secret Secret to verify
+   * @returns true if valid, false otherwise
+   */
+  verifyCredential(name: string, secret: string): Promise<boolean>;
+
+  /**
+   * Deletes all expired credentials
    * @param now Current timestamp
-   * @returns Number of usernames deleted
+   * @returns Number of credentials deleted
    */
-  deleteExpiredUsernames(now: number): Promise<number>;
+  deleteExpiredCredentials(now: number): Promise<number>;
 
   // ===== Service Management =====
 
