@@ -9,6 +9,8 @@ import {
   ClaimUsernameRequest,
   Service,
   CreateServiceRequest,
+  StorageError,
+  StorageErrorCode,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 import { parseServiceFqn } from '../crypto.ts';
@@ -323,38 +325,62 @@ export class SQLiteStorage implements Storage {
     const now = Date.now();
     const expiresAt = now + YEAR_IN_MS;
 
-    // Try to insert or update
-    const stmt = this.db.prepare(`
-      INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
-      VALUES (?, ?, ?, ?, ?, NULL)
-      ON CONFLICT(username) DO UPDATE SET
-        expires_at = ?,
-        last_used = ?
-      WHERE public_key = ?
-    `);
+    try {
+      // Try to insert or update
+      const stmt = this.db.prepare(`
+        INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
+        VALUES (?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(username) DO UPDATE SET
+          expires_at = ?,
+          last_used = ?
+        WHERE public_key = ?
+      `);
 
-    const result = stmt.run(
-      request.username,
-      request.publicKey,
-      now,
-      expiresAt,
-      now,
-      expiresAt,
-      now,
-      request.publicKey
-    );
+      const result = stmt.run(
+        request.username,
+        request.publicKey,
+        now,
+        expiresAt,
+        now,
+        expiresAt,
+        now,
+        request.publicKey
+      );
 
-    if (result.changes === 0) {
-      throw new Error('Username already claimed by different public key');
+      if (result.changes === 0) {
+        throw new StorageError(
+          StorageErrorCode.USERNAME_CONFLICT,
+          'Username already claimed by different public key'
+        );
+      }
+
+      return {
+        username: request.username,
+        publicKey: request.publicKey,
+        claimedAt: now,
+        expiresAt,
+        lastUsed: now,
+      };
+    } catch (err: any) {
+      // Re-throw StorageErrors as-is
+      if (err instanceof StorageError) {
+        throw err;
+      }
+
+      // Handle UNIQUE constraint on public_key
+      // SQLite error format: "UNIQUE constraint failed: usernames.public_key"
+      // Note: Tested with better-sqlite3 v9.x and SQLite 3.x
+      if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('public_key')) {
+        throw new StorageError(
+          StorageErrorCode.PUBLIC_KEY_CONFLICT,
+          'This public key has already claimed a different username',
+          err
+        );
+      }
+
+      // Unexpected error - rethrow
+      throw err;
     }
-
-    return {
-      username: request.username,
-      publicKey: request.publicKey,
-      claimedAt: now,
-      expiresAt,
-      lastUsed: now,
-    };
   }
 
   async getUsername(username: string): Promise<Username | null> {
@@ -493,6 +519,50 @@ export class SQLiteStorage implements Storage {
 
     const rows = stmt.all(serviceId, Date.now()) as any[];
     return rows.map(row => this.rowToOffer(row));
+  }
+
+  async getOffersForMultipleServices(serviceIds: string[]): Promise<Map<string, Offer[]>> {
+    const result = new Map<string, Offer[]>();
+
+    // Return empty map if no service IDs provided
+    if (serviceIds.length === 0) {
+      return result;
+    }
+
+    // Validate array contains only strings (defense-in-depth)
+    if (!Array.isArray(serviceIds) || !serviceIds.every(id => typeof id === 'string')) {
+      throw new Error('Invalid service IDs: must be array of strings');
+    }
+
+    // Prevent DoS attacks from extremely large IN clauses
+    // Limit aligns with MAX_DISCOVERY_RESULTS (1000) in rpc.ts
+    if (serviceIds.length > 1000) {
+      throw new Error('Too many service IDs (max 1000)');
+    }
+
+    // Build IN clause with proper parameter binding
+    const placeholders = serviceIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT * FROM offers
+      WHERE service_id IN (${placeholders}) AND expires_at > ?
+      ORDER BY created_at ASC
+    `);
+
+    const now = Date.now();
+    const rows = stmt.all(...serviceIds, now) as any[];
+
+    // Group offers by service_id
+    for (const row of rows) {
+      const offer = this.rowToOffer(row);
+      const serviceId = row.service_id;
+
+      if (!result.has(serviceId)) {
+        result.set(serviceId, []);
+      }
+      result.get(serviceId)!.push(offer);
+    }
+
+    return result;
   }
 
   async getServiceById(serviceId: string): Promise<Service | null> {

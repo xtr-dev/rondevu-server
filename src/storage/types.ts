@@ -1,4 +1,29 @@
 /**
+ * Custom error types for storage layer operations
+ * Provides type-safe error handling across different storage backends
+ */
+export enum StorageErrorCode {
+  USERNAME_CONFLICT = 'USERNAME_CONFLICT', // Username already claimed by different key
+  PUBLIC_KEY_CONFLICT = 'PUBLIC_KEY_CONFLICT', // Public key already claimed different username
+  CONSTRAINT_VIOLATION = 'CONSTRAINT_VIOLATION', // Generic constraint violation
+}
+
+/**
+ * Custom error class for storage layer
+ * Allows RPC layer to handle errors without relying on string matching
+ */
+export class StorageError extends Error {
+  constructor(
+    public code: StorageErrorCode,
+    message: string,
+    public cause?: Error
+  ) {
+    super(message);
+    this.name = 'StorageError';
+  }
+}
+
+/**
  * Represents a WebRTC signaling offer
  */
 export interface Offer {
@@ -90,6 +115,18 @@ export interface CreateServiceRequest {
 /**
  * Storage interface for rondevu DNS-like system
  * Implementations can use different backends (SQLite, D1, etc.)
+ *
+ * TRUST BOUNDARY: The storage layer assumes inputs are pre-validated by the RPC layer.
+ * This avoids duplication of validation logic across storage backends.
+ * The RPC layer is responsible for:
+ *  - Validating serviceFqn format and ownership
+ *  - Validating role is 'offerer' or 'answerer'
+ *  - Validating all string parameters are non-empty
+ *  - Validating timestamps and expirations
+ *  - Verifying authentication and authorization
+ *
+ * Storage implementations may add defensive checks for critical invariants,
+ * but should not duplicate all RPC-layer validation.
  */
 export interface Storage {
   // ===== Offer Management =====
@@ -221,6 +258,13 @@ export interface Storage {
    * @returns Array of offers for the service
    */
   getOffersForService(serviceId: string): Promise<Offer[]>;
+
+  /**
+   * Gets all offers for multiple services (batch operation)
+   * @param serviceIds Array of service IDs
+   * @returns Map of service ID to offers array
+   */
+  getOffersForMultipleServices(serviceIds: string[]): Promise<Map<string, Offer[]>>;
 
   /**
    * Gets a service by its service ID

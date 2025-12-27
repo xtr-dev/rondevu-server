@@ -13,6 +13,14 @@ export interface Config {
   offerMinTtl: number;
   cleanupInterval: number;
   maxOffersPerRequest: number;
+  maxBatchSize: number;
+  maxSdpSize: number;
+  maxCandidateSize: number;
+  maxCandidateDepth: number;
+  maxCandidatesPerRequest: number;
+  timestampMaxAge: number;
+  timestampMaxFuture: number;
+  maxTotalOperations: number;
 }
 
 /**
@@ -31,6 +39,14 @@ export function loadConfig(): Config {
     offerMaxTtl: parseInt(process.env.OFFER_MAX_TTL || '86400000', 10),
     offerMinTtl: parseInt(process.env.OFFER_MIN_TTL || '60000', 10),
     cleanupInterval: parseInt(process.env.CLEANUP_INTERVAL || '60000', 10),
-    maxOffersPerRequest: parseInt(process.env.MAX_OFFERS_PER_REQUEST || '100', 10)
+    maxOffersPerRequest: parseInt(process.env.MAX_OFFERS_PER_REQUEST || '100', 10),
+    maxBatchSize: parseInt(process.env.MAX_BATCH_SIZE || '100', 10),
+    maxSdpSize: parseInt(process.env.MAX_SDP_SIZE || String(64 * 1024), 10), // 64KB
+    maxCandidateSize: parseInt(process.env.MAX_CANDIDATE_SIZE || String(4 * 1024), 10), // 4KB
+    maxCandidateDepth: parseInt(process.env.MAX_CANDIDATE_DEPTH || '10', 10),
+    maxCandidatesPerRequest: parseInt(process.env.MAX_CANDIDATES_PER_REQUEST || '100', 10),
+    timestampMaxAge: parseInt(process.env.TIMESTAMP_MAX_AGE || '300000', 10), // 5 minutes
+    timestampMaxFuture: parseInt(process.env.TIMESTAMP_MAX_FUTURE || '60000', 10), // 1 minute
+    maxTotalOperations: parseInt(process.env.MAX_TOTAL_OPERATIONS || '1000', 10) // Total ops across batch
   };
 }

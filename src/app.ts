@@ -4,9 +4,6 @@ import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import { handleRpc, RpcRequest } from './rpc.ts';
 
-// Constants
-const MAX_BATCH_SIZE = 100;
-
 /**
  * Creates the Hono application with RPC interface
  */
@@ -25,7 +22,7 @@ export function createApp(storage: Storage, config: Config) {
       return config.corsOrigins[0];
     },
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Origin'],
+    allowHeaders: ['Content-Type', 'Origin', 'X-Username', 'X-Timestamp', 'X-Signature', 'X-Public-Key'],
     exposeHeaders: ['Content-Type'],
     credentials: false,
     maxAge: 86400,
@@ -51,35 +48,58 @@ export function createApp(storage: Storage, config: Config) {
 
   /**
    * POST /rpc
-   * RPC endpoint - accepts single or batch method calls
+   * RPC endpoint - accepts batch method calls only
    */
   app.post('/rpc', async (c) => {
     try {
       const body = await c.req.json();
 
-      // Support both single request and batch array
-      const requests: RpcRequest[] = Array.isArray(body) ? body : [body];
+      // Only accept batch arrays
+      if (!Array.isArray(body)) {
+        return c.json([{
+          success: false,
+          error: 'Request must be an array of RPC calls',
+          errorCode: 'INVALID_PARAMS'
+        }], 400);
+      }
+
+      const requests: RpcRequest[] = body;
 
       // Validate requests
       if (requests.length === 0) {
-        return c.json({ error: 'Empty request array' }, 400);
+        return c.json([{
+          success: false,
+          error: 'Empty request array',
+          errorCode: 'INVALID_PARAMS'
+        }], 400);
       }
 
-      if (requests.length > MAX_BATCH_SIZE) {
-        return c.json({ error: `Too many requests in batch (max ${MAX_BATCH_SIZE})` }, 400);
+      if (requests.length > config.maxBatchSize) {
+        return c.json([{
+          success: false,
+          error: `Too many requests in batch (max ${config.maxBatchSize})`,
+          errorCode: 'BATCH_TOO_LARGE'
+        }], 413); // 413 Payload Too Large
       }
 
       // Handle RPC (pass context for auth headers)
       const responses = await handleRpc(requests, c, storage, config);
 
-      // Return single response or array based on input
-      return c.json(Array.isArray(body) ? responses : responses[0], 200);
+      // Always return array
+      return c.json(responses, 200);
     } catch (err) {
       console.error('RPC error:', err);
-      return c.json({
+
+      // Distinguish between JSON parse errors and validation errors
+      const errorMsg = err instanceof SyntaxError
+        ? 'Invalid JSON in request body'
+        : 'Request must be valid JSON array';
+
+      return c.json([{
         success: false,
-        error: 'Invalid request format',
-      }, 400);
+        error: errorMsg,
+        errorCode: 'INVALID_PARAMS'
+      }], 400);
     }
   });
 
