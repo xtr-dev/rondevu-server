@@ -35,13 +35,16 @@ function timingSafeEqual(a: string, b: string): boolean {
  */
 export class D1Storage implements Storage {
   private db: D1Database;
+  private masterEncryptionKey: string;
 
   /**
    * Creates a new D1 storage instance
    * @param db D1Database instance from Cloudflare Workers environment
+   * @param masterEncryptionKey 64-char hex string for encrypting secrets (32 bytes)
    */
-  constructor(db: D1Database) {
+  constructor(db: D1Database, masterEncryptionKey: string) {
     this.db = db;
+    this.masterEncryptionKey = masterEncryptionKey;
   }
 
   /**
@@ -422,15 +425,20 @@ export class D1Storage implements Storage {
 
     const secret = generateSecret();
 
-    // Insert credential
+    // Encrypt secret before storing (AES-256-GCM)
+    const { encryptSecret } = await import('../crypto.ts');
+    const encryptedSecret = await encryptSecret(secret, this.masterEncryptionKey);
+
+    // Insert credential with encrypted secret
     await this.db.prepare(`
       INSERT INTO credentials (name, secret, created_at, expires_at, last_used)
       VALUES (?, ?, ?, ?, ?)
-    `).bind(name!, secret, now, expiresAt, now).run();
+    `).bind(name!, encryptedSecret, now, expiresAt, now).run();
 
+    // Return plaintext secret to user (only time they'll see it)
     return {
       name: name!,
-      secret,
+      secret, // Return plaintext secret, not encrypted
       createdAt: now,
       expiresAt,
       lastUsed: now,
@@ -449,9 +457,13 @@ export class D1Storage implements Storage {
 
     const row = result as any;
 
+    // Decrypt secret before returning
+    const { decryptSecret } = await import('../crypto.ts');
+    const decryptedSecret = await decryptSecret(row.secret, this.masterEncryptionKey);
+
     return {
       name: row.name,
-      secret: row.secret,
+      secret: decryptedSecret, // Return decrypted secret
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastUsed: row.last_used,
@@ -506,33 +518,25 @@ export class D1Storage implements Storage {
     const now = Date.now();
     const resetTime = now + windowMs;
 
-    // Get current rate limit entry
-    const entry = await this.db.prepare(`
-      SELECT count, reset_time FROM rate_limits WHERE identifier = ?
-    `).bind(identifier).first() as { count: number; reset_time: number } | null;
+    // Atomic UPSERT: Insert or increment count, reset if expired
+    // This prevents TOCTOU race conditions by doing check+increment in single operation
+    const result = await this.db.prepare(`
+      INSERT INTO rate_limits (identifier, count, reset_time)
+      VALUES (?, 1, ?)
+      ON CONFLICT(identifier) DO UPDATE SET
+        count = CASE
+          WHEN reset_time < ? THEN 1
+          ELSE count + 1
+        END,
+        reset_time = CASE
+          WHEN reset_time < ? THEN ?
+          ELSE reset_time
+        END
+      RETURNING count
+    `).bind(identifier, resetTime, now, now, resetTime).first() as { count: number } | null;
 
-    if (!entry || entry.reset_time < now) {
-      // First request or expired window - allow and reset
-      await this.db.prepare(`
-        INSERT OR REPLACE INTO rate_limits (identifier, count, reset_time)
-        VALUES (?, 1, ?)
-      `).bind(identifier, resetTime).run();
-      return true;
-    }
-
-    if (entry.count >= limit) {
-      // Rate limit exceeded
-      return false;
-    }
-
-    // Increment count
-    await this.db.prepare(`
-      UPDATE rate_limits
-      SET count = count + 1
-      WHERE identifier = ?
-    `).bind(identifier).run();
-
-    return true;
+    // Check if limit exceeded
+    return result ? result.count <= limit : false;
   }
 
   async deleteExpiredRateLimits(now: number): Promise<number> {

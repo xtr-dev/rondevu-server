@@ -27,7 +27,7 @@ async function main() {
   let storage: Storage;
 
   if (config.storageType === 'sqlite') {
-    storage = new SQLiteStorage(config.storagePath);
+    storage = new SQLiteStorage(config.storagePath, config.masterEncryptionKey);
     console.log('Using SQLite storage');
   } else {
     throw new Error('Unsupported storage type');

@@ -21,12 +21,32 @@ export interface Config {
   maxTotalOperations: number;
   timestampMaxAge: number; // Max age for timestamps (replay protection)
   timestampMaxFuture: number; // Max future tolerance for timestamps (clock skew)
+  masterEncryptionKey: string; // 64-char hex string for encrypting secrets (32 bytes)
 }
 
 /**
  * Loads configuration from environment variables
  */
 export function loadConfig(): Config {
+  // Master encryption key for secret storage
+  // CRITICAL: Set MASTER_ENCRYPTION_KEY in production to a secure random value
+  let masterEncryptionKey = process.env.MASTER_ENCRYPTION_KEY;
+
+  if (!masterEncryptionKey) {
+    // Generate random key for development
+    // WARNING: This will cause existing secrets to become invalid on restart
+    const crypto = globalThis.crypto;
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    masterEncryptionKey = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    console.warn('WARNING: No MASTER_ENCRYPTION_KEY set. Using random key (secrets will be invalid on restart).');
+    console.warn('Set MASTER_ENCRYPTION_KEY environment variable in production.');
+  }
+
+  // Validate master encryption key
+  if (masterEncryptionKey.length !== 64) {
+    throw new Error('MASTER_ENCRYPTION_KEY must be 64-character hex string (32 bytes). Generate with: openssl rand -hex 32');
+  }
+
   return {
     port: parseInt(process.env.PORT || '3000', 10),
     storageType: (process.env.STORAGE_TYPE || 'sqlite') as 'sqlite' | 'memory',
@@ -48,5 +68,6 @@ export function loadConfig(): Config {
     maxTotalOperations: parseInt(process.env.MAX_TOTAL_OPERATIONS || '1000', 10), // Total ops across batch
     timestampMaxAge: parseInt(process.env.TIMESTAMP_MAX_AGE || '300000', 10), // 5 minutes
     timestampMaxFuture: parseInt(process.env.TIMESTAMP_MAX_FUTURE || '60000', 10), // 1 minute
+    masterEncryptionKey,
   };
 }

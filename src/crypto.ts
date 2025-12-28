@@ -13,7 +13,7 @@ const USERNAME_MAX_LENGTH = 32;
 /**
  * Generates a random credential name
  * Format: {adjective}-{noun}-{random}
- * Example: "brave-tiger-7a3f", "quick-river-9b2e"
+ * Example: "brave-tiger-7a3f2b1c9d8e", "quick-river-9b2e4c1a5f3d"
  */
 export function generateCredentialName(): string {
   const adjectives = [
@@ -31,10 +31,11 @@ export function generateCredentialName(): string {
   const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
   const noun = nouns[Math.floor(Math.random() * nouns.length)];
 
-  // Generate 8-character hex suffix for uniqueness (4 bytes = 2^32 combinations)
-  // With 576 adjective-noun pairs, total space: 576 × 2^32 ≈ 2.5 trillion names
-  // Birthday paradox collision at ~1.6 million credentials (safe for most deployments)
-  const random = crypto.getRandomValues(new Uint8Array(4));
+  // Generate 12-character hex suffix for uniqueness (6 bytes = 2^48 combinations)
+  // With 576 adjective-noun pairs, total space: 576 × 2^48 ≈ 162 quadrillion names
+  // Birthday paradox collision at ~10.6 million credentials (safe for large deployments)
+  // Increased from 4 bytes to 6 bytes for better collision resistance
+  const random = crypto.getRandomValues(new Uint8Array(6));
   const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
 
   return `${adjective}-${noun}-${hex}`;
@@ -46,7 +47,123 @@ export function generateCredentialName(): string {
  */
 export function generateSecret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  const secret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Validation: Ensure output is exactly 32 characters
+  if (secret.length !== 32) {
+    throw new Error('Secret generation failed: invalid length');
+  }
+
+  return secret;
+}
+
+// ===== Secret Encryption/Decryption (Database Storage) =====
+
+/**
+ * Encrypt a secret using AES-256-GCM with master key
+ * Format: iv:authTag:ciphertext (all hex-encoded)
+ *
+ * @param secret The plaintext secret to encrypt
+ * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
+ * @returns Encrypted secret in format "iv:authTag:ciphertext"
+ */
+export async function encryptSecret(secret: string, masterKeyHex: string): Promise<string> {
+  // Validate master key
+  if (!masterKeyHex || masterKeyHex.length !== 64) {
+    throw new Error('Master key must be 64-character hex string (32 bytes)');
+  }
+
+  // Convert master key from hex to bytes
+  const keyBytes = new Uint8Array(masterKeyHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+
+  // Import master key
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt']
+  );
+
+  // Generate random IV (12 bytes for AES-GCM)
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+
+  // Encrypt secret
+  const encoder = new TextEncoder();
+  const secretBytes = encoder.encode(secret);
+
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, tagLength: 128 },
+    key,
+    secretBytes
+  );
+
+  // Extract auth tag (last 16 bytes) and ciphertext
+  const ciphertextArray = new Uint8Array(ciphertext);
+  const actualCiphertext = ciphertextArray.slice(0, -16);
+  const authTag = ciphertextArray.slice(-16);
+
+  // Return as hex: iv:authTag:ciphertext
+  const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
+  const authTagHex = Array.from(authTag).map(b => b.toString(16).padStart(2, '0')).join('');
+  const ciphertextHex = Array.from(actualCiphertext).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  return `${ivHex}:${authTagHex}:${ciphertextHex}`;
+}
+
+/**
+ * Decrypt a secret using AES-256-GCM with master key
+ *
+ * @param encryptedSecret Encrypted secret in format "iv:authTag:ciphertext"
+ * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
+ * @returns Decrypted plaintext secret
+ */
+export async function decryptSecret(encryptedSecret: string, masterKeyHex: string): Promise<string> {
+  // Validate master key
+  if (!masterKeyHex || masterKeyHex.length !== 64) {
+    throw new Error('Master key must be 64-character hex string (32 bytes)');
+  }
+
+  // Parse encrypted format: iv:authTag:ciphertext
+  const parts = encryptedSecret.split(':');
+  if (parts.length !== 3) {
+    throw new Error('Invalid encrypted secret format');
+  }
+
+  const [ivHex, authTagHex, ciphertextHex] = parts;
+
+  // Convert from hex to bytes
+  const iv = new Uint8Array(ivHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+  const authTag = new Uint8Array(authTagHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+  const ciphertext = new Uint8Array(ciphertextHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+
+  // Combine ciphertext + authTag (AES-GCM expects them together)
+  const combined = new Uint8Array(ciphertext.length + authTag.length);
+  combined.set(ciphertext);
+  combined.set(authTag, ciphertext.length);
+
+  // Convert master key from hex to bytes
+  const keyBytes = new Uint8Array(masterKeyHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+
+  // Import master key
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt']
+  );
+
+  // Decrypt
+  const decryptedBytes = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv, tagLength: 128 },
+    key,
+    combined
+  );
+
+  // Convert to string
+  const decoder = new TextDecoder();
+  return decoder.decode(decryptedBytes);
 }
 
 // ===== HMAC Signature Generation and Verification =====
@@ -109,14 +226,16 @@ export async function verifySignature(secret: string, message: string, signature
 
     return result === 0;
   } catch (error) {
-    // Invalid signature format or other error
+    // Log error for debugging (helps identify implementation bugs)
+    console.error('Signature verification error:', error);
     return false;
   }
 }
 
 /**
  * Build the message string for signing
- * Format: timestamp + method + JSON.stringify(params || {})
+ * Format: timestamp:method:JSON.stringify(params || {})
+ * Uses colons as delimiters to prevent collision attacks
  *
  * @param timestamp Unix timestamp in milliseconds
  * @param method RPC method name
@@ -125,7 +244,8 @@ export async function verifySignature(secret: string, message: string, signature
  */
 export function buildSignatureMessage(timestamp: number, method: string, params?: any): string {
   const paramsStr = params ? JSON.stringify(params) : '{}';
-  return `${timestamp}${method}${paramsStr}`;
+  // Use delimiters to prevent collision: timestamp=12,method="34" vs timestamp=1,method="234"
+  return `${timestamp}:${method}:${paramsStr}`;
 }
 
 /**

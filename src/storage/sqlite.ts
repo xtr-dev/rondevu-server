@@ -21,13 +21,16 @@ const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
  */
 export class SQLiteStorage implements Storage {
   private db: Database.Database;
+  private masterEncryptionKey: string;
 
   /**
    * Creates a new SQLite storage instance
    * @param path Path to SQLite database file, or ':memory:' for in-memory database
+   * @param masterEncryptionKey 64-char hex string for encrypting secrets (32 bytes)
    */
-  constructor(path: string = ':memory:') {
+  constructor(path: string = ':memory:', masterEncryptionKey: string) {
     this.db = new Database(path);
+    this.masterEncryptionKey = masterEncryptionKey;
     this.initializeDatabase();
   }
 
@@ -429,17 +432,22 @@ export class SQLiteStorage implements Storage {
 
     const secret = generateSecret();
 
-    // Insert credential
+    // Encrypt secret before storing (AES-256-GCM)
+    const { encryptSecret } = await import('../crypto.ts');
+    const encryptedSecret = await encryptSecret(secret, this.masterEncryptionKey);
+
+    // Insert credential with encrypted secret
     const stmt = this.db.prepare(`
       INSERT INTO credentials (name, secret, created_at, expires_at, last_used)
       VALUES (?, ?, ?, ?, ?)
     `);
 
-    stmt.run(name!, secret, now, expiresAt, now);
+    stmt.run(name!, encryptedSecret, now, expiresAt, now);
 
+    // Return plaintext secret to user (only time they'll see it)
     return {
       name: name!,
-      secret,
+      secret, // Return plaintext secret, not encrypted
       createdAt: now,
       expiresAt,
       lastUsed: now,
@@ -458,9 +466,13 @@ export class SQLiteStorage implements Storage {
       return null;
     }
 
+    // Decrypt secret before returning
+    const { decryptSecret } = await import('../crypto.ts');
+    const decryptedSecret = await decryptSecret(row.secret, this.masterEncryptionKey);
+
     return {
       name: row.name,
-      secret: row.secret,
+      secret: decryptedSecret, // Return decrypted secret
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastUsed: row.last_used,
@@ -525,33 +537,25 @@ export class SQLiteStorage implements Storage {
     const now = Date.now();
     const resetTime = now + windowMs;
 
-    // Get current rate limit entry
-    const entry = this.db.prepare(`
-      SELECT count, reset_time FROM rate_limits WHERE identifier = ?
-    `).get(identifier) as { count: number; reset_time: number } | undefined;
+    // Atomic UPSERT: Insert or increment count, reset if expired
+    // This prevents TOCTOU race conditions by doing check+increment in single operation
+    const result = this.db.prepare(`
+      INSERT INTO rate_limits (identifier, count, reset_time)
+      VALUES (?, 1, ?)
+      ON CONFLICT(identifier) DO UPDATE SET
+        count = CASE
+          WHEN reset_time < ? THEN 1
+          ELSE count + 1
+        END,
+        reset_time = CASE
+          WHEN reset_time < ? THEN ?
+          ELSE reset_time
+        END
+      RETURNING count
+    `).get(identifier, resetTime, now, now, resetTime) as { count: number };
 
-    if (!entry || entry.reset_time < now) {
-      // First request or expired window - allow and reset
-      this.db.prepare(`
-        INSERT OR REPLACE INTO rate_limits (identifier, count, reset_time)
-        VALUES (?, 1, ?)
-      `).run(identifier, resetTime);
-      return true;
-    }
-
-    if (entry.count >= limit) {
-      // Rate limit exceeded
-      return false;
-    }
-
-    // Increment count
-    this.db.prepare(`
-      UPDATE rate_limits
-      SET count = count + 1
-      WHERE identifier = ?
-    `).run(identifier);
-
-    return true;
+    // Check if limit exceeded
+    return result.count <= limit;
   }
 
   async deleteExpiredRateLimits(now: number): Promise<number> {
