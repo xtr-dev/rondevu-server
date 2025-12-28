@@ -484,6 +484,14 @@ export class D1Storage implements Storage {
     return true;
   }
 
+  async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
+    await this.db.prepare(`
+      UPDATE credentials
+      SET last_used = ?, expires_at = ?
+      WHERE name = ?
+    `).bind(lastUsed, expiresAt, name).run();
+  }
+
   async deleteExpiredCredentials(now: number): Promise<number> {
     const result = await this.db.prepare(`
       DELETE FROM credentials WHERE expires_at < ?

@@ -503,6 +503,16 @@ export class SQLiteStorage implements Storage {
     return true;
   }
 
+  async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
+    const stmt = this.db.prepare(`
+      UPDATE credentials
+      SET last_used = ?, expires_at = ?
+      WHERE name = ?
+    `);
+
+    stmt.run(lastUsed, expiresAt, name);
+  }
+
   async deleteExpiredCredentials(now: number): Promise<number> {
     const stmt = this.db.prepare('DELETE FROM credentials WHERE expires_at < ?');
     const result = stmt.run(now);

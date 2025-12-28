@@ -220,8 +220,18 @@ export interface Storage {
    * @param name Credential name
    * @param secret Secret to verify
    * @returns true if valid, false otherwise
+   * @deprecated Use signature-based authentication instead
    */
   verifyCredential(name: string, secret: string): Promise<boolean>;
+
+  /**
+   * Updates credential usage timestamp and expiry
+   * Called after successful signature verification
+   * @param name Credential name
+   * @param lastUsed Last used timestamp
+   * @param expiresAt New expiry timestamp
+   */
+  updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void>;
 
   /**
    * Deletes all expired credentials

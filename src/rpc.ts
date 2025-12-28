@@ -6,6 +6,8 @@ import {
   parseServiceFqn,
   isVersionCompatible,
   validateUsername,
+  verifySignature,
+  buildSignatureMessage,
 } from './crypto.ts';
 
 // Constants (non-configurable)
@@ -200,25 +202,65 @@ export interface GetIceCandidatesParams {
 type RpcHandler<TParams = any> = (
   params: TParams,
   name: string,
-  secret: string,
+  timestamp: number,
+  signature: string,
   storage: Storage,
   config: Config,
   request: RpcRequest
 ) => Promise<any>;
 
 /**
- * Verify credentials for a method call
+ * Validate timestamp for replay attack prevention
+ * Throws RpcError if timestamp is invalid
+ */
+function validateTimestamp(timestamp: number, config: Config): void {
+  const now = Date.now();
+
+  // Check if timestamp is too old (replay attack)
+  if (now - timestamp > config.timestampMaxAge) {
+    throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Timestamp too old');
+  }
+
+  // Check if timestamp is too far in future (clock skew)
+  if (timestamp - now > config.timestampMaxFuture) {
+    throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Timestamp too far in future');
+  }
+}
+
+/**
+ * Verify request signature for authentication
  * Throws RpcError on authentication failure
  */
-async function verifyCredentials(
+async function verifyRequestSignature(
   name: string,
-  secret: string,
-  storage: Storage
+  timestamp: number,
+  signature: string,
+  method: string,
+  params: any,
+  storage: Storage,
+  config: Config
 ): Promise<void> {
-  const isValid = await storage.verifyCredential(name, secret);
-  if (!isValid) {
+  // Validate timestamp first
+  validateTimestamp(timestamp, config);
+
+  // Get credential to retrieve secret
+  const credential = await storage.getCredential(name);
+  if (!credential) {
     throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials');
   }
+
+  // Build message and verify signature
+  const message = buildSignatureMessage(timestamp, method, params);
+  const isValid = await verifySignature(credential.secret, message, signature);
+
+  if (!isValid) {
+    throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid signature');
+  }
+
+  // Update last used timestamp
+  const now = Date.now();
+  const expiresAt = now + (365 * 24 * 60 * 60 * 1000); // 1 year
+  await storage.updateCredentialUsage(name, now, expiresAt);
 }
 
 /**
@@ -231,7 +273,7 @@ const handlers: Record<string, RpcHandler> = {
    * No authentication required - this is how users get started
    * SECURITY: Rate limited per IP to prevent abuse (database-backed for multi-instance support)
    */
-  async generateCredentials(params: GenerateCredentialsParams, name, secret, storage, config, request: RpcRequest & { clientIp?: string }) {
+  async generateCredentials(params: GenerateCredentialsParams, name, timestamp, signature, storage, config, request: RpcRequest & { clientIp?: string }) {
     // Rate limiting check (IP-based, stored in database)
     const clientIp = request.clientIp || 'unknown';
     const rateLimitKey = `cred_gen:${clientIp}`;
@@ -267,7 +309,7 @@ const handlers: Record<string, RpcHandler> = {
    * 2. Paginated discovery: FQN without @name, with limit/offset
    * 3. Random discovery: FQN without @name, no limit
    */
-  async getOffer(params: GetOfferParams, name, secret, storage, config, request: RpcRequest) {
+  async getOffer(params: GetOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { serviceFqn, limit, offset } = params;
 
     // Note: getOffer can be called without auth for discovery
@@ -426,15 +468,12 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Publish an offer
    */
-  async publishOffer(params: PublishOfferParams, name, secret, storage, config, request: RpcRequest) {
+  async publishOffer(params: PublishOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { serviceFqn, offers, ttl } = params;
 
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required for offer publishing');
     }
-
-    // Verify credentials
-    await verifyCredentials(name, secret, storage);
 
     // Validate service FQN
     const fqnValidation = validateServiceFqn(serviceFqn);
@@ -522,15 +561,12 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Delete an offer
    */
-  async deleteOffer(params: DeleteOfferParams, name, secret, storage, config, request: RpcRequest) {
+  async deleteOffer(params: DeleteOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { serviceFqn } = params;
 
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
-
-    // Verify credentials
-    await verifyCredentials(name, secret, storage);
 
     const parsed = parseServiceFqn(serviceFqn);
     if (!parsed || !parsed.username) {
@@ -553,7 +589,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Answer an offer
    */
-  async answerOffer(params: AnswerOfferParams, name, secret, storage, config, request: RpcRequest) {
+  async answerOffer(params: AnswerOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, sdp } = params;
 
     // Validate input parameters
@@ -563,9 +599,6 @@ const handlers: Record<string, RpcHandler> = {
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
-
-    // Verify credentials
-    await verifyCredentials(name, secret, storage);
 
     if (!sdp || typeof sdp !== 'string' || sdp.length === 0) {
       throw new RpcError(ErrorCodes.INVALID_SDP, 'Invalid SDP');
@@ -592,7 +625,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get answer for an offer
    */
-  async getOfferAnswer(params: GetOfferAnswerParams, name, secret, storage, config, request: RpcRequest) {
+  async getOfferAnswer(params: GetOfferAnswerParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId } = params;
 
     // Validate input parameters
@@ -602,9 +635,6 @@ const handlers: Record<string, RpcHandler> = {
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
-
-    // Verify credentials
-    await verifyCredentials(name, secret, storage);
 
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
@@ -630,15 +660,12 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Combined polling for answers and ICE candidates
    */
-  async poll(params: PollParams, name, secret, storage, config, request: RpcRequest) {
+  async poll(params: PollParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { since } = params;
 
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
-
-    // Verify credentials
-    await verifyCredentials(name, secret, storage);
 
     // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
@@ -685,7 +712,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Add ICE candidates
    */
-  async addIceCandidates(params: AddIceCandidatesParams, name, secret, storage, config, request: RpcRequest) {
+  async addIceCandidates(params: AddIceCandidatesParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, candidates } = params;
 
     // Validate input parameters
@@ -695,9 +722,6 @@ const handlers: Record<string, RpcHandler> = {
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
-
-    // Verify credentials
-    await verifyCredentials(name, secret, storage);
 
     if (!Array.isArray(candidates) || candidates.length === 0) {
       throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Missing or invalid required parameter: candidates');
@@ -766,7 +790,7 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get ICE candidates
    */
-  async getIceCandidates(params: GetIceCandidatesParams, name, secret, storage, config, request: RpcRequest) {
+  async getIceCandidates(params: GetIceCandidatesParams, name, timestamp, signature, storage, config, request: RpcRequest) {
     const { serviceFqn, offerId, since } = params;
 
     // Validate input parameters
@@ -776,9 +800,6 @@ const handlers: Record<string, RpcHandler> = {
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
-
-    // Verify credentials
-    await verifyCredentials(name, secret, storage);
 
     // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
@@ -847,7 +868,11 @@ export async function handleRpc(
 
   // Read auth headers (same for all requests in batch)
   const name = ctx.req.header('X-Name');
-  const secret = ctx.req.header('X-Secret');
+  const timestampHeader = ctx.req.header('X-Timestamp');
+  const signature = ctx.req.header('X-Signature');
+
+  // Parse timestamp if present
+  const timestamp = timestampHeader ? parseInt(timestampHeader, 10) : 0;
 
   // CRITICAL: Pre-calculate total operations BEFORE processing any requests
   // This prevents DoS where first N requests complete before limit triggers
@@ -916,20 +941,41 @@ export async function handleRpc(
           continue;
         }
 
-        if (!secret || typeof secret !== 'string') {
+        if (!timestampHeader || typeof timestampHeader !== 'string' || isNaN(timestamp)) {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-Secret header',
+            error: 'Missing or invalid X-Timestamp header',
             errorCode: ErrorCodes.AUTH_REQUIRED,
           });
           continue;
         }
 
+        if (!signature || typeof signature !== 'string') {
+          responses.push({
+            success: false,
+            error: 'Missing or invalid X-Signature header',
+            errorCode: ErrorCodes.AUTH_REQUIRED,
+          });
+          continue;
+        }
+
+        // Verify signature (validates timestamp and signature)
+        await verifyRequestSignature(
+          name,
+          timestamp,
+          signature,
+          method,
+          params,
+          storage,
+          config
+        );
+
         // Execute handler with auth
         const result = await handler(
           params || {},
           name,
-          secret,
+          timestamp,
+          signature,
           storage,
           config,
           { ...request, clientIp }
@@ -944,7 +990,8 @@ export async function handleRpc(
         const result = await handler(
           params || {},
           name || '',
-          secret || '',
+          0, // timestamp
+          '', // signature
           storage,
           config,
           { ...request, clientIp }

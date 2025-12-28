@@ -49,6 +49,85 @@ export function generateSecret(): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// ===== HMAC Signature Generation and Verification =====
+
+/**
+ * Generate HMAC-SHA256 signature for request authentication
+ * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
+ *
+ * @param secret The credential secret (hex string)
+ * @param message The message to sign (typically: timestamp + method + params)
+ * @returns Promise<string> Base64-encoded signature
+ */
+export async function generateSignature(secret: string, message: string): Promise<string> {
+  // Convert secret from hex to bytes
+  const secretBytes = new Uint8Array(secret.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+
+  // Import secret as HMAC key
+  const key = await crypto.subtle.importKey(
+    'raw',
+    secretBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  // Convert message to bytes
+  const encoder = new TextEncoder();
+  const messageBytes = encoder.encode(message);
+
+  // Generate HMAC signature
+  const signatureBytes = await crypto.subtle.sign('HMAC', key, messageBytes);
+
+  // Convert to base64
+  return Buffer.from(signatureBytes).toString('base64');
+}
+
+/**
+ * Verify HMAC-SHA256 signature for request authentication
+ * Uses timing-safe comparison to prevent timing attacks
+ *
+ * @param secret The credential secret (hex string)
+ * @param message The message that was signed
+ * @param signature The signature to verify (base64)
+ * @returns Promise<boolean> True if signature is valid
+ */
+export async function verifySignature(secret: string, message: string, signature: string): Promise<boolean> {
+  try {
+    // Generate expected signature
+    const expectedSignature = await generateSignature(secret, message);
+
+    // Timing-safe comparison
+    if (expectedSignature.length !== signature.length) {
+      return false;
+    }
+
+    let result = 0;
+    for (let i = 0; i < expectedSignature.length; i++) {
+      result |= expectedSignature.charCodeAt(i) ^ signature.charCodeAt(i);
+    }
+
+    return result === 0;
+  } catch (error) {
+    // Invalid signature format or other error
+    return false;
+  }
+}
+
+/**
+ * Build the message string for signing
+ * Format: timestamp + method + JSON.stringify(params || {})
+ *
+ * @param timestamp Unix timestamp in milliseconds
+ * @param method RPC method name
+ * @param params RPC method parameters (optional)
+ * @returns String to be signed
+ */
+export function buildSignatureMessage(timestamp: number, method: string, params?: any): string {
+  const paramsStr = params ? JSON.stringify(params) : '{}';
+  return `${timestamp}${method}${paramsStr}`;
+}
+
 /**
  * Generates an anonymous username for users who don't want to claim one
  * Format: anon-{timestamp}-{random}

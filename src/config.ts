@@ -19,6 +19,8 @@ export interface Config {
   maxCandidateDepth: number;
   maxCandidatesPerRequest: number;
   maxTotalOperations: number;
+  timestampMaxAge: number; // Max age for timestamps (replay protection)
+  timestampMaxFuture: number; // Max future tolerance for timestamps (clock skew)
 }
 
 /**
@@ -43,6 +45,8 @@ export function loadConfig(): Config {
     maxCandidateSize: parseInt(process.env.MAX_CANDIDATE_SIZE || String(4 * 1024), 10), // 4KB
     maxCandidateDepth: parseInt(process.env.MAX_CANDIDATE_DEPTH || '10', 10),
     maxCandidatesPerRequest: parseInt(process.env.MAX_CANDIDATES_PER_REQUEST || '100', 10),
-    maxTotalOperations: parseInt(process.env.MAX_TOTAL_OPERATIONS || '1000', 10) // Total ops across batch
+    maxTotalOperations: parseInt(process.env.MAX_TOTAL_OPERATIONS || '1000', 10), // Total ops across batch
+    timestampMaxAge: parseInt(process.env.TIMESTAMP_MAX_AGE || '300000', 10), // 5 minutes
+    timestampMaxFuture: parseInt(process.env.TIMESTAMP_MAX_FUTURE || '60000', 10), // 1 minute
   };
 }
