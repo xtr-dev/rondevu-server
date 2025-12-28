@@ -33,13 +33,17 @@ export function loadConfig(): Config {
   let masterEncryptionKey = process.env.MASTER_ENCRYPTION_KEY;
 
   if (!masterEncryptionKey) {
-    // Generate random key for development
-    // WARNING: This will cause existing secrets to become invalid on restart
-    const crypto = globalThis.crypto;
-    const bytes = crypto.getRandomValues(new Uint8Array(32));
-    masterEncryptionKey = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    console.warn('WARNING: No MASTER_ENCRYPTION_KEY set. Using random key (secrets will be invalid on restart).');
-    console.warn('Set MASTER_ENCRYPTION_KEY environment variable in production.');
+    // SECURITY: Fail fast in production, use deterministic key in development
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('MASTER_ENCRYPTION_KEY environment variable must be set in production. Generate with: openssl rand -hex 32');
+    }
+
+    // Use deterministic key for development (allows credential persistence across restarts)
+    // WARNING: DO NOT USE THIS IN PRODUCTION - only for local development
+    console.error('⚠️  WARNING: Using insecure deterministic development key');
+    console.error('⚠️  NEVER use this in production - set MASTER_ENCRYPTION_KEY environment variable');
+    console.error('⚠️  Generate production key with: openssl rand -hex 32');
+    masterEncryptionKey = 'dev'.repeat(32); // Deterministic 64-char hex string
   }
 
   // Validate master encryption key
@@ -66,7 +70,7 @@ export function loadConfig(): Config {
     maxCandidateDepth: parseInt(process.env.MAX_CANDIDATE_DEPTH || '10', 10),
     maxCandidatesPerRequest: parseInt(process.env.MAX_CANDIDATES_PER_REQUEST || '100', 10),
     maxTotalOperations: parseInt(process.env.MAX_TOTAL_OPERATIONS || '1000', 10), // Total ops across batch
-    timestampMaxAge: parseInt(process.env.TIMESTAMP_MAX_AGE || '300000', 10), // 5 minutes
+    timestampMaxAge: parseInt(process.env.TIMESTAMP_MAX_AGE || '60000', 10), // 60 seconds (replay protection)
     timestampMaxFuture: parseInt(process.env.TIMESTAMP_MAX_FUTURE || '60000', 10), // 1 minute
     masterEncryptionKey,
   };
