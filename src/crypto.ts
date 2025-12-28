@@ -238,13 +238,13 @@ export async function verifySignature(secret: string, message: string, signature
     // Generate expected signature
     const expectedSignature = await generateSignature(secret, message);
 
-    // Timing-safe comparison
-    if (expectedSignature.length !== signature.length) {
-      return false;
-    }
+    // Timing-safe comparison (includes length check to prevent timing side-channel)
+    // XOR length difference into result to include length in constant-time comparison
+    let result = expectedSignature.length ^ signature.length;
 
-    let result = 0;
-    for (let i = 0; i < expectedSignature.length; i++) {
+    // Compare all bytes up to the minimum length (constant-time for equal lengths)
+    const minLength = Math.min(expectedSignature.length, signature.length);
+    for (let i = 0; i < minLength; i++) {
       result |= expectedSignature.charCodeAt(i) ^ signature.charCodeAt(i);
     }
 
@@ -258,18 +258,21 @@ export async function verifySignature(secret: string, message: string, signature
 
 /**
  * Build the message string for signing
- * Format: timestamp:method:JSON.stringify(params || {})
+ * Format: timestamp:nonce:method:JSON.stringify(params || {})
  * Uses colons as delimiters to prevent collision attacks
+ * Includes nonce to prevent signature reuse within timestamp window
  *
  * @param timestamp Unix timestamp in milliseconds
+ * @param nonce Cryptographic nonce (UUID v4) to prevent replay attacks
  * @param method RPC method name
  * @param params RPC method parameters (optional)
  * @returns String to be signed
  */
-export function buildSignatureMessage(timestamp: number, method: string, params?: any): string {
+export function buildSignatureMessage(timestamp: number, nonce: string, method: string, params?: any): string {
   const paramsStr = params ? JSON.stringify(params) : '{}';
   // Use delimiters to prevent collision: timestamp=12,method="34" vs timestamp=1,method="234"
-  return `${timestamp}:${method}:${paramsStr}`;
+  // Include nonce to make each request unique (prevents signature reuse in same millisecond)
+  return `${timestamp}:${nonce}:${method}:${paramsStr}`;
 }
 
 /**

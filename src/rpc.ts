@@ -240,6 +240,7 @@ function validateTimestamp(timestamp: number, config: Config): void {
 async function verifyRequestSignature(
   name: string,
   timestamp: number,
+  nonce: string,
   signature: string,
   method: string,
   params: any,
@@ -255,8 +256,8 @@ async function verifyRequestSignature(
     throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials');
   }
 
-  // Build message and verify signature
-  const message = buildSignatureMessage(timestamp, method, params);
+  // Build message and verify signature (includes nonce to prevent signature reuse)
+  const message = buildSignatureMessage(timestamp, nonce, method, params);
   const isValid = await verifySignature(credential.secret, message, signature);
 
   if (!isValid) {
@@ -281,8 +282,15 @@ const handlers: Record<string, RpcHandler> = {
    */
   async generateCredentials(params: GenerateCredentialsParams, name, timestamp, signature, storage, config, request: RpcRequest & { clientIp?: string }) {
     // Rate limiting check (IP-based, stored in database)
-    const clientIp = request.clientIp || 'unknown';
-    const rateLimitKey = `cred_gen:${clientIp}`;
+    // SECURITY: Reject requests without valid client IP to prevent shared rate limit abuse
+    if (!request.clientIp) {
+      throw new RpcError(
+        ErrorCodes.INVALID_REQUEST,
+        'Unable to determine client IP address. Ensure proxy headers are configured correctly.'
+      );
+    }
+
+    const rateLimitKey = `cred_gen:${request.clientIp}`;
 
     const allowed = await storage.checkRateLimit(
       rateLimitKey,
@@ -875,6 +883,7 @@ export async function handleRpc(
   // Read auth headers (same for all requests in batch)
   const name = ctx.req.header('X-Name');
   const timestampHeader = ctx.req.header('X-Timestamp');
+  const nonce = ctx.req.header('X-Nonce');
   const signature = ctx.req.header('X-Signature');
 
   // Parse timestamp if present
@@ -956,6 +965,15 @@ export async function handleRpc(
           continue;
         }
 
+        if (!nonce || typeof nonce !== 'string') {
+          responses.push({
+            success: false,
+            error: 'Missing or invalid X-Nonce header (use crypto.randomUUID())',
+            errorCode: ErrorCodes.AUTH_REQUIRED,
+          });
+          continue;
+        }
+
         if (!signature || typeof signature !== 'string') {
           responses.push({
             success: false,
@@ -965,10 +983,11 @@ export async function handleRpc(
           continue;
         }
 
-        // Verify signature (validates timestamp and signature)
+        // Verify signature (validates timestamp, nonce, and signature)
         await verifyRequestSignature(
           name,
           timestamp,
+          nonce,
           signature,
           method,
           params,

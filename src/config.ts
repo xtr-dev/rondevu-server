@@ -43,7 +43,8 @@ export function loadConfig(): Config {
     console.error('⚠️  WARNING: Using insecure deterministic development key');
     console.error('⚠️  NEVER use this in production - set MASTER_ENCRYPTION_KEY environment variable');
     console.error('⚠️  Generate production key with: openssl rand -hex 32');
-    masterEncryptionKey = 'dev'.repeat(32); // Deterministic 64-char hex string
+    // Hex encoding of "devdevdevdevdevdevdevdevdevdevdevdev" (32 bytes = 64 hex chars)
+    masterEncryptionKey = '6465766465766465646576646576646576646576646576646576646576646576';
   }
 
   // Validate master encryption key
