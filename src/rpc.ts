@@ -24,6 +24,58 @@ const DISCOVERY_FETCH_MULTIPLIER = 5;
 // NOTE: MAX_SDP_SIZE, MAX_CANDIDATE_SIZE, MAX_CANDIDATE_DEPTH, and MAX_CANDIDATES_PER_REQUEST
 // are now configurable via environment variables (see config.ts)
 
+// ===== Rate Limiting =====
+
+// Rate limiting for credential generation (per IP)
+const CREDENTIAL_RATE_LIMIT = 10; // Max credentials per hour per IP
+const CREDENTIAL_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in milliseconds
+
+interface RateLimitEntry {
+  count: number;
+  resetTime: number;
+}
+
+// In-memory rate limiting (use Redis in production for distributed systems)
+const credentialRateLimits = new Map<string, RateLimitEntry>();
+
+// Clean up expired rate limit entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of credentialRateLimits.entries()) {
+    if (entry.resetTime < now) {
+      credentialRateLimits.delete(ip);
+    }
+  }
+}, 5 * 60 * 1000); // Clean up every 5 minutes
+
+/**
+ * Check rate limit for credential generation
+ * @param ip Client IP address
+ * @returns true if allowed, false if rate limited
+ */
+function checkCredentialRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = credentialRateLimits.get(ip);
+
+  if (!entry || entry.resetTime < now) {
+    // First request or expired window - allow and reset
+    credentialRateLimits.set(ip, {
+      count: 1,
+      resetTime: now + CREDENTIAL_RATE_WINDOW,
+    });
+    return true;
+  }
+
+  if (entry.count >= CREDENTIAL_RATE_LIMIT) {
+    // Rate limit exceeded
+    return false;
+  }
+
+  // Increment count
+  entry.count++;
+  return true;
+}
+
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
  * CRITICAL: Checks depth BEFORE recursing to prevent stack overflow
@@ -99,6 +151,7 @@ export const ErrorCodes = {
   TOO_MANY_OFFERS: 'TOO_MANY_OFFERS',
   SDP_TOO_LARGE: 'SDP_TOO_LARGE',
   BATCH_TOO_LARGE: 'BATCH_TOO_LARGE',
+  RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
 
   // Generic errors
   INTERNAL_ERROR: 'INTERNAL_ERROR',
@@ -222,8 +275,18 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Generate new credentials (name + secret pair)
    * No authentication required - this is how users get started
+   * SECURITY: Rate limited per IP to prevent abuse
    */
-  async generateCredentials(params: GenerateCredentialsParams, name, secret, storage, config, request: RpcRequest) {
+  async generateCredentials(params: GenerateCredentialsParams, name, secret, storage, config, request: RpcRequest & { clientIp?: string }) {
+    // Rate limiting check (IP-based)
+    const clientIp = request.clientIp || 'unknown';
+    if (!checkCredentialRateLimit(clientIp)) {
+      throw new RpcError(
+        ErrorCodes.RATE_LIMIT_EXCEEDED,
+        `Rate limit exceeded. Maximum ${CREDENTIAL_RATE_LIMIT} credentials per hour per IP.`
+      );
+    }
+
     const credential = await storage.generateCredentials({
       expiresAt: params.expiresAt,
     });
@@ -818,6 +881,14 @@ export async function handleRpc(
 ): Promise<RpcResponse[]> {
   const responses: RpcResponse[] = [];
 
+  // Extract client IP for rate limiting
+  // Try multiple headers for proxy compatibility
+  const clientIp =
+    ctx.req.header('cf-connecting-ip') || // Cloudflare
+    ctx.req.header('x-real-ip') || // Nginx
+    ctx.req.header('x-forwarded-for')?.split(',')[0].trim() || // Standard proxy
+    'unknown';
+
   // Read auth headers (same for all requests in batch)
   const name = ctx.req.header('X-Name');
   const secret = ctx.req.header('X-Secret');
@@ -905,7 +976,7 @@ export async function handleRpc(
           secret,
           storage,
           config,
-          request
+          { ...request, clientIp }
         );
 
         responses.push({
@@ -920,7 +991,7 @@ export async function handleRpc(
           secret || '',
           storage,
           config,
-          request
+          { ...request, clientIp }
         );
 
         responses.push({

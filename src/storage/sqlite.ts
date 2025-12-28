@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   Storage,
   Offer,
@@ -465,7 +465,17 @@ export class SQLiteStorage implements Storage {
       return false;
     }
 
-    if (credential.secret !== secret) {
+    // Use timing-safe comparison to prevent timing attacks
+    // Even though 128-bit secrets make this unlikely, it's defense-in-depth
+    const credentialBuffer = Buffer.from(credential.secret, 'utf8');
+    const secretBuffer = Buffer.from(secret, 'utf8');
+
+    // Ensure buffers are same length (timingSafeEqual requirement)
+    if (credentialBuffer.length !== secretBuffer.length) {
+      return false;
+    }
+
+    if (!timingSafeEqual(credentialBuffer, secretBuffer)) {
       return false;
     }
 

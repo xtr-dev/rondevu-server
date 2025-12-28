@@ -15,6 +15,22 @@ import { parseServiceFqn } from '../crypto.ts';
 const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
 
 /**
+ * Timing-safe string comparison for Cloudflare Workers
+ * Uses constant-time comparison to prevent timing attacks
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+/**
  * D1 storage adapter for rondevu DNS-like system using Cloudflare D1
  */
 export class D1Storage implements Storage {
@@ -440,7 +456,9 @@ export class D1Storage implements Storage {
       return false;
     }
 
-    if (credential.secret !== secret) {
+    // Use timing-safe comparison to prevent timing attacks
+    // Even though 128-bit secrets make this unlikely, it's defense-in-depth
+    if (!timingSafeEqual(credential.secret, secret)) {
       return false;
     }
 
