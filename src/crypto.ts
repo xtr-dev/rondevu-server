@@ -60,6 +60,30 @@ export function generateSecret(): string {
 // ===== Secret Encryption/Decryption (Database Storage) =====
 
 /**
+ * Convert hex string to byte array with validation
+ * @param hex Hex string (must be even length)
+ * @returns Uint8Array of bytes
+ */
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new Error('Hex string must have even length');
+  }
+
+  const match = hex.match(/.{1,2}/g);
+  if (!match) {
+    throw new Error('Invalid hex string format');
+  }
+
+  return new Uint8Array(match.map(byte => {
+    const parsed = parseInt(byte, 16);
+    if (isNaN(parsed)) {
+      throw new Error(`Invalid hex byte: ${byte}`);
+    }
+    return parsed;
+  }));
+}
+
+/**
  * Encrypt a secret using AES-256-GCM with master key
  * Format: iv:authTag:ciphertext (all hex-encoded)
  *
@@ -73,8 +97,8 @@ export async function encryptSecret(secret: string, masterKeyHex: string): Promi
     throw new Error('Master key must be 64-character hex string (32 bytes)');
   }
 
-  // Convert master key from hex to bytes
-  const keyBytes = new Uint8Array(masterKeyHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+  // Convert master key from hex to bytes (with validation)
+  const keyBytes = hexToBytes(masterKeyHex);
 
   // Import master key
   const key = await crypto.subtle.importKey(
@@ -132,18 +156,18 @@ export async function decryptSecret(encryptedSecret: string, masterKeyHex: strin
 
   const [ivHex, authTagHex, ciphertextHex] = parts;
 
-  // Convert from hex to bytes
-  const iv = new Uint8Array(ivHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
-  const authTag = new Uint8Array(authTagHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
-  const ciphertext = new Uint8Array(ciphertextHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+  // Convert from hex to bytes (with validation)
+  const iv = hexToBytes(ivHex);
+  const authTag = hexToBytes(authTagHex);
+  const ciphertext = hexToBytes(ciphertextHex);
 
   // Combine ciphertext + authTag (AES-GCM expects them together)
   const combined = new Uint8Array(ciphertext.length + authTag.length);
   combined.set(ciphertext);
   combined.set(authTag, ciphertext.length);
 
-  // Convert master key from hex to bytes
-  const keyBytes = new Uint8Array(masterKeyHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+  // Convert master key from hex to bytes (with validation)
+  const keyBytes = hexToBytes(masterKeyHex);
 
   // Import master key
   const key = await crypto.subtle.importKey(
@@ -177,8 +201,8 @@ export async function decryptSecret(encryptedSecret: string, masterKeyHex: strin
  * @returns Promise<string> Base64-encoded signature
  */
 export async function generateSignature(secret: string, message: string): Promise<string> {
-  // Convert secret from hex to bytes
-  const secretBytes = new Uint8Array(secret.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+  // Convert secret from hex to bytes (with validation)
+  const secretBytes = hexToBytes(secret);
 
   // Import secret as HMAC key
   const key = await crypto.subtle.importKey(

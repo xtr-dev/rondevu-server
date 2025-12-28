@@ -29,6 +29,12 @@ const DISCOVERY_FETCH_MULTIPLIER = 5;
 // ===== Rate Limiting =====
 
 // Rate limiting for credential generation (per IP)
+// NOTE: Uses fixed-window rate limiting with full window reset on expiry
+//   - Window starts on first request and expires after CREDENTIAL_RATE_WINDOW
+//   - When window expires, counter resets to 0 and new window starts
+//   - Example: 10 requests at 11:00 AM → window resets at 12:00 PM → 10 more allowed immediately
+//   - This is simpler than sliding windows but may allow bursts at window boundaries
+//   - Still effective for preventing sustained abuse (10 credentials/hour sustained)
 const CREDENTIAL_RATE_LIMIT = 10; // Max credentials per hour per IP
 const CREDENTIAL_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in milliseconds
 
