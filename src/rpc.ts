@@ -30,52 +30,6 @@ const DISCOVERY_FETCH_MULTIPLIER = 5;
 const CREDENTIAL_RATE_LIMIT = 10; // Max credentials per hour per IP
 const CREDENTIAL_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in milliseconds
 
-interface RateLimitEntry {
-  count: number;
-  resetTime: number;
-}
-
-// In-memory rate limiting (use Redis in production for distributed systems)
-const credentialRateLimits = new Map<string, RateLimitEntry>();
-
-// Clean up expired rate limit entries periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of credentialRateLimits.entries()) {
-    if (entry.resetTime < now) {
-      credentialRateLimits.delete(ip);
-    }
-  }
-}, 5 * 60 * 1000); // Clean up every 5 minutes
-
-/**
- * Check rate limit for credential generation
- * @param ip Client IP address
- * @returns true if allowed, false if rate limited
- */
-function checkCredentialRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = credentialRateLimits.get(ip);
-
-  if (!entry || entry.resetTime < now) {
-    // First request or expired window - allow and reset
-    credentialRateLimits.set(ip, {
-      count: 1,
-      resetTime: now + CREDENTIAL_RATE_WINDOW,
-    });
-    return true;
-  }
-
-  if (entry.count >= CREDENTIAL_RATE_LIMIT) {
-    // Rate limit exceeded
-    return false;
-  }
-
-  // Increment count
-  entry.count++;
-  return true;
-}
-
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
  * CRITICAL: Checks depth BEFORE recursing to prevent stack overflow
@@ -275,12 +229,20 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Generate new credentials (name + secret pair)
    * No authentication required - this is how users get started
-   * SECURITY: Rate limited per IP to prevent abuse
+   * SECURITY: Rate limited per IP to prevent abuse (database-backed for multi-instance support)
    */
   async generateCredentials(params: GenerateCredentialsParams, name, secret, storage, config, request: RpcRequest & { clientIp?: string }) {
-    // Rate limiting check (IP-based)
+    // Rate limiting check (IP-based, stored in database)
     const clientIp = request.clientIp || 'unknown';
-    if (!checkCredentialRateLimit(clientIp)) {
+    const rateLimitKey = `cred_gen:${clientIp}`;
+
+    const allowed = await storage.checkRateLimit(
+      rateLimitKey,
+      CREDENTIAL_RATE_LIMIT,
+      CREDENTIAL_RATE_WINDOW
+    );
+
+    if (!allowed) {
       throw new RpcError(
         ErrorCodes.RATE_LIMIT_EXCEEDED,
         `Rate limit exceeded. Maximum ${CREDENTIAL_RATE_LIMIT} credentials per hour per IP.`
@@ -452,19 +414,13 @@ const handlers: Record<string, RpcHandler> = {
     //   * Use case: Self-discovery is valid for testing/monitoring
     //
     // This asymmetry is intentional and acceptable.
-    const randomService = await storage.getRandomService(parsed.serviceName, parsed.version);
+    const randomResult = await storage.getRandomService(parsed.serviceName, parsed.version);
 
-    if (!randomService) {
+    if (!randomResult) {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'No offers found');
     }
 
-    const availableOffer = await findAvailableOffer(randomService);
-
-    if (!availableOffer) {
-      throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'No available offers for this service');
-    }
-
-    return buildServiceResponse(randomService, availableOffer);
+    return buildServiceResponse(randomResult.service, randomResult.offer);
   },
 
   /**

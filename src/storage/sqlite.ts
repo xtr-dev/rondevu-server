@@ -85,6 +85,15 @@ export class SQLiteStorage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_credentials_expires ON credentials(expires_at);
       CREATE INDEX IF NOT EXISTS idx_credentials_secret ON credentials(secret);
 
+      -- Rate limits table (for distributed rate limiting)
+      CREATE TABLE IF NOT EXISTS rate_limits (
+        identifier TEXT PRIMARY KEY,
+        count INTEGER NOT NULL,
+        reset_time INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_time);
+
       -- Services table (new schema with extracted fields for discovery)
       CREATE TABLE IF NOT EXISTS services (
         id TEXT PRIMARY KEY,
@@ -500,6 +509,47 @@ export class SQLiteStorage implements Storage {
     return result.changes;
   }
 
+  // ===== Rate Limiting =====
+
+  async checkRateLimit(identifier: string, limit: number, windowMs: number): Promise<boolean> {
+    const now = Date.now();
+    const resetTime = now + windowMs;
+
+    // Get current rate limit entry
+    const entry = this.db.prepare(`
+      SELECT count, reset_time FROM rate_limits WHERE identifier = ?
+    `).get(identifier) as { count: number; reset_time: number } | undefined;
+
+    if (!entry || entry.reset_time < now) {
+      // First request or expired window - allow and reset
+      this.db.prepare(`
+        INSERT OR REPLACE INTO rate_limits (identifier, count, reset_time)
+        VALUES (?, 1, ?)
+      `).run(identifier, resetTime);
+      return true;
+    }
+
+    if (entry.count >= limit) {
+      // Rate limit exceeded
+      return false;
+    }
+
+    // Increment count
+    this.db.prepare(`
+      UPDATE rate_limits
+      SET count = count + 1
+      WHERE identifier = ?
+    `).run(identifier);
+
+    return true;
+  }
+
+  async deleteExpiredRateLimits(now: number): Promise<number> {
+    const stmt = this.db.prepare('DELETE FROM rate_limits WHERE reset_time < ?');
+    const result = stmt.run(now);
+    return result.changes;
+  }
+
   // ===== Service Management =====
 
   async createService(request: CreateServiceRequest): Promise<{
@@ -694,10 +744,29 @@ export class SQLiteStorage implements Storage {
     return rows.map(row => this.rowToService(row));
   }
 
-  async getRandomService(serviceName: string, version: string): Promise<Service | null> {
-    // Get a random service with an available offer
+  async getRandomService(serviceName: string, version: string): Promise<{ service: Service; offer: Offer } | null> {
+    // Get a random service with an available offer (in single query to avoid N+1)
     const stmt = this.db.prepare(`
-      SELECT s.* FROM services s
+      SELECT
+        s.id as service_id,
+        s.service_fqn,
+        s.service_name,
+        s.version,
+        s.username,
+        s.created_at as service_created_at,
+        s.expires_at as service_expires_at,
+        o.id as offer_id,
+        o.username as offer_username,
+        o.service_id as offer_service_id,
+        o.service_fqn as offer_service_fqn,
+        o.sdp,
+        o.created_at as offer_created_at,
+        o.expires_at as offer_expires_at,
+        o.last_seen,
+        o.answerer_username,
+        o.answer_sdp,
+        o.answered_at
+      FROM services s
       INNER JOIN offers o ON o.service_id = s.id
       WHERE s.service_name = ?
         AND s.version = ?
@@ -714,7 +783,31 @@ export class SQLiteStorage implements Storage {
       return null;
     }
 
-    return this.rowToService(row);
+    const service: Service = {
+      id: row.service_id,
+      serviceFqn: row.service_fqn,
+      serviceName: row.service_name,
+      version: row.version,
+      username: row.username,
+      createdAt: row.service_created_at,
+      expiresAt: row.service_expires_at,
+    };
+
+    const offer: Offer = {
+      id: row.offer_id,
+      username: row.offer_username,
+      serviceId: row.offer_service_id || undefined,
+      serviceFqn: row.offer_service_fqn || undefined,
+      sdp: row.sdp,
+      createdAt: row.offer_created_at,
+      expiresAt: row.offer_expires_at,
+      lastSeen: row.last_seen,
+      answererUsername: row.answerer_username || undefined,
+      answerSdp: row.answer_sdp || undefined,
+      answeredAt: row.answered_at || undefined,
+    };
+
+    return { service, offer };
   }
 
   async deleteService(serviceId: string, username: string): Promise<boolean> {

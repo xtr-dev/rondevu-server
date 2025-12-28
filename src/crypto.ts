@@ -31,8 +31,10 @@ export function generateCredentialName(): string {
   const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
   const noun = nouns[Math.floor(Math.random() * nouns.length)];
 
-  // Generate 4-character hex suffix for uniqueness
-  const random = crypto.getRandomValues(new Uint8Array(2));
+  // Generate 8-character hex suffix for uniqueness (4 bytes = 2^32 combinations)
+  // With 576 adjective-noun pairs, total space: 576 × 2^32 ≈ 2.5 trillion names
+  // Birthday paradox collision at ~1.6 million credentials (safe for most deployments)
+  const random = crypto.getRandomValues(new Uint8Array(4));
   const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
 
   return `${adjective}-${noun}-${hex}`;

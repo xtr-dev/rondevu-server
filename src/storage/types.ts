@@ -230,6 +230,24 @@ export interface Storage {
    */
   deleteExpiredCredentials(now: number): Promise<number>;
 
+  // ===== Rate Limiting =====
+
+  /**
+   * Check and increment rate limit for an identifier
+   * @param identifier Unique identifier (e.g., IP address)
+   * @param limit Maximum count allowed
+   * @param windowMs Time window in milliseconds
+   * @returns true if allowed, false if rate limit exceeded
+   */
+  checkRateLimit(identifier: string, limit: number, windowMs: number): Promise<boolean>;
+
+  /**
+   * Deletes all expired rate limit entries
+   * @param now Current timestamp
+   * @returns Number of entries deleted
+   */
+  deleteExpiredRateLimits(now: number): Promise<number>;
+
   // ===== Service Management =====
 
   /**
@@ -298,7 +316,7 @@ export interface Storage {
    * @param version Version string for semver matching (e.g., '1.0.0')
    * @returns Random service with available offer, or null if none found
    */
-  getRandomService(serviceName: string, version: string): Promise<Service | null>;
+  getRandomService(serviceName: string, version: string): Promise<{ service: Service; offer: Offer } | null>;
 
   /**
    * Deletes a service (with ownership verification)
