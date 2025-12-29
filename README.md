@@ -119,11 +119,11 @@ Responses are returned in the same order as requests.
 
 **Error Codes:**
 All error responses include an `errorCode` field for programmatic error handling:
-- `AUTH_REQUIRED`, `INVALID_SIGNATURE`, `TIMESTAMP_TOO_OLD`, `TIMESTAMP_IN_FUTURE`
-- `INVALID_USERNAME`, `INVALID_FQN`, `INVALID_SDP`, `INVALID_PARAMS`, `MISSING_PARAMS`
+- `AUTH_REQUIRED`, `INVALID_CREDENTIALS`
+- `INVALID_NAME`, `INVALID_FQN`, `INVALID_SDP`, `INVALID_PARAMS`, `MISSING_PARAMS`
 - `OFFER_NOT_FOUND`, `OFFER_ALREADY_ANSWERED`, `OFFER_NOT_ANSWERED`, `NO_AVAILABLE_OFFERS`
 - `NOT_AUTHORIZED`, `OWNERSHIP_MISMATCH`
-- `TOO_MANY_OFFERS`, `SDP_TOO_LARGE`
+- `TOO_MANY_OFFERS`, `SDP_TOO_LARGE`, `BATCH_TOO_LARGE`, `RATE_LIMIT_EXCEEDED`
 - `INTERNAL_ERROR`, `UNKNOWN_METHOD`
 
 ## Core Methods
@@ -280,17 +280,6 @@ Quick reference for common environment variables:
 | `MASTER_ENCRYPTION_KEY` | (dev key) | 64-char hex string for encrypting secrets (generate with `openssl rand -hex 32`) |
 | `TIMESTAMP_MAX_AGE` | `60000` | Maximum timestamp age in milliseconds for replay protection |
 
-📚 See [ADVANCED.md](./ADVANCED.md#configuration) for complete configuration reference.
-
-## Documentation
-
-📚 **[ADVANCED.md](./ADVANCED.md)** - Comprehensive guide including:
-- Complete RPC method reference with examples
-- Full configuration options
-- Database schema documentation
-- Security implementation details
-- Migration guides
-
 ## Security
 
 All authenticated operations require HMAC-SHA256 signatures:
@@ -301,11 +290,14 @@ All authenticated operations require HMAC-SHA256 signatures:
 - **Secret Storage**: Secrets encrypted with AES-256-GCM using master encryption key
 - **Rate Limiting**: IP-based rate limiting on credential generation (10/hour)
 
-See [ADVANCED.md](./ADVANCED.md#security) for detailed security documentation.
-
 ## Changelog
 
-### v0.5.3 (Latest)
+### v0.5.4 (Latest)
+- Add expiresAt validation in generateCredentials (prevent past/invalid timestamps)
+- Add TTL validation in publishOffer (prevent NaN database corruption)
+- Fix config validation bypass vulnerability (enforce minimum values, fail on NaN)
+
+### v0.5.3
 - Fix RPC method calls using non-existent storage methods
 - Replace `storage.getServicesByName()` with `storage.discoverServices()` and `storage.getRandomService()`
 - Ensures compatibility with Storage interface specification
