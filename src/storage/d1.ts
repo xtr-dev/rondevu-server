@@ -110,6 +110,14 @@ export class D1Storage implements Storage {
 
       CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_time);
 
+      -- Nonces table (for replay attack prevention)
+      CREATE TABLE IF NOT EXISTS nonces (
+        nonce_key TEXT PRIMARY KEY,
+        expires_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_nonces_expires ON nonces(expires_at);
+
       -- Services table (new schema with extracted fields for discovery)
       CREATE TABLE IF NOT EXISTS services (
         id TEXT PRIMARY KEY,
@@ -542,6 +550,36 @@ export class D1Storage implements Storage {
   async deleteExpiredRateLimits(now: number): Promise<number> {
     const result = await this.db.prepare(`
       DELETE FROM rate_limits WHERE reset_time < ?
+    `).bind(now).run();
+
+    return result.meta.changes || 0;
+  }
+
+  // ===== Nonce Tracking (Replay Protection) =====
+
+  async checkAndMarkNonce(nonceKey: string, expiresAt: number): Promise<boolean> {
+    try {
+      // Atomic INSERT - if nonce already exists, this will fail with UNIQUE constraint
+      // This prevents replay attacks by ensuring each nonce is only used once
+      const result = await this.db.prepare(`
+        INSERT INTO nonces (nonce_key, expires_at)
+        VALUES (?, ?)
+      `).bind(nonceKey, expiresAt).run();
+
+      // D1 returns success=true if insert succeeded
+      return result.success;
+    } catch (error: any) {
+      // UNIQUE constraint violation means nonce already used (replay attack)
+      if (error?.message?.includes('UNIQUE constraint failed')) {
+        return false;
+      }
+      throw error; // Other errors should propagate
+    }
+  }
+
+  async deleteExpiredNonces(now: number): Promise<number> {
+    const result = await this.db.prepare(`
+      DELETE FROM nonces WHERE expires_at < ?
     `).bind(now).run();
 
     return result.meta.changes || 0;

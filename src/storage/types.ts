@@ -258,6 +258,23 @@ export interface Storage {
    */
   deleteExpiredRateLimits(now: number): Promise<number>;
 
+  // ===== Nonce Tracking (Replay Protection) =====
+
+  /**
+   * Check if nonce has been used and mark it as used (atomic operation)
+   * @param nonceKey Unique nonce identifier (format: "nonce:{name}:{nonce}")
+   * @param expiresAt Timestamp when nonce expires (should be timestamp + timestampMaxAge)
+   * @returns true if nonce is new (allowed), false if already used (replay attack)
+   */
+  checkAndMarkNonce(nonceKey: string, expiresAt: number): Promise<boolean>;
+
+  /**
+   * Deletes all expired nonce entries
+   * @param now Current timestamp
+   * @returns Number of entries deleted
+   */
+  deleteExpiredNonces(now: number): Promise<number>;
+
   // ===== Service Management =====
 
   /**

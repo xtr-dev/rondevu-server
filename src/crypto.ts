@@ -43,14 +43,15 @@ export function generateCredentialName(): string {
 
 /**
  * Generates a random secret (API key style)
- * Format: 32-character hex string (128 bits of entropy)
+ * Format: 64-character hex string (256 bits of entropy)
+ * 256 bits provides optimal security for HMAC-SHA256 and future-proofs against brute force
  */
 export function generateSecret(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const bytes = crypto.getRandomValues(new Uint8Array(32)); // 32 bytes = 256 bits
   const secret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 
-  // Validation: Ensure output is exactly 32 characters
-  if (secret.length !== 32) {
+  // Validation: Ensure output is exactly 64 characters
+  if (secret.length !== 64) {
     throw new Error('Secret generation failed: invalid length');
   }
 

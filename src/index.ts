@@ -33,13 +33,33 @@ async function main() {
     throw new Error('Unsupported storage type');
   }
 
-  // Start periodic cleanup of expired offers
+  // Start periodic cleanup of expired entries
   const cleanupInterval = setInterval(async () => {
     try {
       const now = Date.now();
-      const deleted = await storage.deleteExpiredOffers(now);
-      if (deleted > 0) {
-        console.log(`Cleanup: Deleted ${deleted} expired offer(s)`);
+
+      // Clean up expired offers
+      const deletedOffers = await storage.deleteExpiredOffers(now);
+      if (deletedOffers > 0) {
+        console.log(`Cleanup: Deleted ${deletedOffers} expired offer(s)`);
+      }
+
+      // Clean up expired credentials
+      const deletedCredentials = await storage.deleteExpiredCredentials(now);
+      if (deletedCredentials > 0) {
+        console.log(`Cleanup: Deleted ${deletedCredentials} expired credential(s)`);
+      }
+
+      // Clean up expired rate limits
+      const deletedRateLimits = await storage.deleteExpiredRateLimits(now);
+      if (deletedRateLimits > 0) {
+        console.log(`Cleanup: Deleted ${deletedRateLimits} expired rate limit(s)`);
+      }
+
+      // Clean up expired nonces (replay protection)
+      const deletedNonces = await storage.deleteExpiredNonces(now);
+      if (deletedNonces > 0) {
+        console.log(`Cleanup: Deleted ${deletedNonces} expired nonce(s)`);
       }
     } catch (err) {
       console.error('Cleanup error:', err);

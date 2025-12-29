@@ -250,6 +250,16 @@ async function verifyRequestSignature(
   // Validate timestamp first
   validateTimestamp(timestamp, config);
 
+  // Check nonce uniqueness BEFORE expensive signature verification
+  // This prevents replay attacks within the timestamp window
+  const nonceKey = `nonce:${name}:${nonce}`;
+  const nonceExpiresAt = timestamp + config.timestampMaxAge;
+  const nonceIsNew = await storage.checkAndMarkNonce(nonceKey, nonceExpiresAt);
+
+  if (!nonceIsNew) {
+    throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Nonce already used (replay attack detected)');
+  }
+
   // Get credential to retrieve secret
   const credential = await storage.getCredential(name);
   if (!credential) {
@@ -266,8 +276,8 @@ async function verifyRequestSignature(
 
   // Update last used timestamp
   const now = Date.now();
-  const expiresAt = now + (365 * 24 * 60 * 60 * 1000); // 1 year
-  await storage.updateCredentialUsage(name, now, expiresAt);
+  const credentialExpiresAt = now + (365 * 24 * 60 * 60 * 1000); // 1 year
+  await storage.updateCredentialUsage(name, now, credentialExpiresAt);
 }
 
 /**
@@ -282,26 +292,31 @@ const handlers: Record<string, RpcHandler> = {
    */
   async generateCredentials(params: GenerateCredentialsParams, name, timestamp, signature, storage, config, request: RpcRequest & { clientIp?: string }) {
     // Rate limiting check (IP-based, stored in database)
-    // SECURITY: Reject requests without valid client IP to prevent shared rate limit abuse
-    if (!request.clientIp) {
-      throw new RpcError(
-        ErrorCodes.INVALID_REQUEST,
-        'Unable to determine client IP address. Ensure proxy headers are configured correctly.'
-      );
-    }
+    // SECURITY: Use stricter global rate limit for requests without identifiable IP
+    let rateLimitKey: string;
+    let rateLimit: number;
 
-    const rateLimitKey = `cred_gen:${request.clientIp}`;
+    if (!request.clientIp) {
+      // Warn about missing IP (suggests proxy misconfiguration)
+      console.warn('⚠️  WARNING: Unable to determine client IP for credential generation. Using global rate limit.');
+      // Use global rate limit with much stricter limit (prevents DoS while allowing basic function)
+      rateLimitKey = 'cred_gen:global_unknown';
+      rateLimit = 2; // Only 2 credentials per hour globally for all unknown IPs combined
+    } else {
+      rateLimitKey = `cred_gen:${request.clientIp}`;
+      rateLimit = CREDENTIAL_RATE_LIMIT; // 10 per hour per IP
+    }
 
     const allowed = await storage.checkRateLimit(
       rateLimitKey,
-      CREDENTIAL_RATE_LIMIT,
+      rateLimit,
       CREDENTIAL_RATE_WINDOW
     );
 
     if (!allowed) {
       throw new RpcError(
         ErrorCodes.RATE_LIMIT_EXCEEDED,
-        `Rate limit exceeded. Maximum ${CREDENTIAL_RATE_LIMIT} credentials per hour per IP.`
+        `Rate limit exceeded. Maximum ${rateLimit} credentials per hour${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
       );
     }
 
@@ -877,8 +892,8 @@ export async function handleRpc(
   const clientIp =
     ctx.req.header('cf-connecting-ip') || // Cloudflare
     ctx.req.header('x-real-ip') || // Nginx
-    ctx.req.header('x-forwarded-for')?.split(',')[0].trim() || // Standard proxy
-    'unknown';
+    ctx.req.header('x-forwarded-for')?.split(',')[0].trim() ||
+    undefined; // Don't use fallback - let handlers decide how to handle missing IP
 
   // Read auth headers (same for all requests in batch)
   const name = ctx.req.header('X-Name');
