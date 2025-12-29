@@ -548,6 +548,13 @@ const handlers: Record<string, RpcHandler> = {
       }
     });
 
+    // Validate TTL if provided
+    if (ttl !== undefined) {
+      if (typeof ttl !== 'number' || isNaN(ttl) || ttl < 0) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'TTL must be a non-negative number');
+      }
+    }
+
     // Create service with offers
     const now = Date.now();
     const offerTtl =
