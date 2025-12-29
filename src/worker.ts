@@ -7,6 +7,7 @@ import { Config } from './config.ts';
  */
 export interface Env {
   DB: D1Database;
+  MASTER_ENCRYPTION_KEY: string; // 64-char hex string for encrypting secrets
   OFFER_DEFAULT_TTL?: string;
   OFFER_MAX_TTL?: string;
   OFFER_MIN_TTL?: string;
@@ -21,8 +22,13 @@ export interface Env {
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Initialize D1 storage
-    const storage = new D1Storage(env.DB);
+    // Validate master encryption key
+    if (!env.MASTER_ENCRYPTION_KEY || env.MASTER_ENCRYPTION_KEY.length !== 64) {
+      return new Response('MASTER_ENCRYPTION_KEY environment variable must be 64-char hex string (32 bytes)', { status: 500 });
+    }
+
+    // Initialize D1 storage with encryption key
+    const storage = new D1Storage(env.DB, env.MASTER_ENCRYPTION_KEY);
 
     // Build config from environment
     const config: Config = {
@@ -38,7 +44,15 @@ export default {
       offerMinTtl: env.OFFER_MIN_TTL ? parseInt(env.OFFER_MIN_TTL, 10) : 60000,
       cleanupInterval: 60000, // Not used in Workers (scheduled handler instead)
       maxOffersPerRequest: env.MAX_OFFERS_PER_REQUEST ? parseInt(env.MAX_OFFERS_PER_REQUEST, 10) : 100,
-      maxBatchSize: env.MAX_BATCH_SIZE ? parseInt(env.MAX_BATCH_SIZE, 10) : 100
+      maxBatchSize: env.MAX_BATCH_SIZE ? parseInt(env.MAX_BATCH_SIZE, 10) : 100,
+      maxSdpSize: 64 * 1024,
+      maxCandidateSize: 4 * 1024,
+      maxCandidateDepth: 10,
+      maxCandidatesPerRequest: 100,
+      maxTotalOperations: 1000,
+      timestampMaxAge: 300000, // 5 minutes
+      timestampMaxFuture: 60000, // 1 minute
+      masterEncryptionKey: env.MASTER_ENCRYPTION_KEY
     };
 
     // Create Hono app
@@ -53,7 +67,7 @@ export default {
    * Runs periodically to clean up expired offers
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    const storage = new D1Storage(env.DB);
+    const storage = new D1Storage(env.DB, env.MASTER_ENCRYPTION_KEY);
     const now = Date.now();
 
     try {

@@ -1,95 +1,346 @@
 /**
- * Crypto utilities for Ed25519-based authentication
- * Uses @noble/ed25519 for Ed25519 signature verification
+ * Crypto utilities for credential generation and validation
  * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
  */
 
-import * as ed25519 from '@noble/ed25519';
 import { Buffer } from 'node:buffer';
 
-// Set SHA-512 hash function for ed25519 (required in @noble/ed25519 v3+)
-// Uses Web Crypto API (compatible with both Node.js and Cloudflare Workers)
-ed25519.hashes.sha512Async = async (message: Uint8Array) => {
-  return new Uint8Array(await crypto.subtle.digest('SHA-512', message as BufferSource));
-};
-
-// Username validation
+// Username validation (used for service FQN parsing)
 const USERNAME_REGEX = /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
 
-// Timestamp validation (5 minutes tolerance)
-const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
-
 /**
- * Generates an anonymous username for users who don't want to claim one
- * Format: anon-{timestamp}-{random}
- * This reduces collision probability to near-zero
+ * Generates a random credential name
+ * Format: {adjective}-{noun}-{random}
+ * Example: "brave-tiger-7a3f2b1c9d8e", "quick-river-9b2e4c1a5f3d"
  */
-export function generateAnonymousUsername(): string {
-  const timestamp = Date.now().toString(36);
-  const random = crypto.getRandomValues(new Uint8Array(3));
+export function generateCredentialName(): string {
+  const adjectives = [
+    'brave', 'calm', 'eager', 'fancy', 'gentle', 'happy', 'jolly', 'kind',
+    'lively', 'merry', 'nice', 'proud', 'quiet', 'swift', 'witty', 'young',
+    'bright', 'clever', 'daring', 'fair', 'grand', 'humble', 'noble', 'quick'
+  ];
+
+  const nouns = [
+    'tiger', 'eagle', 'river', 'mountain', 'ocean', 'forest', 'desert', 'valley',
+    'thunder', 'wind', 'fire', 'stone', 'cloud', 'star', 'moon', 'sun',
+    'wolf', 'bear', 'hawk', 'lion', 'fox', 'deer', 'owl', 'swan'
+  ];
+
+  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+
+  // Generate 16-character hex suffix for uniqueness (8 bytes = 2^64 combinations)
+  // With 576 adjective-noun pairs, total space: 576 × 2^64 ≈ 1.06 × 10^22 names
+  // Birthday paradox collision at ~4.3 billion credentials (extremely safe for large deployments)
+  // Increased from 6 bytes to 8 bytes for maximum collision resistance
+  const random = crypto.getRandomValues(new Uint8Array(8));
   const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
-  return `anon-${timestamp}-${hex}`;
+
+  return `${adjective}-${noun}-${hex}`;
 }
 
 /**
- * Convert Uint8Array to base64 string
- * Uses Buffer for compatibility with Node.js-based clients
+ * Generates a random secret (API key style)
+ * Format: 64-character hex string (256 bits of entropy)
+ * 256 bits provides optimal security for HMAC-SHA256 and future-proofs against brute force
  */
-function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
+export function generateSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32)); // 32 bytes = 256 bits
+  const secret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Validation: Ensure output is exactly 64 characters and valid hex
+  if (secret.length !== 64) {
+    throw new Error('Secret generation failed: invalid length');
+  }
+
+  // Validate all characters are valid hex digits (0-9, a-f)
+  for (let i = 0; i < secret.length; i++) {
+    const c = secret[i];
+    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      throw new Error(`Secret generation failed: invalid hex character at position ${i}: '${c}'`);
+    }
+  }
+
+  return secret;
 }
 
+// ===== Secret Encryption/Decryption (Database Storage) =====
+
 /**
- * Convert base64 string to Uint8Array
- * Uses Buffer for compatibility with Node.js-based clients
+ * Convert hex string to byte array with validation
+ * @param hex Hex string (must be even length)
+ * @returns Uint8Array of bytes
  */
-function base64ToBytes(base64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(base64, 'base64'));
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new Error('Hex string must have even length');
+  }
+
+  // Pre-validate that all characters are valid hex digits (0-9, a-f, A-F)
+  // This prevents parseInt from silently truncating invalid input like "0z" -> 0
+  for (let i = 0; i < hex.length; i++) {
+    const c = hex[i].toLowerCase();
+    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      throw new Error(`Invalid hex character at position ${i}: '${hex[i]}'`);
+    }
+  }
+
+  const match = hex.match(/.{1,2}/g);
+  if (!match) {
+    throw new Error('Invalid hex string format');
+  }
+
+  return new Uint8Array(match.map(byte => {
+    const parsed = parseInt(byte, 16);
+    if (isNaN(parsed)) {
+      throw new Error(`Invalid hex byte: ${byte}`);
+    }
+    return parsed;
+  }));
 }
 
 /**
- * Validates a generic auth message format
- * Expected format: action:username:params:timestamp
- * Validates that the message contains the expected username and has a valid timestamp
+ * Encrypt a secret using AES-256-GCM with master key
+ * Format: iv:ciphertext (all hex-encoded, auth tag included in ciphertext)
+ *
+ * @param secret The plaintext secret to encrypt
+ * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
+ * @returns Encrypted secret in format "iv:ciphertext"
  */
-export function validateAuthMessage(
-  expectedUsername: string,
-  message: string
-): { valid: boolean; error?: string } {
-  const parts = message.split(':');
-
-  if (parts.length < 3) {
-    return { valid: false, error: 'Invalid message format: must have at least action:username:timestamp' };
+export async function encryptSecret(secret: string, masterKeyHex: string): Promise<string> {
+  // Validate master key
+  if (!masterKeyHex || masterKeyHex.length !== 64) {
+    throw new Error('Master key must be 64-character hex string (32 bytes)');
   }
 
-  // Extract username (second part) and timestamp (last part)
-  const messageUsername = parts[1];
-  const timestamp = parseInt(parts[parts.length - 1], 10);
+  // Convert master key from hex to bytes (with validation)
+  const keyBytes = hexToBytes(masterKeyHex);
 
-  // Validate username matches
-  if (messageUsername !== expectedUsername) {
-    return { valid: false, error: 'Username in message does not match authenticated username' };
-  }
+  // Import master key
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt']
+  );
 
-  // Validate timestamp
-  if (isNaN(timestamp)) {
-    return { valid: false, error: 'Invalid timestamp in message' };
-  }
+  // Generate random IV (12 bytes for AES-GCM)
+  const iv = crypto.getRandomValues(new Uint8Array(12));
 
-  const timestampCheck = validateTimestamp(timestamp);
-  if (!timestampCheck.valid) {
-    return timestampCheck;
-  }
+  // Encrypt secret
+  const encoder = new TextEncoder();
+  const secretBytes = encoder.encode(secret);
 
-  return { valid: true };
+  // AES-GCM returns ciphertext with auth tag already appended (no manual splitting needed)
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, tagLength: 128 },
+    key,
+    secretBytes
+  );
+
+  // Convert to hex: iv:ciphertext (ciphertext includes 16-byte auth tag at end)
+  const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
+  const ciphertextHex = Array.from(new Uint8Array(ciphertext))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  return `${ivHex}:${ciphertextHex}`;
 }
 
-// ===== Username and Ed25519 Signature Utilities =====
+/**
+ * Decrypt a secret using AES-256-GCM with master key
+ *
+ * @param encryptedSecret Encrypted secret in format "iv:ciphertext" (ciphertext includes auth tag)
+ * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
+ * @returns Decrypted plaintext secret
+ */
+export async function decryptSecret(encryptedSecret: string, masterKeyHex: string): Promise<string> {
+  // Validate master key
+  if (!masterKeyHex || masterKeyHex.length !== 64) {
+    throw new Error('Master key must be 64-character hex string (32 bytes)');
+  }
+
+  // Parse encrypted format: iv:ciphertext
+  const parts = encryptedSecret.split(':');
+  if (parts.length !== 2) {
+    throw new Error('Invalid encrypted secret format (expected iv:ciphertext)');
+  }
+
+  const [ivHex, ciphertextHex] = parts;
+
+  // Validate IV length (must be 12 bytes = 24 hex characters for AES-GCM)
+  if (ivHex.length !== 24) {
+    throw new Error('Invalid IV length (expected 12 bytes = 24 hex characters)');
+  }
+
+  // Validate ciphertext length (must include at least 16-byte auth tag)
+  // Minimum: 16 bytes for auth tag = 32 hex characters
+  if (ciphertextHex.length < 32) {
+    throw new Error('Invalid ciphertext length (must include 16-byte auth tag)');
+  }
+
+  // Convert from hex to bytes (with validation)
+  const iv = hexToBytes(ivHex);
+  const ciphertext = hexToBytes(ciphertextHex);
+
+  // Convert master key from hex to bytes (with validation)
+  const keyBytes = hexToBytes(masterKeyHex);
+
+  // Import master key
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt']
+  );
+
+  // Decrypt (ciphertext already includes 16-byte auth tag at end)
+  const decryptedBytes = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv, tagLength: 128 },
+    key,
+    ciphertext
+  );
+
+  // Convert to string
+  const decoder = new TextDecoder();
+  return decoder.decode(decryptedBytes);
+}
+
+// ===== HMAC Signature Generation and Verification =====
 
 /**
- * Validates username format
+ * Generate HMAC-SHA256 signature for request authentication
+ * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
+ *
+ * @param secret The credential secret (hex string)
+ * @param message The message to sign (typically: timestamp + method + params)
+ * @returns Promise<string> Base64-encoded signature
+ */
+export async function generateSignature(secret: string, message: string): Promise<string> {
+  // Convert secret from hex to bytes (with validation)
+  const secretBytes = hexToBytes(secret);
+
+  // Import secret as HMAC key
+  const key = await crypto.subtle.importKey(
+    'raw',
+    secretBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  // Convert message to bytes
+  const encoder = new TextEncoder();
+  const messageBytes = encoder.encode(message);
+
+  // Generate HMAC signature
+  const signatureBytes = await crypto.subtle.sign('HMAC', key, messageBytes);
+
+  // Convert to base64
+  return Buffer.from(signatureBytes).toString('base64');
+}
+
+/**
+ * Verify HMAC-SHA256 signature for request authentication
+ * Uses crypto.subtle.verify() for constant-time comparison
+ *
+ * @param secret The credential secret (hex string)
+ * @param message The message that was signed
+ * @param signature The signature to verify (base64)
+ * @returns Promise<boolean> True if signature is valid
+ */
+export async function verifySignature(secret: string, message: string, signature: string): Promise<boolean> {
+  try {
+    // Convert secret from hex to bytes (with validation)
+    const secretBytes = hexToBytes(secret);
+
+    // Import secret as HMAC key for verification
+    const key = await crypto.subtle.importKey(
+      'raw',
+      secretBytes,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+
+    // Convert message to bytes
+    const encoder = new TextEncoder();
+    const messageBytes = encoder.encode(message);
+
+    // Convert signature from base64 to bytes
+    const signatureBytes = Buffer.from(signature, 'base64');
+
+    // Use Web Crypto API's verify() for constant-time comparison
+    // This is cryptographically secure and resistant to timing attacks
+    return await crypto.subtle.verify('HMAC', key, signatureBytes, messageBytes);
+  } catch (error) {
+    // Log error for debugging (helps identify implementation bugs)
+    console.error('Signature verification error:', error);
+    return false;
+  }
+}
+
+/**
+ * Build the message string for signing
+ * Format: timestamp:nonce:method:JSON.stringify(params || {})
+ * Uses colons as delimiters to prevent collision attacks
+ * Includes nonce to prevent signature reuse within timestamp window
+ *
+ * @param timestamp Unix timestamp in milliseconds
+ * @param nonce Cryptographic nonce (UUID v4) to prevent replay attacks
+ * @param method RPC method name
+ * @param params RPC method parameters (optional)
+ * @returns String to be signed
+ */
+export function buildSignatureMessage(timestamp: number, nonce: string, method: string, params?: any): string {
+  // Validate nonce is UUID v4 format to prevent colon injection attacks
+  // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (8-4-4-4-12 hex digits with dashes)
+  // Use simple format checks instead of regex to avoid any timing or ReDoS concerns
+
+  // Check total length (36 characters for UUID v4)
+  if (nonce.length !== 36) {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Check dash positions (indices 8, 13, 18, 23)
+  if (nonce[8] !== '-' || nonce[13] !== '-' || nonce[18] !== '-' || nonce[23] !== '-') {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Check version (character at index 14 must be '4')
+  if (nonce[14] !== '4') {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Check variant (character at index 19 must be 8, 9, a, or b)
+  const variant = nonce[19].toLowerCase();
+  if (variant !== '8' && variant !== '9' && variant !== 'a' && variant !== 'b') {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Validate all other characters are hex digits (0-9, a-f)
+  const hexChars = nonce.replace(/-/g, ''); // Remove dashes
+  for (let i = 0; i < hexChars.length; i++) {
+    const c = hexChars[i].toLowerCase();
+    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+    }
+  }
+
+  const paramsStr = params ? JSON.stringify(params) : '{}';
+  // Use delimiters to prevent collision: timestamp=12,method="34" vs timestamp=1,method="234"
+  // Include nonce to make each request unique (prevents signature reuse in same millisecond)
+  return `${timestamp}:${nonce}:${method}:${paramsStr}`;
+}
+
+// ===== Username Validation =====
+
+/**
+ * Validates username format (used for service FQN parsing)
  * Rules: 3-32 chars, lowercase alphanumeric + dash, must start/end with alphanumeric
  */
 export function validateUsername(username: string): { valid: boolean; error?: string } {
@@ -236,145 +487,4 @@ export function parseServiceFqn(fqn: string): { serviceName: string; version: st
     version,
     username,
   };
-}
-
-/**
- * Validates timestamp is within acceptable range (prevents replay attacks)
- */
-export function validateTimestamp(timestamp: number): { valid: boolean; error?: string } {
-  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
-    return { valid: false, error: 'Timestamp must be a finite number' };
-  }
-
-  const now = Date.now();
-  const diff = Math.abs(now - timestamp);
-
-  if (diff > TIMESTAMP_TOLERANCE_MS) {
-    return { valid: false, error: `Timestamp too old or too far in future (tolerance: ${TIMESTAMP_TOLERANCE_MS / 1000}s)` };
-  }
-
-  return { valid: true };
-}
-
-/**
- * Verifies Ed25519 signature
- * @param publicKey Base64-encoded Ed25519 public key (32 bytes)
- * @param signature Base64-encoded Ed25519 signature (64 bytes)
- * @param message Message that was signed (UTF-8 string)
- * @returns true if signature is valid, false otherwise
- */
-export async function verifyEd25519Signature(
-  publicKey: string,
-  signature: string,
-  message: string
-): Promise<boolean> {
-  try {
-    // Decode base64 to bytes
-    const publicKeyBytes = base64ToBytes(publicKey);
-    const signatureBytes = base64ToBytes(signature);
-
-    // Encode message as UTF-8
-    const encoder = new TextEncoder();
-    const messageBytes = encoder.encode(message);
-
-    // Verify signature using @noble/ed25519 (async version)
-    const isValid = await ed25519.verifyAsync(signatureBytes, messageBytes, publicKeyBytes);
-    return isValid;
-  } catch (err) {
-    console.error('Ed25519 signature verification failed:', err);
-    return false;
-  }
-}
-
-/**
- * Validates a username claim request
- * Verifies format, timestamp, and signature
- */
-export async function validateUsernameClaim(
-  username: string,
-  publicKey: string,
-  signature: string,
-  message: string
-): Promise<{ valid: boolean; error?: string }> {
-  // Validate username format
-  const usernameCheck = validateUsername(username);
-  if (!usernameCheck.valid) {
-    return usernameCheck;
-  }
-
-  // Parse message format: "claim:{username}:{timestamp}"
-  const parts = message.split(':');
-  if (parts.length !== 3 || parts[0] !== 'claim' || parts[1] !== username) {
-    return { valid: false, error: 'Invalid message format (expected: claim:{username}:{timestamp})' };
-  }
-
-  const timestamp = parseInt(parts[2], 10);
-  if (isNaN(timestamp)) {
-    return { valid: false, error: 'Invalid timestamp in message' };
-  }
-
-  // Validate timestamp
-  const timestampCheck = validateTimestamp(timestamp);
-  if (!timestampCheck.valid) {
-    return timestampCheck;
-  }
-
-  // Verify signature
-  const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
-  if (!signatureValid) {
-    return { valid: false, error: 'Invalid signature' };
-  }
-
-  return { valid: true };
-}
-
-/**
- * Validates a service publish signature
- * Message format: publish:{username}:{serviceFqn}:{timestamp}
- */
-export async function validateServicePublish(
-  username: string,
-  serviceFqn: string,
-  publicKey: string,
-  signature: string,
-  message: string
-): Promise<{ valid: boolean; error?: string }> {
-  // Validate username format
-  const usernameCheck = validateUsername(username);
-  if (!usernameCheck.valid) {
-    return usernameCheck;
-  }
-
-  // Parse message format: "publish:{username}:{serviceFqn}:{timestamp}"
-  // Note: serviceFqn can contain colons (e.g., "chat:2.0.0@user"), so we need careful parsing
-  const parts = message.split(':');
-  if (parts.length < 4 || parts[0] !== 'publish' || parts[1] !== username) {
-    return { valid: false, error: 'Invalid message format (expected: publish:{username}:{serviceFqn}:{timestamp})' };
-  }
-
-  // The timestamp is the last part
-  const timestamp = parseInt(parts[parts.length - 1], 10);
-  if (isNaN(timestamp)) {
-    return { valid: false, error: 'Invalid timestamp in message' };
-  }
-
-  // The serviceFqn is everything between username and timestamp
-  const extractedServiceFqn = parts.slice(2, parts.length - 1).join(':');
-  if (extractedServiceFqn !== serviceFqn) {
-    return { valid: false, error: `Service FQN mismatch (expected: ${serviceFqn}, got: ${extractedServiceFqn})` };
-  }
-
-  // Validate timestamp
-  const timestampCheck = validateTimestamp(timestamp);
-  if (!timestampCheck.valid) {
-    return timestampCheck;
-  }
-
-  // Verify signature
-  const signatureValid = await verifyEd25519Signature(publicKey, signature, message);
-  if (!signatureValid) {
-    return { valid: false, error: 'Invalid signature' };
-  }
-
-  return { valid: true };
 }

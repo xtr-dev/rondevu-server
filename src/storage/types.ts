@@ -1,29 +1,4 @@
 /**
- * Custom error types for storage layer operations
- * Provides type-safe error handling across different storage backends
- */
-export enum StorageErrorCode {
-  USERNAME_CONFLICT = 'USERNAME_CONFLICT', // Username already claimed by different key
-  PUBLIC_KEY_CONFLICT = 'PUBLIC_KEY_CONFLICT', // Public key already claimed different username
-  CONSTRAINT_VIOLATION = 'CONSTRAINT_VIOLATION', // Generic constraint violation
-}
-
-/**
- * Custom error class for storage layer
- * Allows RPC layer to handle errors without relying on string matching
- */
-export class StorageError extends Error {
-  constructor(
-    public code: StorageErrorCode,
-    message: string,
-    public cause?: Error
-  ) {
-    super(message);
-    this.name = 'StorageError';
-  }
-}
-
-/**
  * Represents a WebRTC signaling offer
  */
 export interface Offer {
@@ -66,39 +41,34 @@ export interface CreateOfferRequest {
 }
 
 /**
- * Represents a claimed username with cryptographic proof
+ * Represents a credential (random name + secret pair)
+ * Replaces the old username/publicKey system for simpler authentication
  */
-export interface Username {
-  username: string;
-  publicKey: string; // Base64-encoded Ed25519 public key
-  claimedAt: number;
-  expiresAt: number; // 365 days from claim/last use
+export interface Credential {
+  name: string; // Random name (e.g., "brave-tiger-7a3f")
+  secret: string; // Random secret (API key style)
+  createdAt: number;
+  expiresAt: number; // 365 days from creation/last use
   lastUsed: number;
-  metadata?: string; // JSON optional user metadata
 }
 
 /**
- * Request to claim a username
- * Note: signature and message are now verified via header-based auth before calling this
+ * Request to generate new credentials
  */
-export interface ClaimUsernameRequest {
-  username: string;
-  publicKey: string;
-  signature?: string; // Optional: verified before claim
-  message?: string; // Optional: verified before claim
+export interface GenerateCredentialsRequest {
   expiresAt?: number; // Optional: override default expiry
 }
 
 /**
  * Represents a published service (can have multiple offers)
- * New format: service:version@username (e.g., chat:1.0.0@alice)
+ * Format: service:version@name (e.g., chat:1.0.0@brave-tiger-7a3f)
  */
 export interface Service {
   id: string; // UUID v4
-  serviceFqn: string; // Full FQN: chat:1.0.0@alice
+  serviceFqn: string; // Full FQN: chat:1.0.0@brave-tiger-7a3f
   serviceName: string; // Extracted: chat
   version: string; // Extracted: 1.0.0
-  username: string; // Extracted: alice
+  username: string; // Extracted: brave-tiger-7a3f (kept as "username" for compatibility)
   createdAt: number;
   expiresAt: number;
 }
@@ -216,28 +186,85 @@ export interface Storage {
     since?: number
   ): Promise<IceCandidate[]>;
 
-  // ===== Username Management =====
-
   /**
-   * Claims a username (or refreshes expiry if already owned)
-   * @param request Username claim request with signature
-   * @returns Created/updated username record
+   * Retrieves ICE candidates for multiple offers (batch operation)
+   * @param offerIds Array of offer identifiers
+   * @param username Username requesting the candidates
+   * @param since Optional timestamp - only return candidates after this time
+   * @returns Map of offer ID to ICE candidates
    */
-  claimUsername(request: ClaimUsernameRequest): Promise<Username>;
+  getIceCandidatesForMultipleOffers(
+    offerIds: string[],
+    username: string,
+    since?: number
+  ): Promise<Map<string, IceCandidate[]>>;
+
+  // ===== Credential Management =====
 
   /**
-   * Gets a username record
-   * @param username Username to look up
-   * @returns Username record if claimed, null otherwise
+   * Generates a new credential (random name + secret)
+   * @param request Credential generation request
+   * @returns Created credential record
    */
-  getUsername(username: string): Promise<Username | null>;
+  generateCredentials(request: GenerateCredentialsRequest): Promise<Credential>;
 
   /**
-   * Deletes all expired usernames
+   * Gets a credential by name
+   * @param name Credential name
+   * @returns Credential record if found, null otherwise
+   */
+  getCredential(name: string): Promise<Credential | null>;
+
+  /**
+   * Updates credential usage timestamp and expiry
+   * Called after successful signature verification
+   * @param name Credential name
+   * @param lastUsed Last used timestamp
+   * @param expiresAt New expiry timestamp
+   */
+  updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void>;
+
+  /**
+   * Deletes all expired credentials
    * @param now Current timestamp
-   * @returns Number of usernames deleted
+   * @returns Number of credentials deleted
    */
-  deleteExpiredUsernames(now: number): Promise<number>;
+  deleteExpiredCredentials(now: number): Promise<number>;
+
+  // ===== Rate Limiting =====
+
+  /**
+   * Check and increment rate limit for an identifier
+   * @param identifier Unique identifier (e.g., IP address)
+   * @param limit Maximum count allowed
+   * @param windowMs Time window in milliseconds
+   * @returns true if allowed, false if rate limit exceeded
+   */
+  checkRateLimit(identifier: string, limit: number, windowMs: number): Promise<boolean>;
+
+  /**
+   * Deletes all expired rate limit entries
+   * @param now Current timestamp
+   * @returns Number of entries deleted
+   */
+  deleteExpiredRateLimits(now: number): Promise<number>;
+
+  // ===== Nonce Tracking (Replay Protection) =====
+
+  /**
+   * Check if nonce has been used and mark it as used (atomic operation)
+   * @param nonceKey Unique nonce identifier (format: "nonce:{name}:{nonce}")
+   * @param expiresAt Timestamp when nonce expires (should be timestamp + timestampMaxAge)
+   * @returns true if nonce is new (allowed), false if already used (replay attack)
+   */
+  checkAndMarkNonce(nonceKey: string, expiresAt: number): Promise<boolean>;
+
+  /**
+   * Deletes all expired nonce entries
+   * @param now Current timestamp
+   * @returns Number of entries deleted
+   */
+  deleteExpiredNonces(now: number): Promise<number>;
 
   // ===== Service Management =====
 
@@ -307,7 +334,7 @@ export interface Storage {
    * @param version Version string for semver matching (e.g., '1.0.0')
    * @returns Random service with available offer, or null if none found
    */
-  getRandomService(serviceName: string, version: string): Promise<Service | null>;
+  getRandomService(serviceName: string, version: string): Promise<{ service: Service; offer: Offer } | null>;
 
   /**
    * Deletes a service (with ownership verification)

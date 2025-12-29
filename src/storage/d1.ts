@@ -4,12 +4,10 @@ import {
   Offer,
   IceCandidate,
   CreateOfferRequest,
-  Username,
-  ClaimUsernameRequest,
+  Credential,
+  GenerateCredentialsRequest,
   Service,
   CreateServiceRequest,
-  StorageError,
-  StorageErrorCode,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 import { parseServiceFqn } from '../crypto.ts';
@@ -21,13 +19,16 @@ const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
  */
 export class D1Storage implements Storage {
   private db: D1Database;
+  private masterEncryptionKey: string;
 
   /**
    * Creates a new D1 storage instance
    * @param db D1Database instance from Cloudflare Workers environment
+   * @param masterEncryptionKey 64-char hex string for encrypting secrets (32 bytes)
    */
-  constructor(db: D1Database) {
+  constructor(db: D1Database, masterEncryptionKey: string) {
     this.db = db;
+    this.masterEncryptionKey = masterEncryptionKey;
   }
 
   /**
@@ -71,19 +72,35 @@ export class D1Storage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_ice_username ON ice_candidates(username);
       CREATE INDEX IF NOT EXISTS idx_ice_created ON ice_candidates(created_at);
 
-      -- Usernames table
-      CREATE TABLE IF NOT EXISTS usernames (
-        username TEXT PRIMARY KEY,
-        public_key TEXT NOT NULL UNIQUE,
-        claimed_at INTEGER NOT NULL,
+      -- Credentials table (replaces usernames with simpler name + secret auth)
+      CREATE TABLE IF NOT EXISTS credentials (
+        name TEXT PRIMARY KEY,
+        secret TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         last_used INTEGER NOT NULL,
-        metadata TEXT,
-        CHECK(length(username) >= 3 AND length(username) <= 32)
+        CHECK(length(name) >= 3 AND length(name) <= 32)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_usernames_expires ON usernames(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_usernames_public_key ON usernames(public_key);
+      CREATE INDEX IF NOT EXISTS idx_credentials_expires ON credentials(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_credentials_secret ON credentials(secret);
+
+      -- Rate limits table (for distributed rate limiting)
+      CREATE TABLE IF NOT EXISTS rate_limits (
+        identifier TEXT PRIMARY KEY,
+        count INTEGER NOT NULL,
+        reset_time INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_time);
+
+      -- Nonces table (for replay attack prevention)
+      CREATE TABLE IF NOT EXISTS nonces (
+        nonce_key TEXT PRIMARY KEY,
+        expires_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_nonces_expires ON nonces(expires_at);
 
       -- Services table (new schema with extracted fields for discovery)
       CREATE TABLE IF NOT EXISTS services (
@@ -94,7 +111,7 @@ export class D1Storage implements Storage {
         username TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
-        FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
+        FOREIGN KEY (username) REFERENCES credentials(name) ON DELETE CASCADE,
         UNIQUE(service_fqn)
       );
 
@@ -294,73 +311,138 @@ export class D1Storage implements Storage {
     }));
   }
 
-  // ===== Username Management =====
+  async getIceCandidatesForMultipleOffers(
+    offerIds: string[],
+    username: string,
+    since?: number
+  ): Promise<Map<string, IceCandidate[]>> {
+    const result = new Map<string, IceCandidate[]>();
 
-  async claimUsername(request: ClaimUsernameRequest): Promise<Username> {
-    const now = Date.now();
-    const expiresAt = now + YEAR_IN_MS;
-
-    try {
-      // Try to insert or update
-      const result = await this.db.prepare(`
-        INSERT INTO usernames (username, public_key, claimed_at, expires_at, last_used, metadata)
-        VALUES (?, ?, ?, ?, ?, NULL)
-        ON CONFLICT(username) DO UPDATE SET
-          expires_at = ?,
-          last_used = ?
-        WHERE public_key = ?
-      `).bind(
-        request.username,
-        request.publicKey,
-        now,
-        expiresAt,
-        now,
-        expiresAt,
-        now,
-        request.publicKey
-      ).run();
-
-      if ((result.meta.changes || 0) === 0) {
-        throw new StorageError(
-          StorageErrorCode.USERNAME_CONFLICT,
-          'Username already claimed by different public key'
-        );
-      }
-
-      return {
-        username: request.username,
-        publicKey: request.publicKey,
-        claimedAt: now,
-        expiresAt,
-        lastUsed: now,
-      };
-    } catch (err: any) {
-      // Re-throw StorageErrors as-is
-      if (err instanceof StorageError) {
-        throw err;
-      }
-
-      // Handle UNIQUE constraint on public_key
-      // D1/SQLite error format: "UNIQUE constraint failed: usernames.public_key"
-      // Note: Tested with Cloudflare D1 (SQLite 3.x compatible)
-      if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('public_key')) {
-        throw new StorageError(
-          StorageErrorCode.PUBLIC_KEY_CONFLICT,
-          'This public key has already claimed a different username',
-          err
-        );
-      }
-
-      // Unexpected error - rethrow
-      throw err;
+    // Return empty map if no offer IDs provided
+    if (offerIds.length === 0) {
+      return result;
     }
+
+    // Validate array contains only strings
+    if (!Array.isArray(offerIds) || !offerIds.every(id => typeof id === 'string')) {
+      throw new Error('Invalid offer IDs: must be array of strings');
+    }
+
+    // Prevent DoS attacks from extremely large IN clauses
+    if (offerIds.length > 1000) {
+      throw new Error('Too many offer IDs (max 1000)');
+    }
+
+    // Build query that fetches candidates from the OTHER peer only
+    const placeholders = offerIds.map(() => '?').join(',');
+
+    let query = `
+      SELECT ic.*, o.username as offer_username
+      FROM ice_candidates ic
+      INNER JOIN offers o ON o.id = ic.offer_id
+      WHERE ic.offer_id IN (${placeholders})
+      AND (
+        (o.username = ? AND ic.role = 'answerer')
+        OR (o.answerer_username = ? AND ic.role = 'offerer')
+      )
+    `;
+
+    const params: any[] = [...offerIds, username, username];
+
+    if (since !== undefined) {
+      query += ' AND ic.created_at > ?';
+      params.push(since);
+    }
+
+    query += ' ORDER BY ic.created_at ASC';
+
+    const queryResult = await this.db.prepare(query).bind(...params).all();
+
+    if (!queryResult.results) {
+      return result;
+    }
+
+    // Group candidates by offer_id
+    for (const row of queryResult.results as any[]) {
+      const candidate: IceCandidate = {
+        id: row.id,
+        offerId: row.offer_id,
+        username: row.username,
+        role: row.role,
+        candidate: JSON.parse(row.candidate),
+        createdAt: row.created_at,
+      };
+
+      if (!result.has(row.offer_id)) {
+        result.set(row.offer_id, []);
+      }
+      result.get(row.offer_id)!.push(candidate);
+    }
+
+    return result;
   }
 
-  async getUsername(username: string): Promise<Username | null> {
+  // ===== Username Management =====
+
+  async generateCredentials(request: GenerateCredentialsRequest): Promise<Credential> {
+    const now = Date.now();
+    const expiresAt = request.expiresAt || (now + YEAR_IN_MS);
+
+    // Generate unique name and secret
+    const { generateCredentialName, generateSecret } = await import('../crypto.ts');
+
+    // Retry until we find a unique name (collision very unlikely with 2^48 space)
+    // 100 attempts provides excellent safety margin
+    let name: string;
+    let attempts = 0;
+    const maxAttempts = 100;
+
+    while (attempts < maxAttempts) {
+      name = generateCredentialName();
+
+      // Check if name already exists
+      const existing = await this.db.prepare(`
+        SELECT name FROM credentials WHERE name = ?
+      `).bind(name).first();
+
+      if (!existing) {
+        break;
+      }
+
+      attempts++;
+    }
+
+    if (attempts >= maxAttempts) {
+      throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
+    }
+
+    const secret = generateSecret();
+
+    // Encrypt secret before storing (AES-256-GCM)
+    const { encryptSecret } = await import('../crypto.ts');
+    const encryptedSecret = await encryptSecret(secret, this.masterEncryptionKey);
+
+    // Insert credential with encrypted secret
+    await this.db.prepare(`
+      INSERT INTO credentials (name, secret, created_at, expires_at, last_used)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(name!, encryptedSecret, now, expiresAt, now).run();
+
+    // Return plaintext secret to user (only time they'll see it)
+    return {
+      name: name!,
+      secret, // Return plaintext secret, not encrypted
+      createdAt: now,
+      expiresAt,
+      lastUsed: now,
+    };
+  }
+
+  async getCredential(name: string): Promise<Credential | null> {
     const result = await this.db.prepare(`
-      SELECT * FROM usernames
-      WHERE username = ? AND expires_at > ?
-    `).bind(username, Date.now()).first();
+      SELECT * FROM credentials
+      WHERE name = ? AND expires_at > ?
+    `).bind(name, Date.now()).first();
 
     if (!result) {
       return null;
@@ -368,20 +450,101 @@ export class D1Storage implements Storage {
 
     const row = result as any;
 
-    return {
-      username: row.username,
-      publicKey: row.public_key,
-      claimedAt: row.claimed_at,
-      expiresAt: row.expires_at,
-      lastUsed: row.last_used,
-      metadata: row.metadata || undefined,
-    };
+    // Decrypt secret before returning
+    // If decryption fails (e.g., master key rotated), treat as credential not found
+    try {
+      const { decryptSecret } = await import('../crypto.ts');
+      const decryptedSecret = await decryptSecret(row.secret, this.masterEncryptionKey);
+
+      return {
+        name: row.name,
+        secret: decryptedSecret, // Return decrypted secret
+        createdAt: row.created_at,
+        expiresAt: row.expires_at,
+        lastUsed: row.last_used,
+      };
+    } catch (error) {
+      console.error(`Failed to decrypt secret for credential '${name}':`, error);
+      return null; // Treat as credential not found (fail-safe behavior)
+    }
   }
 
+  async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
+    await this.db.prepare(`
+      UPDATE credentials
+      SET last_used = ?, expires_at = ?
+      WHERE name = ?
+    `).bind(lastUsed, expiresAt, name).run();
+  }
 
-  async deleteExpiredUsernames(now: number): Promise<number> {
+  async deleteExpiredCredentials(now: number): Promise<number> {
     const result = await this.db.prepare(`
-      DELETE FROM usernames WHERE expires_at < ?
+      DELETE FROM credentials WHERE expires_at < ?
+    `).bind(now).run();
+
+    return result.meta.changes || 0;
+  }
+
+  // ===== Rate Limiting =====
+
+  async checkRateLimit(identifier: string, limit: number, windowMs: number): Promise<boolean> {
+    const now = Date.now();
+    const resetTime = now + windowMs;
+
+    // Atomic UPSERT: Insert or increment count, reset if expired
+    // This prevents TOCTOU race conditions by doing check+increment in single operation
+    const result = await this.db.prepare(`
+      INSERT INTO rate_limits (identifier, count, reset_time)
+      VALUES (?, 1, ?)
+      ON CONFLICT(identifier) DO UPDATE SET
+        count = CASE
+          WHEN reset_time < ? THEN 1
+          ELSE count + 1
+        END,
+        reset_time = CASE
+          WHEN reset_time < ? THEN ?
+          ELSE reset_time
+        END
+      RETURNING count
+    `).bind(identifier, resetTime, now, now, resetTime).first() as { count: number } | null;
+
+    // Check if limit exceeded
+    return result ? result.count <= limit : false;
+  }
+
+  async deleteExpiredRateLimits(now: number): Promise<number> {
+    const result = await this.db.prepare(`
+      DELETE FROM rate_limits WHERE reset_time < ?
+    `).bind(now).run();
+
+    return result.meta.changes || 0;
+  }
+
+  // ===== Nonce Tracking (Replay Protection) =====
+
+  async checkAndMarkNonce(nonceKey: string, expiresAt: number): Promise<boolean> {
+    try {
+      // Atomic INSERT - if nonce already exists, this will fail with UNIQUE constraint
+      // This prevents replay attacks by ensuring each nonce is only used once
+      const result = await this.db.prepare(`
+        INSERT INTO nonces (nonce_key, expires_at)
+        VALUES (?, ?)
+      `).bind(nonceKey, expiresAt).run();
+
+      // D1 returns success=true if insert succeeded
+      return result.success;
+    } catch (error: any) {
+      // UNIQUE constraint violation means nonce already used (replay attack)
+      if (error?.message?.includes('UNIQUE constraint failed')) {
+        return false;
+      }
+      throw error; // Other errors should propagate
+    }
+  }
+
+  async deleteExpiredNonces(now: number): Promise<number> {
+    const result = await this.db.prepare(`
+      DELETE FROM nonces WHERE expires_at < ?
     `).bind(now).run();
 
     return result.meta.changes || 0;
@@ -446,13 +609,13 @@ export class D1Storage implements Storage {
       )
     );
 
-    // Touch username to extend expiry (inline logic)
+    // Touch credential to extend expiry (inline logic)
     const expiresAt = now + YEAR_IN_MS;
     statements.push(
       this.db.prepare(`
-        UPDATE usernames
+        UPDATE credentials
         SET last_used = ?, expires_at = ?
-        WHERE username = ? AND expires_at > ?
+        WHERE name = ? AND expires_at > ?
       `).bind(now, expiresAt, username, now)
     );
 
@@ -606,10 +769,29 @@ export class D1Storage implements Storage {
     return result.results.map(row => this.rowToService(row as any));
   }
 
-  async getRandomService(serviceName: string, version: string): Promise<Service | null> {
-    // Get a random service with an available offer
+  async getRandomService(serviceName: string, version: string): Promise<{ service: Service; offer: Offer } | null> {
+    // Get a random service with an available offer (in single query to avoid N+1)
     const result = await this.db.prepare(`
-      SELECT s.* FROM services s
+      SELECT
+        s.id as service_id,
+        s.service_fqn,
+        s.service_name,
+        s.version,
+        s.username,
+        s.created_at as service_created_at,
+        s.expires_at as service_expires_at,
+        o.id as offer_id,
+        o.username as offer_username,
+        o.service_id as offer_service_id,
+        o.service_fqn as offer_service_fqn,
+        o.sdp,
+        o.created_at as offer_created_at,
+        o.expires_at as offer_expires_at,
+        o.last_seen,
+        o.answerer_username,
+        o.answer_sdp,
+        o.answered_at
+      FROM services s
       INNER JOIN offers o ON o.service_id = s.id
       WHERE s.service_name = ?
         AND s.version = ?
@@ -624,7 +806,33 @@ export class D1Storage implements Storage {
       return null;
     }
 
-    return this.rowToService(result as any);
+    const row = result as any;
+
+    const service: Service = {
+      id: row.service_id,
+      serviceFqn: row.service_fqn,
+      serviceName: row.service_name,
+      version: row.version,
+      username: row.username,
+      createdAt: row.service_created_at,
+      expiresAt: row.service_expires_at,
+    };
+
+    const offer: Offer = {
+      id: row.offer_id,
+      username: row.offer_username,
+      serviceId: row.offer_service_id || undefined,
+      serviceFqn: row.offer_service_fqn || undefined,
+      sdp: row.sdp,
+      createdAt: row.offer_created_at,
+      expiresAt: row.offer_expires_at,
+      lastSeen: row.last_seen,
+      answererUsername: row.answerer_username || undefined,
+      answerSdp: row.answer_sdp || undefined,
+      answeredAt: row.answered_at || undefined,
+    };
+
+    return { service, offer };
   }
 
   async deleteService(serviceId: string, username: string): Promise<boolean> {
