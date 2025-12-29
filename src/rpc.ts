@@ -321,6 +321,23 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
+    // Validate expiresAt if provided
+    if (params.expiresAt !== undefined) {
+      if (typeof params.expiresAt !== 'number' || isNaN(params.expiresAt) || !Number.isFinite(params.expiresAt)) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'expiresAt must be a valid timestamp');
+      }
+      // Prevent setting expiry in the past (with 1 minute tolerance for clock skew)
+      const now = Date.now();
+      if (params.expiresAt < now - 60000) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'expiresAt cannot be in the past');
+      }
+      // Prevent unreasonably far future expiry (max 10 years)
+      const maxFuture = now + (10 * 365 * 24 * 60 * 60 * 1000);
+      if (params.expiresAt > maxFuture) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'expiresAt cannot be more than 10 years in the future');
+      }
+    }
+
     const credential = await storage.generateCredentials({
       expiresAt: params.expiresAt,
     });
