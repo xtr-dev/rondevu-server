@@ -33,18 +33,25 @@ export function loadConfig(): Config {
   let masterEncryptionKey = process.env.MASTER_ENCRYPTION_KEY;
 
   if (!masterEncryptionKey) {
-    // SECURITY: Fail fast in production, use deterministic key in development
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('MASTER_ENCRYPTION_KEY environment variable must be set in production. Generate with: openssl rand -hex 32');
+    // SECURITY: Fail fast unless explicitly in development mode
+    // Default to production-safe behavior if NODE_ENV is unset
+    const isDevelopment = process.env.NODE_ENV === 'development';
+
+    if (!isDevelopment) {
+      throw new Error(
+        'MASTER_ENCRYPTION_KEY environment variable must be set. ' +
+        'Generate with: openssl rand -hex 32\n' +
+        'For development only, set NODE_ENV=development to use insecure dev key.'
+      );
     }
 
-    // Use deterministic key for development (allows credential persistence across restarts)
+    // Use deterministic key ONLY in explicit development mode
     // WARNING: DO NOT USE THIS IN PRODUCTION - only for local development
     console.error('⚠️  WARNING: Using insecure deterministic development key');
-    console.error('⚠️  NEVER use this in production - set MASTER_ENCRYPTION_KEY environment variable');
+    console.error('⚠️  ONLY use NODE_ENV=development for local development');
     console.error('⚠️  Generate production key with: openssl rand -hex 32');
-    // Hex encoding of "devdevdevdevdevdevdevdevdevdevdevdev" (32 bytes = 64 hex chars)
-    masterEncryptionKey = '6465766465766465646576646576646576646576646576646576646576646576';
+    // Random-looking dev key (not ASCII-readable to prevent accidental production use)
+    masterEncryptionKey = 'a3f8b9c2d1e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2';
   }
 
   // Validate master encryption key

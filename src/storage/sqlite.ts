@@ -414,10 +414,11 @@ export class SQLiteStorage implements Storage {
     // Generate unique name and secret
     const { generateCredentialName, generateSecret } = await import('../crypto.ts');
 
-    // Retry until we find a unique name (collision very unlikely)
+    // Retry until we find a unique name (collision very unlikely with 2^48 space)
+    // 100 attempts provides excellent safety margin
     let name: string;
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = 100;
 
     while (attempts < maxAttempts) {
       name = generateCredentialName();
@@ -435,7 +436,7 @@ export class SQLiteStorage implements Storage {
     }
 
     if (attempts >= maxAttempts) {
-      throw new Error('Failed to generate unique credential name after 10 attempts');
+      throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
     }
 
     const secret = generateSecret();

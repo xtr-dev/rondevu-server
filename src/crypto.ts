@@ -154,6 +154,17 @@ export async function decryptSecret(encryptedSecret: string, masterKeyHex: strin
 
   const [ivHex, ciphertextHex] = parts;
 
+  // Validate IV length (must be 12 bytes = 24 hex characters for AES-GCM)
+  if (ivHex.length !== 24) {
+    throw new Error('Invalid IV length (expected 12 bytes = 24 hex characters)');
+  }
+
+  // Validate ciphertext length (must include at least 16-byte auth tag)
+  // Minimum: 16 bytes for auth tag = 32 hex characters
+  if (ciphertextHex.length < 32) {
+    throw new Error('Invalid ciphertext length (must include 16-byte auth tag)');
+  }
+
   // Convert from hex to bytes (with validation)
   const iv = hexToBytes(ivHex);
   const ciphertext = hexToBytes(ciphertextHex);
@@ -271,6 +282,10 @@ export async function verifySignature(secret: string, message: string, signature
 export function buildSignatureMessage(timestamp: number, nonce: string, method: string, params?: any): string {
   // Validate nonce is UUID v4 format to prevent colon injection attacks
   // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (where y is 8/9/a/b)
+  // NOTE: Regex timing is acceptable here because:
+  //   - Nonces are random UUIDs, not secrets
+  //   - This validation happens BEFORE signature verification (no auth yet)
+  //   - Timing leakage doesn't provide useful information to attackers
   const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   if (!uuidV4Regex.test(nonce)) {
     throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
