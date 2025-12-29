@@ -250,16 +250,6 @@ async function verifyRequestSignature(
   // Validate timestamp first
   validateTimestamp(timestamp, config);
 
-  // Check nonce uniqueness BEFORE expensive signature verification
-  // This prevents replay attacks within the timestamp window
-  const nonceKey = `nonce:${name}:${nonce}`;
-  const nonceExpiresAt = timestamp + config.timestampMaxAge;
-  const nonceIsNew = await storage.checkAndMarkNonce(nonceKey, nonceExpiresAt);
-
-  if (!nonceIsNew) {
-    throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Nonce already used (replay attack detected)');
-  }
-
   // Get credential to retrieve secret
   const credential = await storage.getCredential(name);
   if (!credential) {
@@ -272,6 +262,17 @@ async function verifyRequestSignature(
 
   if (!isValid) {
     throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid signature');
+  }
+
+  // Check nonce uniqueness AFTER successful signature verification
+  // This prevents DoS where invalid signatures burn nonces
+  // Only valid authenticated requests can mark nonces as used
+  const nonceKey = `nonce:${name}:${nonce}`;
+  const nonceExpiresAt = timestamp + config.timestampMaxAge;
+  const nonceIsNew = await storage.checkAndMarkNonce(nonceKey, nonceExpiresAt);
+
+  if (!nonceIsNew) {
+    throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Nonce already used (replay attack detected)');
   }
 
   // Update last used timestamp

@@ -86,11 +86,11 @@ function hexToBytes(hex: string): Uint8Array {
 
 /**
  * Encrypt a secret using AES-256-GCM with master key
- * Format: iv:authTag:ciphertext (all hex-encoded)
+ * Format: iv:ciphertext (all hex-encoded, auth tag included in ciphertext)
  *
  * @param secret The plaintext secret to encrypt
  * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
- * @returns Encrypted secret in format "iv:authTag:ciphertext"
+ * @returns Encrypted secret in format "iv:ciphertext"
  */
 export async function encryptSecret(secret: string, masterKeyHex: string): Promise<string> {
   // Validate master key
@@ -117,29 +117,26 @@ export async function encryptSecret(secret: string, masterKeyHex: string): Promi
   const encoder = new TextEncoder();
   const secretBytes = encoder.encode(secret);
 
+  // AES-GCM returns ciphertext with auth tag already appended (no manual splitting needed)
   const ciphertext = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv, tagLength: 128 },
     key,
     secretBytes
   );
 
-  // Extract auth tag (last 16 bytes) and ciphertext
-  const ciphertextArray = new Uint8Array(ciphertext);
-  const actualCiphertext = ciphertextArray.slice(0, -16);
-  const authTag = ciphertextArray.slice(-16);
-
-  // Return as hex: iv:authTag:ciphertext
+  // Convert to hex: iv:ciphertext (ciphertext includes 16-byte auth tag at end)
   const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
-  const authTagHex = Array.from(authTag).map(b => b.toString(16).padStart(2, '0')).join('');
-  const ciphertextHex = Array.from(actualCiphertext).map(b => b.toString(16).padStart(2, '0')).join('');
+  const ciphertextHex = Array.from(new Uint8Array(ciphertext))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
 
-  return `${ivHex}:${authTagHex}:${ciphertextHex}`;
+  return `${ivHex}:${ciphertextHex}`;
 }
 
 /**
  * Decrypt a secret using AES-256-GCM with master key
  *
- * @param encryptedSecret Encrypted secret in format "iv:authTag:ciphertext"
+ * @param encryptedSecret Encrypted secret in format "iv:ciphertext" (ciphertext includes auth tag)
  * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
  * @returns Decrypted plaintext secret
  */
@@ -149,23 +146,17 @@ export async function decryptSecret(encryptedSecret: string, masterKeyHex: strin
     throw new Error('Master key must be 64-character hex string (32 bytes)');
   }
 
-  // Parse encrypted format: iv:authTag:ciphertext
+  // Parse encrypted format: iv:ciphertext
   const parts = encryptedSecret.split(':');
-  if (parts.length !== 3) {
-    throw new Error('Invalid encrypted secret format');
+  if (parts.length !== 2) {
+    throw new Error('Invalid encrypted secret format (expected iv:ciphertext)');
   }
 
-  const [ivHex, authTagHex, ciphertextHex] = parts;
+  const [ivHex, ciphertextHex] = parts;
 
   // Convert from hex to bytes (with validation)
   const iv = hexToBytes(ivHex);
-  const authTag = hexToBytes(authTagHex);
   const ciphertext = hexToBytes(ciphertextHex);
-
-  // Combine ciphertext + authTag (AES-GCM expects them together)
-  const combined = new Uint8Array(ciphertext.length + authTag.length);
-  combined.set(ciphertext);
-  combined.set(authTag, ciphertext.length);
 
   // Convert master key from hex to bytes (with validation)
   const keyBytes = hexToBytes(masterKeyHex);
@@ -179,11 +170,11 @@ export async function decryptSecret(encryptedSecret: string, masterKeyHex: strin
     ['decrypt']
   );
 
-  // Decrypt
+  // Decrypt (ciphertext already includes 16-byte auth tag at end)
   const decryptedBytes = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv, tagLength: 128 },
     key,
-    combined
+    ciphertext
   );
 
   // Convert to string
