@@ -54,8 +54,9 @@ export function loadConfig(): Config {
     masterEncryptionKey = 'a3f8b9c2d1e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2';
   }
 
-  // Validate master encryption key
-  if (masterEncryptionKey.length !== 64) {
+  // Validate master encryption key format
+  // NOTE: Using regex here is safe since this runs at startup, not during request processing
+  if (masterEncryptionKey.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(masterEncryptionKey)) {
     throw new Error('MASTER_ENCRYPTION_KEY must be 64-character hex string (32 bytes). Generate with: openssl rand -hex 32');
   }
 

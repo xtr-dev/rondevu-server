@@ -216,15 +216,6 @@ export interface Storage {
   getCredential(name: string): Promise<Credential | null>;
 
   /**
-   * Verifies a credential (checks secret and extends expiry if valid)
-   * @param name Credential name
-   * @param secret Secret to verify
-   * @returns true if valid, false otherwise
-   * @deprecated Use signature-based authentication instead
-   */
-  verifyCredential(name: string, secret: string): Promise<boolean>;
-
-  /**
    * Updates credential usage timestamp and expiry
    * Called after successful signature verification
    * @param name Credential name

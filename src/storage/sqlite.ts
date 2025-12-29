@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   Storage,
   Offer,
@@ -492,42 +492,6 @@ export class SQLiteStorage implements Storage {
       console.error(`Failed to decrypt secret for credential '${name}':`, error);
       return null; // Treat as credential not found (fail-safe behavior)
     }
-  }
-
-  async verifyCredential(name: string, secret: string): Promise<boolean> {
-    const credential = await this.getCredential(name);
-
-    if (!credential) {
-      return false;
-    }
-
-    // Use timing-safe comparison to prevent timing attacks
-    // Even though 128-bit secrets make this unlikely, it's defense-in-depth
-    const credentialBuffer = Buffer.from(credential.secret, 'utf8');
-    const secretBuffer = Buffer.from(secret, 'utf8');
-
-    // Ensure buffers are same length (timingSafeEqual requirement)
-    if (credentialBuffer.length !== secretBuffer.length) {
-      return false;
-    }
-
-    if (!timingSafeEqual(credentialBuffer, secretBuffer)) {
-      return false;
-    }
-
-    // Extend expiry on successful verification
-    const now = Date.now();
-    const expiresAt = now + YEAR_IN_MS;
-
-    const stmt = this.db.prepare(`
-      UPDATE credentials
-      SET last_used = ?, expires_at = ?
-      WHERE name = ?
-    `);
-
-    stmt.run(now, expiresAt, name);
-
-    return true;
   }
 
   async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
