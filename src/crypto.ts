@@ -31,11 +31,11 @@ export function generateCredentialName(): string {
   const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
   const noun = nouns[Math.floor(Math.random() * nouns.length)];
 
-  // Generate 12-character hex suffix for uniqueness (6 bytes = 2^48 combinations)
-  // With 576 adjective-noun pairs, total space: 576 × 2^48 ≈ 162 quadrillion names
-  // Birthday paradox collision at ~10.6 million credentials (safe for large deployments)
-  // Increased from 4 bytes to 6 bytes for better collision resistance
-  const random = crypto.getRandomValues(new Uint8Array(6));
+  // Generate 16-character hex suffix for uniqueness (8 bytes = 2^64 combinations)
+  // With 576 adjective-noun pairs, total space: 576 × 2^64 ≈ 1.06 × 10^22 names
+  // Birthday paradox collision at ~4.3 billion credentials (extremely safe for large deployments)
+  // Increased from 6 bytes to 8 bytes for maximum collision resistance
+  const random = crypto.getRandomValues(new Uint8Array(8));
   const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
 
   return `${adjective}-${noun}-${hex}`;
@@ -50,9 +50,17 @@ export function generateSecret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32)); // 32 bytes = 256 bits
   const secret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 
-  // Validation: Ensure output is exactly 64 characters
+  // Validation: Ensure output is exactly 64 characters and valid hex
   if (secret.length !== 64) {
     throw new Error('Secret generation failed: invalid length');
+  }
+
+  // Validate all characters are valid hex digits (0-9, a-f)
+  for (let i = 0; i < secret.length; i++) {
+    const c = secret[i];
+    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      throw new Error(`Secret generation failed: invalid hex character at position ${i}: '${c}'`);
+    }
   }
 
   return secret;
@@ -68,6 +76,15 @@ export function generateSecret(): string {
 function hexToBytes(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) {
     throw new Error('Hex string must have even length');
+  }
+
+  // Pre-validate that all characters are valid hex digits (0-9, a-f, A-F)
+  // This prevents parseInt from silently truncating invalid input like "0z" -> 0
+  for (let i = 0; i < hex.length; i++) {
+    const c = hex[i].toLowerCase();
+    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      throw new Error(`Invalid hex character at position ${i}: '${hex[i]}'`);
+    }
   }
 
   const match = hex.match(/.{1,2}/g);
@@ -281,33 +298,43 @@ export async function verifySignature(secret: string, message: string, signature
  */
 export function buildSignatureMessage(timestamp: number, nonce: string, method: string, params?: any): string {
   // Validate nonce is UUID v4 format to prevent colon injection attacks
-  // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (where y is 8/9/a/b)
-  // NOTE: Regex timing is acceptable here because:
-  //   - Nonces are random UUIDs, not secrets
-  //   - This validation happens BEFORE signature verification (no auth yet)
-  //   - Timing leakage doesn't provide useful information to attackers
-  const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  if (!uuidV4Regex.test(nonce)) {
+  // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (8-4-4-4-12 hex digits with dashes)
+  // Use simple format checks instead of regex to avoid any timing or ReDoS concerns
+
+  // Check total length (36 characters for UUID v4)
+  if (nonce.length !== 36) {
     throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Check dash positions (indices 8, 13, 18, 23)
+  if (nonce[8] !== '-' || nonce[13] !== '-' || nonce[18] !== '-' || nonce[23] !== '-') {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Check version (character at index 14 must be '4')
+  if (nonce[14] !== '4') {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Check variant (character at index 19 must be 8, 9, a, or b)
+  const variant = nonce[19].toLowerCase();
+  if (variant !== '8' && variant !== '9' && variant !== 'a' && variant !== 'b') {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
+  // Validate all other characters are hex digits (0-9, a-f)
+  const hexChars = nonce.replace(/-/g, ''); // Remove dashes
+  for (let i = 0; i < hexChars.length; i++) {
+    const c = hexChars[i].toLowerCase();
+    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+    }
   }
 
   const paramsStr = params ? JSON.stringify(params) : '{}';
   // Use delimiters to prevent collision: timestamp=12,method="34" vs timestamp=1,method="234"
   // Include nonce to make each request unique (prevents signature reuse in same millisecond)
   return `${timestamp}:${nonce}:${method}:${paramsStr}`;
-}
-
-/**
- * Generates an anonymous username for users who don't want to claim one
- * Format: anon-{timestamp}-{random}
- * This reduces collision probability to near-zero
- * @deprecated Use generateCredentialName() instead
- */
-export function generateAnonymousUsername(): string {
-  const timestamp = Date.now().toString(36);
-  const random = crypto.getRandomValues(new Uint8Array(3));
-  const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
-  return `anon-${timestamp}-${hex}`;
 }
 
 // ===== Username Validation =====
