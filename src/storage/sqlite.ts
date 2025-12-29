@@ -475,16 +475,22 @@ export class SQLiteStorage implements Storage {
     }
 
     // Decrypt secret before returning
-    const { decryptSecret } = await import('../crypto.ts');
-    const decryptedSecret = await decryptSecret(row.secret, this.masterEncryptionKey);
+    // If decryption fails (e.g., master key rotated), treat as credential not found
+    try {
+      const { decryptSecret } = await import('../crypto.ts');
+      const decryptedSecret = await decryptSecret(row.secret, this.masterEncryptionKey);
 
-    return {
-      name: row.name,
-      secret: decryptedSecret, // Return decrypted secret
-      createdAt: row.created_at,
-      expiresAt: row.expires_at,
-      lastUsed: row.last_used,
-    };
+      return {
+        name: row.name,
+        secret: decryptedSecret, // Return decrypted secret
+        createdAt: row.created_at,
+        expiresAt: row.expires_at,
+        lastUsed: row.last_used,
+      };
+    } catch (error) {
+      console.error(`Failed to decrypt secret for credential '${name}':`, error);
+      return null; // Treat as credential not found (fail-safe behavior)
+    }
   }
 
   async verifyCredential(name: string, secret: string): Promise<boolean> {

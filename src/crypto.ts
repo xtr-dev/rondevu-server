@@ -218,7 +218,7 @@ export async function generateSignature(secret: string, message: string): Promis
 
 /**
  * Verify HMAC-SHA256 signature for request authentication
- * Uses timing-safe comparison to prevent timing attacks
+ * Uses crypto.subtle.verify() for constant-time comparison
  *
  * @param secret The credential secret (hex string)
  * @param message The message that was signed
@@ -227,20 +227,28 @@ export async function generateSignature(secret: string, message: string): Promis
  */
 export async function verifySignature(secret: string, message: string, signature: string): Promise<boolean> {
   try {
-    // Generate expected signature
-    const expectedSignature = await generateSignature(secret, message);
+    // Convert secret from hex to bytes (with validation)
+    const secretBytes = hexToBytes(secret);
 
-    // Timing-safe comparison (includes length check to prevent timing side-channel)
-    // XOR length difference into result to include length in constant-time comparison
-    let result = expectedSignature.length ^ signature.length;
+    // Import secret as HMAC key for verification
+    const key = await crypto.subtle.importKey(
+      'raw',
+      secretBytes,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
 
-    // Compare all bytes up to the minimum length (constant-time for equal lengths)
-    const minLength = Math.min(expectedSignature.length, signature.length);
-    for (let i = 0; i < minLength; i++) {
-      result |= expectedSignature.charCodeAt(i) ^ signature.charCodeAt(i);
-    }
+    // Convert message to bytes
+    const encoder = new TextEncoder();
+    const messageBytes = encoder.encode(message);
 
-    return result === 0;
+    // Convert signature from base64 to bytes
+    const signatureBytes = Buffer.from(signature, 'base64');
+
+    // Use Web Crypto API's verify() for constant-time comparison
+    // This is cryptographically secure and resistant to timing attacks
+    return await crypto.subtle.verify('HMAC', key, signatureBytes, messageBytes);
   } catch (error) {
     // Log error for debugging (helps identify implementation bugs)
     console.error('Signature verification error:', error);
@@ -261,6 +269,13 @@ export async function verifySignature(secret: string, message: string, signature
  * @returns String to be signed
  */
 export function buildSignatureMessage(timestamp: number, nonce: string, method: string, params?: any): string {
+  // Validate nonce is UUID v4 format to prevent colon injection attacks
+  // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (where y is 8/9/a/b)
+  const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!uuidV4Regex.test(nonce)) {
+    throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
+  }
+
   const paramsStr = params ? JSON.stringify(params) : '{}';
   // Use delimiters to prevent collision: timestamp=12,method="34" vs timestamp=1,method="234"
   // Include nonce to make each request unique (prevents signature reuse in same millisecond)
