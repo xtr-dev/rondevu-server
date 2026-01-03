@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 preview_urls = true
 
-routes = [{ pattern = "api.ronde.vu/*", zone_name = "ronde.vu" }]
+routes = [{ pattern = "test.ronde.vu/*", zone_name = "ronde.vu" }]
 
 # Cleanup runs every 5 minutes
 [triggers]
