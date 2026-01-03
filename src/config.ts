@@ -1,3 +1,5 @@
+import { Storage } from './storage/types.ts';
+
 /**
  * Application configuration
  * Reads from environment variables with sensible defaults
@@ -97,4 +99,77 @@ export function loadConfig(): Config {
   };
 
   return config;
+}
+
+/**
+ * Default config values (shared between Node and Workers)
+ */
+export const CONFIG_DEFAULTS = {
+  offerDefaultTtl: 60000,
+  offerMaxTtl: 86400000,
+  offerMinTtl: 60000,
+  cleanupInterval: 60000,
+  maxOffersPerRequest: 100,
+  maxBatchSize: 100,
+  maxSdpSize: 64 * 1024,
+  maxCandidateSize: 4 * 1024,
+  maxCandidateDepth: 10,
+  maxCandidatesPerRequest: 100,
+  maxTotalOperations: 1000,
+  timestampMaxAge: 60000,
+  timestampMaxFuture: 60000,
+} as const;
+
+/**
+ * Build config for Cloudflare Workers from env vars
+ */
+export function buildWorkerConfig(env: {
+  MASTER_ENCRYPTION_KEY: string;
+  OFFER_DEFAULT_TTL?: string;
+  OFFER_MAX_TTL?: string;
+  OFFER_MIN_TTL?: string;
+  MAX_OFFERS_PER_REQUEST?: string;
+  MAX_BATCH_SIZE?: string;
+  CORS_ORIGINS?: string;
+  VERSION?: string;
+}): Config {
+  return {
+    port: 0, // Not used in Workers
+    storageType: 'sqlite', // D1 is SQLite-compatible
+    storagePath: '', // Not used with D1
+    corsOrigins: env.CORS_ORIGINS?.split(',').map(o => o.trim()) ?? ['*'],
+    version: env.VERSION ?? 'unknown',
+    offerDefaultTtl: env.OFFER_DEFAULT_TTL ? parseInt(env.OFFER_DEFAULT_TTL, 10) : CONFIG_DEFAULTS.offerDefaultTtl,
+    offerMaxTtl: env.OFFER_MAX_TTL ? parseInt(env.OFFER_MAX_TTL, 10) : CONFIG_DEFAULTS.offerMaxTtl,
+    offerMinTtl: env.OFFER_MIN_TTL ? parseInt(env.OFFER_MIN_TTL, 10) : CONFIG_DEFAULTS.offerMinTtl,
+    cleanupInterval: CONFIG_DEFAULTS.cleanupInterval,
+    maxOffersPerRequest: env.MAX_OFFERS_PER_REQUEST ? parseInt(env.MAX_OFFERS_PER_REQUEST, 10) : CONFIG_DEFAULTS.maxOffersPerRequest,
+    maxBatchSize: env.MAX_BATCH_SIZE ? parseInt(env.MAX_BATCH_SIZE, 10) : CONFIG_DEFAULTS.maxBatchSize,
+    maxSdpSize: CONFIG_DEFAULTS.maxSdpSize,
+    maxCandidateSize: CONFIG_DEFAULTS.maxCandidateSize,
+    maxCandidateDepth: CONFIG_DEFAULTS.maxCandidateDepth,
+    maxCandidatesPerRequest: CONFIG_DEFAULTS.maxCandidatesPerRequest,
+    maxTotalOperations: CONFIG_DEFAULTS.maxTotalOperations,
+    timestampMaxAge: CONFIG_DEFAULTS.timestampMaxAge,
+    timestampMaxFuture: CONFIG_DEFAULTS.timestampMaxFuture,
+    masterEncryptionKey: env.MASTER_ENCRYPTION_KEY,
+  };
+}
+
+/**
+ * Run cleanup of expired entries (shared between Node and Workers)
+ * @returns Object with counts of deleted items
+ */
+export async function runCleanup(storage: Storage, now: number): Promise<{
+  offers: number;
+  credentials: number;
+  rateLimits: number;
+  nonces: number;
+}> {
+  const offers = await storage.deleteExpiredOffers(now);
+  const credentials = await storage.deleteExpiredCredentials(now);
+  const rateLimits = await storage.deleteExpiredRateLimits(now);
+  const nonces = await storage.deleteExpiredNonces(now);
+
+  return { offers, credentials, rateLimits, nonces };
 }
