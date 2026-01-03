@@ -1,21 +1,25 @@
 /**
- * Generates a content-based offer ID using SHA-256 hash
- * Creates deterministic IDs based on offer SDP content
- * PeerID is not included as it's inferred from authentication
+ * Generates a unique offer ID using SHA-256 hash
+ * Combines SDP content with timestamp and random bytes for uniqueness
  * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
  *
  * @param sdp - The WebRTC SDP offer
- * @returns SHA-256 hash of the SDP content
+ * @returns Unique SHA-256 hash ID
  */
 export async function generateOfferHash(sdp: string): Promise<string> {
-  // Sanitize and normalize the offer content
-  // Only include core offer content (not peerId - that's inferred from auth)
-  const sanitizedOffer = {
-    sdp
+  // Generate random bytes for uniqueness (8 bytes = 64 bits of randomness)
+  const randomBytes = crypto.getRandomValues(new Uint8Array(8));
+  const randomHex = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Include SDP, timestamp, and random bytes for uniqueness
+  const hashInput = {
+    sdp,
+    timestamp: Date.now(),
+    nonce: randomHex
   };
 
   // Create non-prettified JSON string
-  const jsonString = JSON.stringify(sanitizedOffer);
+  const jsonString = JSON.stringify(hashInput);
 
   // Convert string to Uint8Array for hashing
   const encoder = new TextEncoder();

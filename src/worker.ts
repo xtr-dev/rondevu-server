@@ -64,19 +64,40 @@ export default {
 
   /**
    * Scheduled handler for cron triggers
-   * Runs periodically to clean up expired offers
+   * Runs periodically to clean up all expired entries
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const storage = new D1Storage(env.DB, env.MASTER_ENCRYPTION_KEY);
     const now = Date.now();
 
     try {
-      // Delete expired offers
-      const deletedCount = await storage.deleteExpiredOffers(now);
+      // Clean up expired offers
+      const deletedOffers = await storage.deleteExpiredOffers(now);
+      if (deletedOffers > 0) {
+        console.log(`Cleanup: Deleted ${deletedOffers} expired offer(s)`);
+      }
 
-      console.log(`Cleaned up ${deletedCount} expired offers at ${new Date(now).toISOString()}`);
+      // Clean up expired credentials
+      const deletedCredentials = await storage.deleteExpiredCredentials(now);
+      if (deletedCredentials > 0) {
+        console.log(`Cleanup: Deleted ${deletedCredentials} expired credential(s)`);
+      }
+
+      // Clean up expired rate limits
+      const deletedRateLimits = await storage.deleteExpiredRateLimits(now);
+      if (deletedRateLimits > 0) {
+        console.log(`Cleanup: Deleted ${deletedRateLimits} expired rate limit(s)`);
+      }
+
+      // Clean up expired nonces (replay protection)
+      const deletedNonces = await storage.deleteExpiredNonces(now);
+      if (deletedNonces > 0) {
+        console.log(`Cleanup: Deleted ${deletedNonces} expired nonce(s)`);
+      }
+
+      console.log(`Scheduled cleanup completed at ${new Date(now).toISOString()}`);
     } catch (error) {
-      console.error('Error cleaning up offers:', error);
+      console.error('Error during scheduled cleanup:', error);
     }
   },
 };

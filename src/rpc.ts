@@ -2,9 +2,7 @@ import { Context } from 'hono';
 import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import {
-  validateServiceFqn,
-  parseServiceFqn,
-  isVersionCompatible,
+  validateTags,
   validateUsername,
   verifySignature,
   buildSignatureMessage,
@@ -12,16 +10,6 @@ import {
 
 // Constants (non-configurable)
 const MAX_PAGE_SIZE = 100;
-const MAX_DISCOVERY_RESULTS = 1000;
-const DISCOVERY_OFFSET = 0;
-// Multiplier for estimated fetch size to account for filtering losses
-// Filtering pipeline reduces results through multiple stages:
-//   - Version filtering: ~50% pass (keeps compatible versions)
-//   - Deduplication: ~70% retained (removes duplicate usernames)
-//   - Availability check: ~60% available (has unanswered offers)
-// Combined retention: 0.5 × 0.7 × 0.6 = 0.21 (21%)
-// Required multiplier: 1/0.21 ≈ 4.76, rounded to 5x for safety margin
-const DISCOVERY_FETCH_MULTIPLIER = 5;
 
 // NOTE: MAX_SDP_SIZE, MAX_CANDIDATE_SIZE, MAX_CANDIDATE_DEPTH, and MAX_CANDIDATES_PER_REQUEST
 // are now configurable via environment variables (see config.ts)
@@ -32,11 +20,9 @@ const DISCOVERY_FETCH_MULTIPLIER = 5;
 // NOTE: Uses fixed-window rate limiting with full window reset on expiry
 //   - Window starts on first request and expires after CREDENTIAL_RATE_WINDOW
 //   - When window expires, counter resets to 0 and new window starts
-//   - Example: 10 requests at 11:00 AM → window resets at 12:00 PM → 10 more allowed immediately
 //   - This is simpler than sliding windows but may allow bursts at window boundaries
-//   - Still effective for preventing sustained abuse (10 credentials/hour sustained)
-const CREDENTIAL_RATE_LIMIT = 10; // Max credentials per hour per IP
-const CREDENTIAL_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in milliseconds
+const CREDENTIAL_RATE_LIMIT = 1; // Max credentials per second per IP
+const CREDENTIAL_RATE_WINDOW = 1000; // 1 second in milliseconds
 
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
@@ -94,7 +80,7 @@ export const ErrorCodes = {
 
   // Validation errors
   INVALID_NAME: 'INVALID_NAME',
-  INVALID_FQN: 'INVALID_FQN',
+  INVALID_TAG: 'INVALID_TAG',
   INVALID_SDP: 'INVALID_SDP',
   INVALID_PARAMS: 'INVALID_PARAMS',
   MISSING_PARAMS: 'MISSING_PARAMS',
@@ -155,33 +141,32 @@ export interface RpcResponse {
  * RPC Method Parameter Interfaces
  */
 export interface GenerateCredentialsParams {
+  name?: string;       // Optional: claim specific username (4-32 chars, alphanumeric + dashes + periods)
   expiresAt?: number;
 }
 
-export interface GetOfferParams {
-  serviceFqn: string;
+export interface DiscoverParams {
+  tags: string[];
   limit?: number;
   offset?: number;
 }
 
 export interface PublishOfferParams {
-  serviceFqn: string;
+  tags: string[];
   offers: Array<{ sdp: string }>;
   ttl?: number;
 }
 
 export interface DeleteOfferParams {
-  serviceFqn: string;
+  offerId: string;
 }
 
 export interface AnswerOfferParams {
-  serviceFqn: string;
   offerId: string;
   sdp: string;
 }
 
 export interface GetOfferAnswerParams {
-  serviceFqn: string;
   offerId: string;
 }
 
@@ -190,13 +175,11 @@ export interface PollParams {
 }
 
 export interface AddIceCandidatesParams {
-  serviceFqn: string;
   offerId: string;
   candidates: any[];
 }
 
 export interface GetIceCandidatesParams {
-  serviceFqn: string;
   offerId: string;
   since?: number;
 }
@@ -317,8 +300,19 @@ const handlers: Record<string, RpcHandler> = {
     if (!allowed) {
       throw new RpcError(
         ErrorCodes.RATE_LIMIT_EXCEEDED,
-        `Rate limit exceeded. Maximum ${rateLimit} credentials per hour${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
+        `Rate limit exceeded. Maximum ${rateLimit} credential per second${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
       );
+    }
+
+    // Validate username if provided
+    if (params.name !== undefined) {
+      if (typeof params.name !== 'string') {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'name must be a string');
+      }
+      const usernameValidation = validateUsername(params.name);
+      if (!usernameValidation.valid) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, usernameValidation.error || 'Invalid username');
+      }
     }
 
     // Validate expiresAt if provided
@@ -338,68 +332,39 @@ const handlers: Record<string, RpcHandler> = {
       }
     }
 
-    const credential = await storage.generateCredentials({
-      expiresAt: params.expiresAt,
-    });
+    try {
+      const credential = await storage.generateCredentials({
+        name: params.name,
+        expiresAt: params.expiresAt,
+      });
 
-    return {
-      name: credential.name,
-      secret: credential.secret,
-      createdAt: credential.createdAt,
-      expiresAt: credential.expiresAt,
-    };
+      return {
+        name: credential.name,
+        secret: credential.secret,
+        createdAt: credential.createdAt,
+        expiresAt: credential.expiresAt,
+      };
+    } catch (error: any) {
+      if (error.message === 'Username already taken') {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Username already taken');
+      }
+      throw error;
+    }
   },
 
   /**
-   * Get offer by FQN - Supports 3 modes:
-   * 1. Direct lookup: FQN includes @name (e.g., chat:1.0.0@brave-tiger-7a3f)
-   * 2. Paginated discovery: FQN without @name, with limit/offset
-   * 3. Random discovery: FQN without @name, no limit
+   * Discover offers by tags - Supports 2 modes:
+   * 1. Paginated discovery: tags array with limit/offset
+   * 2. Random discovery: tags array without limit (returns single random offer)
    */
-  async getOffer(params: GetOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { serviceFqn, limit, offset } = params;
+  async discover(params: DiscoverParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+    const { tags, limit, offset } = params;
 
-    // Note: getOffer can be called without auth for discovery
-    // Auth is verified if name is provided
-
-    // Parse and validate FQN
-    const fqnValidation = validateServiceFqn(serviceFqn);
-    if (!fqnValidation.valid) {
-      throw new RpcError(ErrorCodes.INVALID_FQN, fqnValidation.error || 'Invalid service FQN');
+    // Validate tags
+    const tagsValidation = validateTags(tags);
+    if (!tagsValidation.valid) {
+      throw new RpcError(ErrorCodes.INVALID_TAG, tagsValidation.error || 'Invalid tags');
     }
-
-    const parsed = parseServiceFqn(serviceFqn);
-    if (!parsed) {
-      throw new RpcError(ErrorCodes.INVALID_FQN, 'Failed to parse service FQN');
-    }
-
-    // Helper: Filter services by version compatibility
-    const filterCompatibleServices = (services: any[]) => {
-      return services.filter((s: any) => {
-        const serviceVersion = parseServiceFqn(s.serviceFqn);
-        return (
-          serviceVersion &&
-          isVersionCompatible(parsed.version, serviceVersion.version)
-        );
-      });
-    };
-
-    // Helper: Find available offer for service
-    const findAvailableOffer = async (service: any) => {
-      const offers = await storage.getOffersForService(service.id);
-      return offers.find((o: any) => !o.answererUsername);
-    };
-
-    // Helper: Build service response object
-    const buildServiceResponse = (service: any, offer: any) => ({
-      serviceId: service.id,
-      username: service.username,
-      serviceFqn: service.serviceFqn,
-      offerId: offer.id,
-      sdp: offer.sdp,
-      createdAt: service.createdAt,
-      expiresAt: service.expiresAt,
-    });
 
     // Mode 1: Paginated discovery
     if (limit !== undefined) {
@@ -414,127 +379,65 @@ const handlers: Record<string, RpcHandler> = {
       const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
-      // Fetch enough services to fill the page after filtering
-      // See DISCOVERY_FETCH_MULTIPLIER constant for rationale
-      const estimatedFetchSize = Math.min(
-        (pageLimit + pageOffset) * DISCOVERY_FETCH_MULTIPLIER,
-        MAX_DISCOVERY_RESULTS
+      // Exclude self if authenticated
+      const excludeUsername = name || null;
+
+      const offers = await storage.discoverOffers(
+        tags,
+        excludeUsername,
+        pageLimit,
+        pageOffset
       );
-
-      const allServices = await storage.discoverServices(
-        parsed.serviceName,
-        parsed.version,
-        estimatedFetchSize,
-        DISCOVERY_OFFSET
-      );
-      const compatibleServices = filterCompatibleServices(allServices);
-
-      // Get unique services per username with available offers
-      // Batch fetch all offers to avoid N+1 query pattern
-      const uniqueServices: any[] = [];
-
-      // Collect unique service IDs (one per username)
-      const servicesByUsername = new Map<string, any>();
-      for (const service of compatibleServices) {
-        if (!servicesByUsername.has(service.username)) {
-          servicesByUsername.set(service.username, service);
-        }
-      }
-
-      // Batch fetch offers for all services
-      const serviceIds = Array.from(servicesByUsername.values()).map(s => s.id);
-      const offersMap = await storage.getOffersForMultipleServices(serviceIds);
-
-      // Build response for services with available offers
-      for (const service of servicesByUsername.values()) {
-        // Skip user's own services (authenticated users shouldn't discover themselves)
-        if (name && service.username === name) {
-          continue;
-        }
-
-        const offers = offersMap.get(service.id) || [];
-        const availableOffer = offers.find((o: any) => !o.answererUsername);
-
-        if (availableOffer) {
-          uniqueServices.push(buildServiceResponse(service, availableOffer));
-        }
-      }
-
-      // Paginate results
-      const paginatedServices = uniqueServices.slice(pageOffset, pageOffset + pageLimit);
 
       return {
-        services: paginatedServices,
-        count: paginatedServices.length,
+        offers: offers.map(offer => ({
+          offerId: offer.id,
+          username: offer.username,
+          tags: offer.tags,
+          sdp: offer.sdp,
+          createdAt: offer.createdAt,
+          expiresAt: offer.expiresAt,
+        })),
+        count: offers.length,
         limit: pageLimit,
         offset: pageOffset,
       };
     }
 
-    // Mode 2: Direct lookup with username
-    if (parsed.username) {
-      const service = await storage.getServiceByFqn(serviceFqn);
-      if (!service) {
-        throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
-      }
+    // Mode 2: Random discovery (no limit provided)
+    // Exclude self if authenticated
+    const excludeUsername = name || null;
 
-      // Users can explicitly request their own services by username
-      // This is intentional - direct lookup allows fetching own offers
+    const offer = await storage.getRandomOffer(tags, excludeUsername);
 
-      const availableOffer = await findAvailableOffer(service);
-      if (!availableOffer) {
-        throw new RpcError(ErrorCodes.NO_AVAILABLE_OFFERS, 'No available offers for this service');
-      }
-
-      return buildServiceResponse(service, availableOffer);
+    if (!offer) {
+      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'No offers found matching tags');
     }
 
-    // Mode 3: Random discovery without username
-    //
-    // DESIGN NOTE: Discovery Mode Asymmetry
-    // - Paginated mode (limit provided): Filters out user's own services (line 571)
-    // - Random mode (no limit): Does NOT filter own services
-    // - Direct mode (username in FQN): Allows fetching own services (intentional)
-    //
-    // Rationale for random mode NOT filtering:
-    //   * Random selection happens at database level for performance
-    //   * Adding filter would require fetching multiple candidates and re-rolling
-    //   * Probability of selecting own service is typically low (1/N services)
-    //   * Use case: Self-discovery is valid for testing/monitoring
-    //
-    // This asymmetry is intentional and acceptable.
-    const randomResult = await storage.getRandomService(parsed.serviceName, parsed.version);
-
-    if (!randomResult) {
-      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'No offers found');
-    }
-
-    return buildServiceResponse(randomResult.service, randomResult.offer);
+    return {
+      offerId: offer.id,
+      username: offer.username,
+      tags: offer.tags,
+      sdp: offer.sdp,
+      createdAt: offer.createdAt,
+      expiresAt: offer.expiresAt,
+    };
   },
 
   /**
-   * Publish an offer
+   * Publish offers with tags
    */
   async publishOffer(params: PublishOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { serviceFqn, offers, ttl } = params;
+    const { tags, offers, ttl } = params;
 
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required for offer publishing');
     }
 
-    // Validate service FQN
-    const fqnValidation = validateServiceFqn(serviceFqn);
-    if (!fqnValidation.valid) {
-      throw new RpcError(ErrorCodes.INVALID_FQN, fqnValidation.error || 'Invalid service FQN');
-    }
-
-    const parsed = parseServiceFqn(serviceFqn);
-    if (!parsed || !parsed.username) {
-      throw new RpcError(ErrorCodes.INVALID_FQN, 'Service FQN must include username');
-    }
-
-    if (parsed.username !== name) {
-      throw new RpcError(ErrorCodes.OWNERSHIP_MISMATCH, 'Service FQN username must match authenticated name');
+    // Validate tags
+    const tagsValidation = validateTags(tags);
+    if (!tagsValidation.valid) {
+      throw new RpcError(ErrorCodes.INVALID_TAG, tagsValidation.error || 'Invalid tags');
     }
 
     // Validate offers
@@ -572,7 +475,7 @@ const handlers: Record<string, RpcHandler> = {
       }
     }
 
-    // Create service with offers
+    // Create offers with tags
     const now = Date.now();
     const offerTtl =
       ttl !== undefined
@@ -583,56 +486,43 @@ const handlers: Record<string, RpcHandler> = {
         : config.offerDefaultTtl;
     const expiresAt = now + offerTtl;
 
-    // Prepare offer requests with TTL
+    // Prepare offer requests with tags
     const offerRequests = offers.map(offer => ({
       username: name,
-      serviceFqn,
+      tags,
       sdp: offer.sdp,
       expiresAt,
     }));
 
-    const result = await storage.createService({
-      serviceFqn,
-      expiresAt,
-      offers: offerRequests,
-    });
+    const createdOffers = await storage.createOffers(offerRequests);
 
     return {
-      serviceId: result.service.id,
-      username: result.service.username,
-      serviceFqn: result.service.serviceFqn,
-      offers: result.offers.map(offer => ({
+      username: name,
+      tags,
+      offers: createdOffers.map(offer => ({
         offerId: offer.id,
         sdp: offer.sdp,
         createdAt: offer.createdAt,
         expiresAt: offer.expiresAt,
       })),
-      createdAt: result.service.createdAt,
-      expiresAt: result.service.expiresAt,
+      createdAt: now,
+      expiresAt,
     };
   },
 
   /**
-   * Delete an offer
+   * Delete an offer by ID
    */
   async deleteOffer(params: DeleteOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { serviceFqn } = params;
+    const { offerId } = params;
 
     if (!name) {
       throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
     }
 
-    const parsed = parseServiceFqn(serviceFqn);
-    if (!parsed || !parsed.username) {
-      throw new RpcError(ErrorCodes.INVALID_FQN, 'Service FQN must include username');
-    }
+    validateStringParam(offerId, 'offerId');
 
-    const service = await storage.getServiceByFqn(serviceFqn);
-    if (!service) {
-      throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
-    }
-
-    const deleted = await storage.deleteService(service.id, name);
+    const deleted = await storage.deleteOffer(offerId, name);
     if (!deleted) {
       throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Offer not found or not owned by this name');
     }
@@ -644,10 +534,9 @@ const handlers: Record<string, RpcHandler> = {
    * Answer an offer
    */
   async answerOffer(params: AnswerOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { serviceFqn, offerId, sdp } = params;
+    const { offerId, sdp } = params;
 
     // Validate input parameters
-    validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
     if (!name) {
@@ -680,10 +569,9 @@ const handlers: Record<string, RpcHandler> = {
    * Get answer for an offer
    */
   async getOfferAnswer(params: GetOfferAnswerParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { serviceFqn, offerId } = params;
+    const { offerId } = params;
 
     // Validate input parameters
-    validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
     if (!name) {
@@ -727,18 +615,29 @@ const handlers: Record<string, RpcHandler> = {
     }
     const sinceTimestamp = since !== undefined ? since : 0;
 
-    // Get all answered offers
+    // Get all answered offers (where user is the offerer)
     const answeredOffers = await storage.getAnsweredOffers(name);
     const filteredAnswers = answeredOffers.filter(
       (offer) => offer.answeredAt && offer.answeredAt > sinceTimestamp
     );
 
-    // Get all user's offers
-    const allOffers = await storage.getOffersByUsername(name);
+    // Get all user's offers (where user is offerer)
+    const ownedOffers = await storage.getOffersByUsername(name);
+
+    // Get all offers the user has answered (where user is answerer)
+    const answeredByUser = await storage.getOffersAnsweredBy(name);
+
+    // Combine offer IDs from both sources for ICE candidate fetching
+    // The storage method handles filtering by role automatically
+    const allOfferIds = [
+      ...ownedOffers.map(offer => offer.id),
+      ...answeredByUser.map(offer => offer.id),
+    ];
+    // Remove duplicates (shouldn't happen, but defensive)
+    const offerIds = [...new Set(allOfferIds)];
 
     // Batch fetch ICE candidates for all offers using JOIN to avoid N+1 query problem
     // Server filters by role - offerers get answerer candidates, answerers get offerer candidates
-    const offerIds = allOffers.map(offer => offer.id);
     const iceCandidatesMap = await storage.getIceCandidatesForMultipleOffers(
       offerIds,
       name,
@@ -754,7 +653,6 @@ const handlers: Record<string, RpcHandler> = {
     return {
       answers: filteredAnswers.map((offer) => ({
         offerId: offer.id,
-        serviceId: offer.serviceId,
         answererId: offer.answererUsername,
         sdp: offer.answerSdp,
         answeredAt: offer.answeredAt,
@@ -767,10 +665,9 @@ const handlers: Record<string, RpcHandler> = {
    * Add ICE candidates
    */
   async addIceCandidates(params: AddIceCandidatesParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { serviceFqn, offerId, candidates } = params;
+    const { offerId, candidates } = params;
 
     // Validate input parameters
-    validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
     if (!name) {
@@ -825,11 +722,6 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
-    // Validate that offer belongs to the specified service
-    if (offer.serviceFqn !== serviceFqn) {
-      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Offer does not belong to the specified service');
-    }
-
     const role = offer.username === name ? 'offerer' : 'answerer';
     const count = await storage.addIceCandidates(
       offerId,
@@ -845,10 +737,9 @@ const handlers: Record<string, RpcHandler> = {
    * Get ICE candidates
    */
   async getIceCandidates(params: GetIceCandidatesParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { serviceFqn, offerId, since } = params;
+    const { offerId, since } = params;
 
     // Validate input parameters
-    validateStringParam(serviceFqn, 'serviceFqn');
     validateStringParam(offerId, 'offerId');
 
     if (!name) {
@@ -864,11 +755,6 @@ const handlers: Record<string, RpcHandler> = {
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
-    }
-
-    // Validate that offer belongs to the specified service
-    if (offer.serviceFqn !== serviceFqn) {
-      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Offer does not belong to the specified service');
     }
 
     // Validate that user is authorized to access this offer's candidates
@@ -899,7 +785,7 @@ const handlers: Record<string, RpcHandler> = {
 };
 
 // Methods that don't require authentication
-const UNAUTHENTICATED_METHODS = new Set(['generateCredentials', 'getOffer']);
+const UNAUTHENTICATED_METHODS = new Set(['generateCredentials', 'discover']);
 
 /**
  * Handle RPC batch request with header-based authentication

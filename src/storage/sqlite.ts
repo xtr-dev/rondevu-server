@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
 import {
   Storage,
   Offer,
@@ -7,16 +6,13 @@ import {
   CreateOfferRequest,
   Credential,
   GenerateCredentialsRequest,
-  Service,
-  CreateServiceRequest,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
-import { parseServiceFqn } from '../crypto.ts';
 
 const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
 
 /**
- * SQLite storage adapter for rondevu DNS-like system
+ * SQLite storage adapter for rondevu signaling system
  * Supports both file-based and in-memory databases
  */
 export class SQLiteStorage implements Storage {
@@ -35,27 +31,25 @@ export class SQLiteStorage implements Storage {
   }
 
   /**
-   * Initializes database schema with username and service-based structure
+   * Initializes database schema with tags-based offers
    */
   private initializeDatabase(): void {
     this.db.exec(`
-      -- WebRTC signaling offers
+      -- WebRTC signaling offers with tags
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
-        service_id TEXT,
+        tags TEXT NOT NULL,
         sdp TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         last_seen INTEGER NOT NULL,
         answerer_username TEXT,
         answer_sdp TEXT,
-        answered_at INTEGER,
-        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+        answered_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_offers_username ON offers(username);
-      CREATE INDEX IF NOT EXISTS idx_offers_service ON offers(service_id);
       CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
       CREATE INDEX IF NOT EXISTS idx_offers_last_seen ON offers(last_seen);
       CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_username);
@@ -104,24 +98,6 @@ export class SQLiteStorage implements Storage {
       );
 
       CREATE INDEX IF NOT EXISTS idx_nonces_expires ON nonces(expires_at);
-
-      -- Services table (new schema with extracted fields for discovery)
-      CREATE TABLE IF NOT EXISTS services (
-        id TEXT PRIMARY KEY,
-        service_fqn TEXT NOT NULL,
-        service_name TEXT NOT NULL,
-        version TEXT NOT NULL,
-        username TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        FOREIGN KEY (username) REFERENCES credentials(name) ON DELETE CASCADE,
-        UNIQUE(service_fqn)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_services_fqn ON services(service_fqn);
-      CREATE INDEX IF NOT EXISTS idx_services_discovery ON services(service_name, version);
-      CREATE INDEX IF NOT EXISTS idx_services_username ON services(username);
-      CREATE INDEX IF NOT EXISTS idx_services_expires ON services(expires_at);
     `);
 
     // Enable foreign keys
@@ -144,18 +120,18 @@ export class SQLiteStorage implements Storage {
     // Use transaction for atomic creation
     const transaction = this.db.transaction((offersWithIds: (CreateOfferRequest & { id: string })[]) => {
       const offerStmt = this.db.prepare(`
-        INSERT INTO offers (id, username, service_id, sdp, created_at, expires_at, last_seen)
+        INSERT INTO offers (id, username, tags, sdp, created_at, expires_at, last_seen)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const offer of offersWithIds) {
         const now = Date.now();
 
-        // Insert offer
+        // Insert offer with JSON-serialized tags
         offerStmt.run(
           offer.id,
           offer.username,
-          offer.serviceId || null,
+          JSON.stringify(offer.tags),
           offer.sdp,
           now,
           offer.expiresAt,
@@ -165,8 +141,7 @@ export class SQLiteStorage implements Storage {
         created.push({
           id: offer.id,
           username: offer.username,
-          serviceId: offer.serviceId || undefined,
-          serviceFqn: offer.serviceFqn,
+          tags: offer.tags,
           sdp: offer.sdp,
           createdAt: now,
           expiresAt: offer.expiresAt,
@@ -272,6 +247,88 @@ export class SQLiteStorage implements Storage {
 
     const rows = stmt.all(offererUsername, Date.now()) as any[];
     return rows.map(row => this.rowToOffer(row));
+  }
+
+  async getOffersAnsweredBy(answererUsername: string): Promise<Offer[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM offers
+      WHERE answerer_username = ? AND expires_at > ?
+      ORDER BY answered_at DESC
+    `);
+
+    const rows = stmt.all(answererUsername, Date.now()) as any[];
+    return rows.map(row => this.rowToOffer(row));
+  }
+
+  // ===== Discovery =====
+
+  async discoverOffers(
+    tags: string[],
+    excludeUsername: string | null,
+    limit: number,
+    offset: number
+  ): Promise<Offer[]> {
+    if (tags.length === 0) {
+      return [];
+    }
+
+    // Build query with JSON tag matching (OR logic)
+    // SQLite: Use json_each() to expand tags array and check if any tag matches
+    const placeholders = tags.map(() => '?').join(',');
+
+    let query = `
+      SELECT DISTINCT o.* FROM offers o, json_each(o.tags) as t
+      WHERE t.value IN (${placeholders})
+        AND o.expires_at > ?
+        AND o.answerer_username IS NULL
+    `;
+
+    const params: any[] = [...tags, Date.now()];
+
+    if (excludeUsername) {
+      query += ' AND o.username != ?';
+      params.push(excludeUsername);
+    }
+
+    query += ' ORDER BY o.created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const stmt = this.db.prepare(query);
+    const rows = stmt.all(...params) as any[];
+    return rows.map(row => this.rowToOffer(row));
+  }
+
+  async getRandomOffer(
+    tags: string[],
+    excludeUsername: string | null
+  ): Promise<Offer | null> {
+    if (tags.length === 0) {
+      return null;
+    }
+
+    // Build query with JSON tag matching (OR logic)
+    const placeholders = tags.map(() => '?').join(',');
+
+    let query = `
+      SELECT DISTINCT o.* FROM offers o, json_each(o.tags) as t
+      WHERE t.value IN (${placeholders})
+        AND o.expires_at > ?
+        AND o.answerer_username IS NULL
+    `;
+
+    const params: any[] = [...tags, Date.now()];
+
+    if (excludeUsername) {
+      query += ' AND o.username != ?';
+      params.push(excludeUsername);
+    }
+
+    query += ' ORDER BY RANDOM() LIMIT 1';
+
+    const stmt = this.db.prepare(query);
+    const row = stmt.get(...params) as any;
+
+    return row ? this.rowToOffer(row) : null;
   }
 
   // ===== ICE Candidate Management =====
@@ -411,32 +468,43 @@ export class SQLiteStorage implements Storage {
     const now = Date.now();
     const expiresAt = request.expiresAt || (now + YEAR_IN_MS);
 
-    // Generate unique name and secret
     const { generateCredentialName, generateSecret } = await import('../crypto.ts');
 
-    // Retry until we find a unique name (collision very unlikely with 2^48 space)
-    // 100 attempts provides excellent safety margin
     let name: string;
-    let attempts = 0;
-    const maxAttempts = 100;
 
-    while (attempts < maxAttempts) {
-      name = generateCredentialName();
-
-      // Check if name already exists
+    if (request.name) {
+      // User requested specific username - check if available
       const existing = this.db.prepare(`
         SELECT name FROM credentials WHERE name = ?
-      `).get(name);
+      `).get(request.name);
 
-      if (!existing) {
-        break;
+      if (existing) {
+        throw new Error('Username already taken');
       }
 
-      attempts++;
-    }
+      name = request.name;
+    } else {
+      // Generate random name - retry until unique
+      let attempts = 0;
+      const maxAttempts = 100;
 
-    if (attempts >= maxAttempts) {
-      throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
+      while (attempts < maxAttempts) {
+        name = generateCredentialName();
+
+        const existing = this.db.prepare(`
+          SELECT name FROM credentials WHERE name = ?
+        `).get(name);
+
+        if (!existing) {
+          break;
+        }
+
+        attempts++;
+      }
+
+      if (attempts >= maxAttempts) {
+        throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
+      }
     }
 
     const secret = generateSecret();
@@ -570,282 +638,6 @@ export class SQLiteStorage implements Storage {
     return result.changes;
   }
 
-  // ===== Service Management =====
-
-  async createService(request: CreateServiceRequest): Promise<{
-    service: Service;
-    offers: Offer[];
-  }> {
-    const serviceId = randomUUID();
-    const now = Date.now();
-
-    // Parse FQN to extract components
-    const parsed = parseServiceFqn(request.serviceFqn);
-    if (!parsed) {
-      throw new Error(`Invalid service FQN: ${request.serviceFqn}`);
-    }
-    if (!parsed.username) {
-      throw new Error(`Service FQN must include username: ${request.serviceFqn}`);
-    }
-
-    const { serviceName, version, username } = parsed;
-
-    const transaction = this.db.transaction(() => {
-      // Delete existing service with same (service_name, version, username) and its related offers (upsert behavior)
-      const existingService = this.db.prepare(`
-        SELECT id FROM services
-        WHERE service_name = ? AND version = ? AND username = ?
-      `).get(serviceName, version, username) as any;
-
-      if (existingService) {
-        // Delete related offers first (no FK cascade from offers to services)
-        this.db.prepare(`
-          DELETE FROM offers WHERE service_id = ?
-        `).run(existingService.id);
-
-        // Delete the service
-        this.db.prepare(`
-          DELETE FROM services WHERE id = ?
-        `).run(existingService.id);
-      }
-
-      // Insert new service with extracted fields
-      this.db.prepare(`
-        INSERT INTO services (id, service_fqn, service_name, version, username, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        serviceId,
-        request.serviceFqn,
-        serviceName,
-        version,
-        username,
-        now,
-        request.expiresAt
-      );
-
-      // Touch credential to extend expiry (inline logic)
-      const expiresAt = now + YEAR_IN_MS;
-      this.db.prepare(`
-        UPDATE credentials
-        SET last_used = ?, expires_at = ?
-        WHERE name = ? AND expires_at > ?
-      `).run(now, expiresAt, username, now);
-    });
-
-    transaction();
-
-    // Create offers with serviceId (after transaction)
-    const offerRequests = request.offers.map(offer => ({
-      ...offer,
-      serviceId,
-    }));
-    const offers = await this.createOffers(offerRequests);
-
-    return {
-      service: {
-        id: serviceId,
-        serviceFqn: request.serviceFqn,
-        serviceName,
-        version,
-        username,
-        createdAt: now,
-        expiresAt: request.expiresAt,
-      },
-      offers,
-    };
-  }
-
-  async getOffersForService(serviceId: string): Promise<Offer[]> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM offers
-      WHERE service_id = ? AND expires_at > ?
-      ORDER BY created_at ASC
-    `);
-
-    const rows = stmt.all(serviceId, Date.now()) as any[];
-    return rows.map(row => this.rowToOffer(row));
-  }
-
-  async getOffersForMultipleServices(serviceIds: string[]): Promise<Map<string, Offer[]>> {
-    const result = new Map<string, Offer[]>();
-
-    // Return empty map if no service IDs provided
-    if (serviceIds.length === 0) {
-      return result;
-    }
-
-    // Validate array contains only strings (defense-in-depth)
-    if (!Array.isArray(serviceIds) || !serviceIds.every(id => typeof id === 'string')) {
-      throw new Error('Invalid service IDs: must be array of strings');
-    }
-
-    // Prevent DoS attacks from extremely large IN clauses
-    // Limit aligns with MAX_DISCOVERY_RESULTS (1000) in rpc.ts
-    if (serviceIds.length > 1000) {
-      throw new Error('Too many service IDs (max 1000)');
-    }
-
-    // Build IN clause with proper parameter binding
-    const placeholders = serviceIds.map(() => '?').join(',');
-    const stmt = this.db.prepare(`
-      SELECT * FROM offers
-      WHERE service_id IN (${placeholders}) AND expires_at > ?
-      ORDER BY created_at ASC
-    `);
-
-    const now = Date.now();
-    const rows = stmt.all(...serviceIds, now) as any[];
-
-    // Group offers by service_id
-    for (const row of rows) {
-      const offer = this.rowToOffer(row);
-      const serviceId = row.service_id;
-
-      if (!result.has(serviceId)) {
-        result.set(serviceId, []);
-      }
-      result.get(serviceId)!.push(offer);
-    }
-
-    return result;
-  }
-
-  async getServiceById(serviceId: string): Promise<Service | null> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM services
-      WHERE id = ? AND expires_at > ?
-    `);
-
-    const row = stmt.get(serviceId, Date.now()) as any;
-
-    if (!row) {
-      return null;
-    }
-
-    return this.rowToService(row);
-  }
-
-  async getServiceByFqn(serviceFqn: string): Promise<Service | null> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM services
-      WHERE service_fqn = ? AND expires_at > ?
-    `);
-
-    const row = stmt.get(serviceFqn, Date.now()) as any;
-
-    if (!row) {
-      return null;
-    }
-
-    return this.rowToService(row);
-  }
-
-  async discoverServices(
-    serviceName: string,
-    version: string,
-    limit: number,
-    offset: number
-  ): Promise<Service[]> {
-    // Query for unique services with available offers
-    // We join with offers and filter for available ones (answerer_username IS NULL)
-    const stmt = this.db.prepare(`
-      SELECT DISTINCT s.* FROM services s
-      INNER JOIN offers o ON o.service_id = s.id
-      WHERE s.service_name = ?
-        AND s.version = ?
-        AND s.expires_at > ?
-        AND o.answerer_username IS NULL
-        AND o.expires_at > ?
-      ORDER BY s.created_at DESC
-      LIMIT ? OFFSET ?
-    `);
-
-    const rows = stmt.all(serviceName, version, Date.now(), Date.now(), limit, offset) as any[];
-    return rows.map(row => this.rowToService(row));
-  }
-
-  async getRandomService(serviceName: string, version: string): Promise<{ service: Service; offer: Offer } | null> {
-    // Get a random service with an available offer (in single query to avoid N+1)
-    const stmt = this.db.prepare(`
-      SELECT
-        s.id as service_id,
-        s.service_fqn,
-        s.service_name,
-        s.version,
-        s.username,
-        s.created_at as service_created_at,
-        s.expires_at as service_expires_at,
-        o.id as offer_id,
-        o.username as offer_username,
-        o.service_id as offer_service_id,
-        o.service_fqn as offer_service_fqn,
-        o.sdp,
-        o.created_at as offer_created_at,
-        o.expires_at as offer_expires_at,
-        o.last_seen,
-        o.answerer_username,
-        o.answer_sdp,
-        o.answered_at
-      FROM services s
-      INNER JOIN offers o ON o.service_id = s.id
-      WHERE s.service_name = ?
-        AND s.version = ?
-        AND s.expires_at > ?
-        AND o.answerer_username IS NULL
-        AND o.expires_at > ?
-      ORDER BY RANDOM()
-      LIMIT 1
-    `);
-
-    const row = stmt.get(serviceName, version, Date.now(), Date.now()) as any;
-
-    if (!row) {
-      return null;
-    }
-
-    const service: Service = {
-      id: row.service_id,
-      serviceFqn: row.service_fqn,
-      serviceName: row.service_name,
-      version: row.version,
-      username: row.username,
-      createdAt: row.service_created_at,
-      expiresAt: row.service_expires_at,
-    };
-
-    const offer: Offer = {
-      id: row.offer_id,
-      username: row.offer_username,
-      serviceId: row.offer_service_id || undefined,
-      serviceFqn: row.offer_service_fqn || undefined,
-      sdp: row.sdp,
-      createdAt: row.offer_created_at,
-      expiresAt: row.offer_expires_at,
-      lastSeen: row.last_seen,
-      answererUsername: row.answerer_username || undefined,
-      answerSdp: row.answer_sdp || undefined,
-      answeredAt: row.answered_at || undefined,
-    };
-
-    return { service, offer };
-  }
-
-  async deleteService(serviceId: string, username: string): Promise<boolean> {
-    const stmt = this.db.prepare(`
-      DELETE FROM services
-      WHERE id = ? AND username = ?
-    `);
-
-    const result = stmt.run(serviceId, username);
-    return result.changes > 0;
-  }
-
-  async deleteExpiredServices(now: number): Promise<number> {
-    const stmt = this.db.prepare('DELETE FROM services WHERE expires_at < ?');
-    const result = stmt.run(now);
-    return result.changes;
-  }
-
   async close(): Promise<void> {
     this.db.close();
   }
@@ -859,8 +651,7 @@ export class SQLiteStorage implements Storage {
     return {
       id: row.id,
       username: row.username,
-      serviceId: row.service_id || undefined,
-      serviceFqn: row.service_fqn || undefined,
+      tags: JSON.parse(row.tags),
       sdp: row.sdp,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
@@ -868,21 +659,6 @@ export class SQLiteStorage implements Storage {
       answererUsername: row.answerer_username || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at || undefined,
-    };
-  }
-
-  /**
-   * Helper method to convert database row to Service object
-   */
-  private rowToService(row: any): Service {
-    return {
-      id: row.id,
-      serviceFqn: row.service_fqn,
-      serviceName: row.service_name,
-      version: row.version,
-      username: row.username,
-      createdAt: row.created_at,
-      expiresAt: row.expires_at,
     };
   }
 }

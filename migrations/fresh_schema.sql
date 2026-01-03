@@ -1,51 +1,32 @@
--- Fresh schema for Rondevu v0.5.0+
--- Unified Ed25519 authentication - username/keypair only
--- This is the complete schema without migration steps
+-- Fresh schema for Rondevu (Tags-based)
+-- Offers are standalone with tags for discovery
 
 -- Drop existing tables if they exist
 DROP TABLE IF EXISTS ice_candidates;
-DROP TABLE IF EXISTS services;
 DROP TABLE IF EXISTS offers;
-DROP TABLE IF EXISTS usernames;
+DROP TABLE IF EXISTS services;
+DROP TABLE IF EXISTS credentials;
+DROP TABLE IF EXISTS rate_limits;
+DROP TABLE IF EXISTS nonces;
 
--- Usernames table (now required for all users, even anonymous)
-CREATE TABLE usernames (
-  username TEXT PRIMARY KEY,
-  public_key TEXT NOT NULL UNIQUE,
-  claimed_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  last_used INTEGER NOT NULL,
-  metadata TEXT,
-  CHECK(length(username) >= 3 AND length(username) <= 32)
-);
-
-CREATE INDEX idx_usernames_expires ON usernames(expires_at);
-CREATE INDEX idx_usernames_public_key ON usernames(public_key);
-
--- Services table with discovery fields
-CREATE TABLE services (
-  id TEXT PRIMARY KEY,
-  service_fqn TEXT NOT NULL,
-  service_name TEXT NOT NULL,
-  version TEXT NOT NULL,
-  username TEXT NOT NULL,
+-- Credentials table (name + secret auth)
+CREATE TABLE credentials (
+  name TEXT PRIMARY KEY,
+  secret TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
-  UNIQUE(service_name, version, username)
+  last_used INTEGER NOT NULL,
+  CHECK(length(name) >= 3 AND length(name) <= 32)
 );
 
-CREATE INDEX idx_services_fqn ON services(service_fqn);
-CREATE INDEX idx_services_discovery ON services(service_name, version);
-CREATE INDEX idx_services_username ON services(username);
-CREATE INDEX idx_services_expires ON services(expires_at);
+CREATE INDEX idx_credentials_expires ON credentials(expires_at);
+CREATE INDEX idx_credentials_secret ON credentials(secret);
 
--- Offers table (now uses username instead of peer_id)
+-- Offers table (standalone with tags for discovery)
 CREATE TABLE offers (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL,
-  service_id TEXT,
-  service_fqn TEXT,
+  tags TEXT NOT NULL,  -- JSON array: '["tag1", "tag2"]'
   sdp TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
@@ -53,17 +34,15 @@ CREATE TABLE offers (
   answerer_username TEXT,
   answer_sdp TEXT,
   answered_at INTEGER,
-  FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE,
-  FOREIGN KEY (answerer_username) REFERENCES usernames(username) ON DELETE SET NULL
+  FOREIGN KEY (username) REFERENCES credentials(name) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_offers_username ON offers(username);
-CREATE INDEX idx_offers_service ON offers(service_id);
 CREATE INDEX idx_offers_expires ON offers(expires_at);
 CREATE INDEX idx_offers_last_seen ON offers(last_seen);
 CREATE INDEX idx_offers_answerer ON offers(answerer_username);
 
--- ICE candidates table (now uses username instead of peer_id)
+-- ICE candidates table
 CREATE TABLE ice_candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   offer_id TEXT NOT NULL,
@@ -71,11 +50,27 @@ CREATE TABLE ice_candidates (
   role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
   candidate TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE,
-  FOREIGN KEY (username) REFERENCES usernames(username) ON DELETE CASCADE
+  FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_ice_offer ON ice_candidates(offer_id);
 CREATE INDEX idx_ice_username ON ice_candidates(username);
 CREATE INDEX idx_ice_role ON ice_candidates(role);
 CREATE INDEX idx_ice_created ON ice_candidates(created_at);
+
+-- Rate limits table
+CREATE TABLE rate_limits (
+  identifier TEXT PRIMARY KEY,
+  count INTEGER NOT NULL,
+  reset_time INTEGER NOT NULL
+);
+
+CREATE INDEX idx_rate_limits_reset ON rate_limits(reset_time);
+
+-- Nonces table (for replay attack prevention)
+CREATE TABLE nonces (
+  nonce_key TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_nonces_expires ON nonces(expires_at);

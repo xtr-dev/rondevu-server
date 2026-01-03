@@ -1,11 +1,10 @@
 /**
- * Represents a WebRTC signaling offer
+ * Represents a WebRTC signaling offer with tags for discovery
  */
 export interface Offer {
   id: string;
   username: string;
-  serviceId?: string; // Optional link to service (null for standalone offers)
-  serviceFqn?: string; // Denormalized service FQN for easier queries
+  tags: string[]; // Tags for discovery (match ANY)
   sdp: string;
   createdAt: number;
   expiresAt: number;
@@ -34,8 +33,7 @@ export interface IceCandidate {
 export interface CreateOfferRequest {
   id?: string;
   username: string;
-  serviceId?: string; // Optional link to service
-  serviceFqn?: string; // Optional service FQN
+  tags: string[]; // Tags for discovery
   sdp: string;
   expiresAt: number;
 }
@@ -56,40 +54,18 @@ export interface Credential {
  * Request to generate new credentials
  */
 export interface GenerateCredentialsRequest {
+  name?: string;      // Optional: claim specific username (must be unique, 4-32 chars)
   expiresAt?: number; // Optional: override default expiry
 }
 
 /**
- * Represents a published service (can have multiple offers)
- * Format: service:version@name (e.g., chat:1.0.0@brave-tiger-7a3f)
- */
-export interface Service {
-  id: string; // UUID v4
-  serviceFqn: string; // Full FQN: chat:1.0.0@brave-tiger-7a3f
-  serviceName: string; // Extracted: chat
-  version: string; // Extracted: 1.0.0
-  username: string; // Extracted: brave-tiger-7a3f (kept as "username" for compatibility)
-  createdAt: number;
-  expiresAt: number;
-}
-
-/**
- * Request to create a single service
- */
-export interface CreateServiceRequest {
-  serviceFqn: string; // Full FQN with username: chat:1.0.0@alice
-  expiresAt: number;
-  offers: CreateOfferRequest[]; // Multiple offers per service
-}
-
-/**
- * Storage interface for rondevu DNS-like system
+ * Storage interface for rondevu signaling system
  * Implementations can use different backends (SQLite, D1, etc.)
  *
  * TRUST BOUNDARY: The storage layer assumes inputs are pre-validated by the RPC layer.
  * This avoids duplication of validation logic across storage backends.
  * The RPC layer is responsible for:
- *  - Validating serviceFqn format and ownership
+ *  - Validating tags format
  *  - Validating role is 'offerer' or 'answerer'
  *  - Validating all string parameters are non-empty
  *  - Validating timestamps and expirations
@@ -155,6 +131,42 @@ export interface Storage {
    * @returns Array of answered offers
    */
   getAnsweredOffers(offererUsername: string): Promise<Offer[]>;
+
+  /**
+   * Retrieves all offers answered by a specific user (where they are the answerer)
+   * @param answererUsername Answerer's username
+   * @returns Array of offers the user has answered
+   */
+  getOffersAnsweredBy(answererUsername: string): Promise<Offer[]>;
+
+  // ===== Discovery =====
+
+  /**
+   * Discovers offers by tags with pagination
+   * Returns available offers (where answerer_username IS NULL) matching ANY of the provided tags
+   * @param tags Array of tags to match (OR logic)
+   * @param excludeUsername Optional username to exclude from results (self-exclusion)
+   * @param limit Maximum number of offers to return
+   * @param offset Number of offers to skip
+   * @returns Array of available offers matching tags
+   */
+  discoverOffers(
+    tags: string[],
+    excludeUsername: string | null,
+    limit: number,
+    offset: number
+  ): Promise<Offer[]>;
+
+  /**
+   * Gets a random available offer matching any of the provided tags
+   * @param tags Array of tags to match (OR logic)
+   * @param excludeUsername Optional username to exclude (self-exclusion)
+   * @returns Random available offer, or null if none found
+   */
+  getRandomOffer(
+    tags: string[],
+    excludeUsername: string | null
+  ): Promise<Offer | null>;
 
   // ===== ICE Candidate Management =====
 
@@ -265,91 +277,6 @@ export interface Storage {
    * @returns Number of entries deleted
    */
   deleteExpiredNonces(now: number): Promise<number>;
-
-  // ===== Service Management =====
-
-  /**
-   * Creates a new service with offers
-   * @param request Service creation request (includes offers)
-   * @returns Created service with generated ID and created offers
-   */
-  createService(request: CreateServiceRequest): Promise<{
-    service: Service;
-    offers: Offer[];
-  }>;
-
-
-  /**
-   * Gets all offers for a service
-   * @param serviceId Service ID
-   * @returns Array of offers for the service
-   */
-  getOffersForService(serviceId: string): Promise<Offer[]>;
-
-  /**
-   * Gets all offers for multiple services (batch operation)
-   * @param serviceIds Array of service IDs
-   * @returns Map of service ID to offers array
-   */
-  getOffersForMultipleServices(serviceIds: string[]): Promise<Map<string, Offer[]>>;
-
-  /**
-   * Gets a service by its service ID
-   * @param serviceId Service ID
-   * @returns Service if found, null otherwise
-   */
-  getServiceById(serviceId: string): Promise<Service | null>;
-
-  /**
-   * Gets a service by its fully qualified name (FQN)
-   * @param serviceFqn Full service FQN (e.g., "chat:1.0.0@alice")
-   * @returns Service if found, null otherwise
-   */
-  getServiceByFqn(serviceFqn: string): Promise<Service | null>;
-
-
-
-
-
-  /**
-   * Discovers services by name and version with pagination
-   * Returns unique available offers (where answerer_peer_id IS NULL)
-   * @param serviceName Service name (e.g., 'chat')
-   * @param version Version string for semver matching (e.g., '1.0.0')
-   * @param limit Maximum number of unique services to return
-   * @param offset Number of services to skip
-   * @returns Array of services with available offers
-   */
-  discoverServices(
-    serviceName: string,
-    version: string,
-    limit: number,
-    offset: number
-  ): Promise<Service[]>;
-
-  /**
-   * Gets a random available service by name and version
-   * Returns a single random offer that is available (answerer_peer_id IS NULL)
-   * @param serviceName Service name (e.g., 'chat')
-   * @param version Version string for semver matching (e.g., '1.0.0')
-   * @returns Random service with available offer, or null if none found
-   */
-  getRandomService(serviceName: string, version: string): Promise<{ service: Service; offer: Offer } | null>;
-
-  /**
-   * Deletes a service (with ownership verification)
-   * @param serviceId Service ID
-   * @param username Owner username (for verification)
-   * @returns true if deleted, false if not found or not owned
-   */
-  deleteService(serviceId: string, username: string): Promise<boolean>;
-
-  /**
-   * Deletes all expired services
-   * @param now Current timestamp
-   * @returns Number of services deleted
-   */
-  deleteExpiredServices(now: number): Promise<number>;
 
   /**
    * Closes the storage connection and releases resources

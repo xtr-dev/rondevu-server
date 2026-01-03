@@ -2,11 +2,21 @@ name = "rondevu"
 main = "src/worker.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = true
+
+# Routes
+routes = [
+  { pattern = "api.ronde.vu/*", zone_name = "ronde.vu" }
+]
+
+# Cron triggers (cleanup expired offers)
+[triggers]
+crons = ["*/5 * * * *"]
 
 # D1 Database binding
 [[d1_databases]]
 binding = "DB"
-database_name = "rondevu-offers"
 database_id = "3d469855-d37f-477b-b139-fa58843a54ff"
 
 # Environment variables

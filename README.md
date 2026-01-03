@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/@xtr-dev/rondevu-server)](https://www.npmjs.com/package/@xtr-dev/rondevu-server)
 
-🌐 **Simple WebRTC signaling with RPC interface**
+**Simple WebRTC signaling with tags-based discovery**
 
-Scalable WebRTC signaling server with cryptographic username claiming, service publishing with semantic versioning, and efficient offer/answer exchange via JSON-RPC interface.
+Scalable WebRTC signaling server with credential-based authentication, tag-based offer discovery, and efficient offer/answer exchange via JSON-RPC interface.
 
 **Related repositories:**
 - [@xtr-dev/rondevu-client](https://github.com/xtr-dev/rondevu-client) - TypeScript client library ([npm](https://www.npmjs.com/package/@xtr-dev/rondevu-client))
@@ -17,9 +17,8 @@ Scalable WebRTC signaling server with cryptographic username claiming, service p
 
 - **RPC Interface**: Single endpoint for all operations with batching support
 - **Credential-Based Authentication**: HMAC-SHA256 signature authentication with named credentials (365-day validity, auto-renewed on use)
-- **Offer Publishing**: Service:version@name naming (e.g., `chat:1.0.0@alice`)
-- **Offer Discovery**: Random and paginated discovery for finding offers without knowing credential names
-- **Semantic Versioning**: Compatible version matching (chat:1.0.0 matches any 1.x.x)
+- **Tag-Based Discovery**: Offers are categorized with tags (e.g., `["chat", "video"]`) for flexible discovery
+- **OR-Based Matching**: Discovery matches offers with ANY of the requested tags
 - **HMAC Signatures**: All authenticated requests use HMAC-SHA256 signatures with nonce-based replay protection
 - **Complete WebRTC Signaling**: Offer/answer exchange and ICE candidate relay
 - **Batch Operations**: Execute multiple operations in a single HTTP request
@@ -30,11 +29,11 @@ Scalable WebRTC signaling server with cryptographic username claiming, service p
 ```
 Credential Generation → Offer Publishing → Offer Discovery → WebRTC Connection
 
-alice generates credentials (friendly-panda-a1b2c3d4e5f6 + secret)
+alice generates credentials (friendly-panda-a1b2c3d4 + secret)
   ↓
-alice publishes chat:1.0.0@friendly-panda-a1b2c3d4e5f6 with HMAC signature
+alice publishes offer with tags: ["chat", "video"] + HMAC signature
   ↓
-bob queries chat:1.0.0 (discovery) or direct → gets offer SDP
+bob discovers offers with tags: ["chat"] → gets alice's offer SDP
   ↓
 bob posts answer SDP with HMAC signature → WebRTC connection established
   ↓
@@ -70,22 +69,8 @@ All API calls are made to `POST /rpc` with JSON-RPC format.
 ```json
 [
   {
-    "method": "getUser",
-    "params": { "username": "alice" }
-  },
-  {
-    "method": "getOffer",
-    "params": { "serviceFqn": "chat:1.0.0" }
-  }
-]
-```
-
-**Single operation (still requires array):**
-```json
-[
-  {
-    "method": "getUser",
-    "params": { "username": "alice" }
+    "method": "discover",
+    "params": { "tags": ["chat"], "limit": 10 }
   }
 ]
 ```
@@ -118,10 +103,9 @@ All API calls are made to `POST /rpc` with JSON-RPC format.
 Responses are returned in the same order as requests.
 
 **Error Codes:**
-All error responses include an `errorCode` field for programmatic error handling:
 - `AUTH_REQUIRED`, `INVALID_CREDENTIALS`
-- `INVALID_NAME`, `INVALID_FQN`, `INVALID_SDP`, `INVALID_PARAMS`, `MISSING_PARAMS`
-- `OFFER_NOT_FOUND`, `OFFER_ALREADY_ANSWERED`, `OFFER_NOT_ANSWERED`, `NO_AVAILABLE_OFFERS`
+- `INVALID_TAG`, `INVALID_SDP`, `INVALID_PARAMS`, `MISSING_PARAMS`
+- `OFFER_NOT_FOUND`, `OFFER_ALREADY_ANSWERED`, `OFFER_NOT_ANSWERED`
 - `NOT_AUTHORIZED`, `OWNERSHIP_MISMATCH`
 - `TOO_MANY_OFFERS`, `SDP_TOO_LARGE`, `BATCH_TOO_LARGE`, `RATE_LIMIT_EXCEEDED`
 - `INTERNAL_ERROR`, `UNKNOWN_METHOD`
@@ -131,14 +115,21 @@ All error responses include an `errorCode` field for programmatic error handling
 ### Credential Management
 
 ```typescript
-// Generate new credentials (no authentication required)
+// Generate new credentials with auto-generated username
 POST /rpc
 [
   {
     "method": "generateCredentials",
-    "params": {
-      "expiresAt": 1735363200000  // Optional: Unix timestamp in ms (default: 365 days)
-    }
+    "params": {}
+  }
+]
+
+// Or claim a custom username (4-32 chars, lowercase alphanumeric + dashes + periods)
+POST /rpc
+[
+  {
+    "method": "generateCredentials",
+    "params": { "name": "alice" }
   }
 ]
 
@@ -146,12 +137,15 @@ POST /rpc
 {
   "success": true,
   "result": {
-    "name": "friendly-panda-a1b2c3d4e5f6",
+    "name": "alice",
     "secret": "5a7f3e8c9d2b1a4e6f8c0d9e2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b",
     "createdAt": 1704067200000,
     "expiresAt": 1735603200000
   }
 }
+
+// Error if username already taken:
+{ "success": false, "error": "Username already taken" }
 
 // IMPORTANT: Save the secret securely - it will never be shown again!
 ```
@@ -159,7 +153,7 @@ POST /rpc
 ### Offer Publishing
 
 ```typescript
-// Publish offer (requires authentication)
+// Publish offer with tags (requires authentication)
 POST /rpc
 Headers:
   X-Name: friendly-panda-a1b2c3d4e5f6
@@ -170,48 +164,81 @@ Headers:
   {
     "method": "publishOffer",
     "params": {
-      "serviceFqn": "chat:1.0.0@friendly-panda-a1b2c3d4e5f6",
+      "tags": ["chat", "video"],
       "offers": [{ "sdp": "webrtc-offer-sdp" }],
       "ttl": 300000
     }
   }
 ]
+
+// Response:
+{
+  "success": true,
+  "result": {
+    "offers": [
+      {
+        "offerId": "abc123...",
+        "tags": ["chat", "video"],
+        "sdp": "webrtc-offer-sdp",
+        "createdAt": 1704067200000,
+        "expiresAt": 1704067500000
+      }
+    ]
+  }
+}
 ```
 
 ### Offer Discovery
 
 ```typescript
-// Get specific offer
+// Discover offers by tags (paginated mode - no auth required)
 POST /rpc
 [
   {
-    "method": "getOffer",
-    "params": { "serviceFqn": "chat:1.0.0@alice" }
-  }
-]
-
-// Random discovery
-POST /rpc
-[
-  {
-    "method": "getOffer",
-    "params": { "serviceFqn": "chat:1.0.0" }
-  }
-]
-
-// Paginated discovery
-POST /rpc
-[
-  {
-    "method": "getOffer",
+    "method": "discover",
     "params": {
-      "serviceFqn": "chat:1.0.0",
+      "tags": ["chat"],
       "limit": 10,
       "offset": 0
     }
   }
 ]
+
+// Response:
+{
+  "success": true,
+  "result": {
+    "offers": [
+      {
+        "offerId": "abc123...",
+        "username": "friendly-panda-a1b2c3d4e5f6",
+        "tags": ["chat", "video"],
+        "sdp": "webrtc-offer-sdp",
+        "createdAt": 1704067200000,
+        "expiresAt": 1704067500000
+      }
+    ],
+    "count": 1,
+    "limit": 10,
+    "offset": 0
+  }
+}
+
+// Random discovery (returns single offer, no auth required)
+POST /rpc
+[
+  {
+    "method": "discover",
+    "params": { "tags": ["chat"] }
+  }
+]
 ```
+
+**Discovery modes:**
+- **Paginated**: Include `limit` parameter to get array of matching offers
+- **Random**: Omit `limit` to get a single random matching offer
+
+**Tag matching:** Uses OR logic - offers matching ANY of the requested tags are returned.
 
 ### WebRTC Signaling
 
@@ -227,8 +254,7 @@ Headers:
   {
     "method": "answerOffer",
     "params": {
-      "serviceFqn": "chat:1.0.0@friendly-panda-a1b2c3d4e5f6",
-      "offerId": "offer-id",
+      "offerId": "abc123...",
       "sdp": "webrtc-answer-sdp"
     }
   }
@@ -245,14 +271,13 @@ Headers:
   {
     "method": "addIceCandidates",
     "params": {
-      "serviceFqn": "chat:1.0.0@friendly-panda-a1b2c3d4e5f6",
-      "offerId": "offer-id",
+      "offerId": "abc123...",
       "candidates": [{ /* RTCIceCandidateInit */ }]
     }
   }
 ]
 
-// Poll for answers and ICE candidates (requires authentication)
+// Get ICE candidates (requires authentication)
 POST /rpc
 Headers:
   X-Name: friendly-panda-a1b2c3d4e5f6
@@ -261,8 +286,39 @@ Headers:
   X-Signature: <base64-hmac-sha256-signature>
 [
   {
+    "method": "getIceCandidates",
+    "params": {
+      "offerId": "abc123...",
+      "since": 0
+    }
+  }
+]
+
+// Poll for answers (requires authentication)
+POST /rpc
+Headers:
+  X-Name: friendly-panda-a1b2c3d4e5f6
+  X-Timestamp: 1704067500000
+  X-Nonce: 990e8400-e29b-41d4-a716-446655440004
+  X-Signature: <base64-hmac-sha256-signature>
+[
+  {
     "method": "poll",
-    "params": { "since": 1733404800000 }
+    "params": { "since": 0 }
+  }
+]
+
+// Delete offer (requires authentication, must be owner)
+POST /rpc
+Headers:
+  X-Name: friendly-panda-a1b2c3d4e5f6
+  X-Timestamp: 1704067600000
+  X-Nonce: aa0e8400-e29b-41d4-a716-446655440005
+  X-Signature: <base64-hmac-sha256-signature>
+[
+  {
+    "method": "deleteOffer",
+    "params": { "offerId": "abc123..." }
   }
 ]
 ```
@@ -277,8 +333,11 @@ Quick reference for common environment variables:
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `STORAGE_PATH` | `./rondevu.db` | SQLite database path (use `:memory:` for in-memory) |
 | `MAX_BATCH_SIZE` | `100` | Maximum number of requests per batch |
-| `MASTER_ENCRYPTION_KEY` | (dev key) | 64-char hex string for encrypting secrets (generate with `openssl rand -hex 32`) |
-| `TIMESTAMP_MAX_AGE` | `60000` | Maximum timestamp age in milliseconds for replay protection |
+| `OFFER_MIN_TTL` | `60000` | Minimum offer TTL in milliseconds (1 minute) |
+| `OFFER_MAX_TTL` | `86400000` | Maximum offer TTL in milliseconds (24 hours) |
+| `OFFER_DEFAULT_TTL` | `60000` | Default offer TTL in milliseconds |
+| `MASTER_ENCRYPTION_KEY` | (dev key) | 64-char hex string for encrypting secrets |
+| `TIMESTAMP_MAX_AGE` | `60000` | Maximum timestamp age for replay protection |
 
 ## Security
 
@@ -290,17 +349,26 @@ All authenticated operations require HMAC-SHA256 signatures:
 - **Secret Storage**: Secrets encrypted with AES-256-GCM using master encryption key
 - **Rate Limiting**: IP-based rate limiting on credential generation (10/hour)
 
-## Changelog
+## Tag Validation
 
-### v0.5.4 (Latest)
-- Add expiresAt validation in generateCredentials (prevent past/invalid timestamps)
-- Add TTL validation in publishOffer (prevent NaN database corruption)
-- Fix config validation bypass vulnerability (enforce minimum values, fail on NaN)
+Tags must follow these rules:
+- 1-64 characters
+- Lowercase alphanumeric with optional dots and dashes
+- Must start and end with alphanumeric character
 
-### v0.5.3
-- Fix RPC method calls using non-existent storage methods
-- Replace `storage.getServicesByName()` with `storage.discoverServices()` and `storage.getRandomService()`
-- Ensures compatibility with Storage interface specification
+Valid examples: `chat`, `video-call`, `com.example.service`, `v2`
+
+Invalid examples: `UPPERCASE`, `-starts-dash`, `ends-dash-`
+
+## Running Tests
+
+```bash
+# Run integration tests against api.ronde.vu
+npm test
+
+# Run against local server
+API_URL=http://localhost:3000 npm test
+```
 
 ## License
 

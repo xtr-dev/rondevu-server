@@ -5,9 +5,10 @@
 
 import { Buffer } from 'node:buffer';
 
-// Username validation (used for service FQN parsing)
+// Username validation
+// Rules: 4-32 chars, lowercase alphanumeric + dashes + periods, must start/end with alphanumeric
 const USERNAME_REGEX = /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/;
-const USERNAME_MIN_LENGTH = 3;
+const USERNAME_MIN_LENGTH = 4;
 const USERNAME_MAX_LENGTH = 32;
 
 /**
@@ -285,10 +286,43 @@ export async function verifySignature(secret: string, message: string, signature
 }
 
 /**
+ * Canonical JSON serialization with sorted keys
+ * Ensures deterministic output regardless of property insertion order
+ * Must match client's canonicalJSON implementation exactly
+ */
+function canonicalJSON(obj: any, depth: number = 0): string {
+  const MAX_DEPTH = 100;
+
+  if (depth > MAX_DEPTH) {
+    throw new Error('Object nesting too deep for canonicalization');
+  }
+
+  if (obj === null) return 'null';
+  if (obj === undefined) return JSON.stringify(undefined);
+
+  const type = typeof obj;
+
+  if (type === 'function') throw new Error('Functions are not supported in RPC parameters');
+  if (type === 'symbol' || type === 'bigint') throw new Error(`${type} is not supported in RPC parameters`);
+  if (type === 'number' && !Number.isFinite(obj)) throw new Error('NaN and Infinity are not supported in RPC parameters');
+
+  if (type !== 'object') return JSON.stringify(obj);
+
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(item => canonicalJSON(item, depth + 1)).join(',') + ']';
+  }
+
+  const sortedKeys = Object.keys(obj).sort();
+  const pairs = sortedKeys.map(key => JSON.stringify(key) + ':' + canonicalJSON(obj[key], depth + 1));
+  return '{' + pairs.join(',') + '}';
+}
+
+/**
  * Build the message string for signing
- * Format: timestamp:nonce:method:JSON.stringify(params || {})
+ * Format: timestamp:nonce:method:canonicalJSON(params || {})
  * Uses colons as delimiters to prevent collision attacks
  * Includes nonce to prevent signature reuse within timestamp window
+ * Uses canonical JSON (sorted keys) for deterministic serialization
  *
  * @param timestamp Unix timestamp in milliseconds
  * @param nonce Cryptographic nonce (UUID v4) to prevent replay attacks
@@ -331,7 +365,8 @@ export function buildSignatureMessage(timestamp: number, nonce: string, method: 
     }
   }
 
-  const paramsStr = params ? JSON.stringify(params) : '{}';
+  // Use canonical JSON (sorted keys) to match client's signature
+  const paramsStr = canonicalJSON(params || {});
   // Use delimiters to prevent collision: timestamp=12,method="34" vs timestamp=1,method="234"
   // Include nonce to make each request unique (prevents signature reuse in same millisecond)
   return `${timestamp}:${nonce}:${method}:${paramsStr}`;
@@ -340,8 +375,8 @@ export function buildSignatureMessage(timestamp: number, nonce: string, method: 
 // ===== Username Validation =====
 
 /**
- * Validates username format (used for service FQN parsing)
- * Rules: 3-32 chars, lowercase alphanumeric + dash, must start/end with alphanumeric
+ * Validates username format
+ * Rules: 4-32 chars, lowercase alphanumeric + dashes + periods, must start/end with alphanumeric
  */
 export function validateUsername(username: string): { valid: boolean; error?: string } {
   if (typeof username !== 'string') {
@@ -357,134 +392,87 @@ export function validateUsername(username: string): { valid: boolean; error?: st
   }
 
   if (!USERNAME_REGEX.test(username)) {
-    return { valid: false, error: 'Username must be lowercase alphanumeric with optional dashes, and start/end with alphanumeric' };
+    return { valid: false, error: 'Username must be lowercase alphanumeric with optional dashes/periods, and start/end with alphanumeric' };
+  }
+
+  return { valid: true };
+}
+
+// ===== Tag Validation =====
+
+// Tag validation constants
+const TAG_MIN_LENGTH = 1;
+const TAG_MAX_LENGTH = 64;
+const TAG_REGEX = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
+
+/**
+ * Validates a single tag format
+ * Rules: 1-64 chars, lowercase alphanumeric with optional dots/dashes
+ * Must start and end with alphanumeric character
+ *
+ * Valid examples: "chat", "video-call", "com.example.service", "v2"
+ * Invalid examples: "", "UPPERCASE", "-starts-dash", "ends-dash-"
+ */
+export function validateTag(tag: string): { valid: boolean; error?: string } {
+  if (typeof tag !== 'string') {
+    return { valid: false, error: 'Tag must be a string' };
+  }
+
+  if (tag.length < TAG_MIN_LENGTH) {
+    return { valid: false, error: `Tag must be at least ${TAG_MIN_LENGTH} character` };
+  }
+
+  if (tag.length > TAG_MAX_LENGTH) {
+    return { valid: false, error: `Tag must be at most ${TAG_MAX_LENGTH} characters` };
+  }
+
+  // Single character tags just need to be alphanumeric
+  if (tag.length === 1) {
+    if (!/^[a-z0-9]$/.test(tag)) {
+      return { valid: false, error: 'Tag must be lowercase alphanumeric' };
+    }
+    return { valid: true };
+  }
+
+  // Multi-character tags must match the pattern
+  if (!TAG_REGEX.test(tag)) {
+    return { valid: false, error: 'Tag must be lowercase alphanumeric with optional dots/dashes, and start/end with alphanumeric' };
   }
 
   return { valid: true };
 }
 
 /**
- * Validates service FQN format (service:version@username or service:version)
- * Service name: lowercase alphanumeric with dots/dashes (e.g., chat, file-share, com.example.chat)
- * Version: semantic versioning (1.0.0, 2.1.3-beta, etc.)
- * Username: optional, lowercase alphanumeric with dashes
+ * Validates an array of tags
+ * @param tags Array of tags to validate
+ * @param maxTags Maximum number of tags allowed (default: 20)
  */
-export function validateServiceFqn(fqn: string): { valid: boolean; error?: string } {
-  if (typeof fqn !== 'string') {
-    return { valid: false, error: 'Service FQN must be a string' };
+export function validateTags(tags: string[], maxTags: number = 20): { valid: boolean; error?: string } {
+  if (!Array.isArray(tags)) {
+    return { valid: false, error: 'Tags must be an array' };
   }
 
-  // Parse the FQN
-  const parsed = parseServiceFqn(fqn);
-  if (!parsed) {
-    return { valid: false, error: 'Service FQN must be in format: service:version[@username]' };
+  if (tags.length === 0) {
+    return { valid: false, error: 'At least one tag is required' };
   }
 
-  const { serviceName, version, username } = parsed;
-
-  // Validate service name (alphanumeric with dots/dashes)
-  const serviceNameRegex = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
-  if (!serviceNameRegex.test(serviceName)) {
-    return { valid: false, error: 'Service name must be lowercase alphanumeric with optional dots/dashes' };
+  if (tags.length > maxTags) {
+    return { valid: false, error: `Maximum ${maxTags} tags allowed` };
   }
 
-  if (serviceName.length < 1 || serviceName.length > 128) {
-    return { valid: false, error: 'Service name must be 1-128 characters' };
-  }
-
-  // Validate version (semantic versioning)
-  const versionRegex = /^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$/;
-  if (!versionRegex.test(version)) {
-    return { valid: false, error: 'Version must be semantic versioning (e.g., 1.0.0, 2.1.3-beta)' };
-  }
-
-  // Validate username if present
-  if (username) {
-    const usernameCheck = validateUsername(username);
-    if (!usernameCheck.valid) {
-      return usernameCheck;
+  // Validate each tag
+  for (let i = 0; i < tags.length; i++) {
+    const result = validateTag(tags[i]);
+    if (!result.valid) {
+      return { valid: false, error: `Tag ${i + 1}: ${result.error}` };
     }
   }
 
-  return { valid: true };
-}
-
-/**
- * Parse semantic version string into components
- */
-export function parseVersion(version: string): { major: number; minor: number; patch: number; prerelease?: string } | null {
-  const match = version.match(/^([0-9]+)\.([0-9]+)\.([0-9]+)(-[a-z0-9.-]+)?$/);
-  if (!match) return null;
-
-  return {
-    major: parseInt(match[1], 10),
-    minor: parseInt(match[2], 10),
-    patch: parseInt(match[3], 10),
-    prerelease: match[4]?.substring(1), // Remove leading dash
-  };
-}
-
-/**
- * Check if two versions are compatible (same major version)
- * Following semver rules: ^1.0.0 matches 1.x.x but not 2.x.x
- */
-export function isVersionCompatible(requested: string, available: string): boolean {
-  const req = parseVersion(requested);
-  const avail = parseVersion(available);
-
-  if (!req || !avail) return false;
-
-  // Major version must match
-  if (req.major !== avail.major) return false;
-
-  // If major is 0, minor must also match (0.x.y is unstable)
-  if (req.major === 0 && req.minor !== avail.minor) return false;
-
-  // Available version must be >= requested version
-  if (avail.minor < req.minor) return false;
-  if (avail.minor === req.minor && avail.patch < req.patch) return false;
-
-  // Prerelease versions are only compatible with exact matches
-  if (req.prerelease && req.prerelease !== avail.prerelease) return false;
-
-  return true;
-}
-
-/**
- * Parse service FQN into components
- * Formats supported:
- * - service:version@username (e.g., "chat:1.0.0@alice")
- * - service:version (e.g., "chat:1.0.0") for discovery
- */
-export function parseServiceFqn(fqn: string): { serviceName: string; version: string; username: string | null } | null {
-  if (!fqn || typeof fqn !== 'string') return null;
-
-  // Check if username is present
-  const atIndex = fqn.lastIndexOf('@');
-  let serviceVersion: string;
-  let username: string | null = null;
-
-  if (atIndex > 0) {
-    // Format: service:version@username
-    serviceVersion = fqn.substring(0, atIndex);
-    username = fqn.substring(atIndex + 1);
-  } else {
-    // Format: service:version (no username)
-    serviceVersion = fqn;
+  // Check for duplicates
+  const uniqueTags = new Set(tags);
+  if (uniqueTags.size !== tags.length) {
+    return { valid: false, error: 'Duplicate tags are not allowed' };
   }
 
-  // Split service:version
-  const colonIndex = serviceVersion.indexOf(':');
-  if (colonIndex <= 0) return null; // No colon or colon at start
-
-  const serviceName = serviceVersion.substring(0, colonIndex);
-  const version = serviceVersion.substring(colonIndex + 1);
-
-  if (!serviceName || !version) return null;
-
-  return {
-    serviceName,
-    version,
-    username,
-  };
+  return { valid: true };
 }
