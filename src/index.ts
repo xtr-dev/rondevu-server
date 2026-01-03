@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './app.ts';
 import { loadConfig, runCleanup } from './config.ts';
-import { SQLiteStorage } from './storage/sqlite.ts';
+import { createStorage } from './storage/factory.ts';
 import { Storage } from './storage/types.ts';
 
 async function main() {
@@ -11,19 +11,22 @@ async function main() {
   console.log('Configuration:', {
     port: config.port,
     storageType: config.storageType,
-    storagePath: config.storagePath,
+    storagePath: config.storageType === 'sqlite' ? config.storagePath : undefined,
+    databaseUrl: config.databaseUrl ? '[configured]' : undefined,
+    dbPoolSize: ['mysql', 'postgres'].includes(config.storageType) ? config.dbPoolSize : undefined,
     offerDefaultTtl: `${config.offerDefaultTtl}ms`,
     cleanupInterval: `${config.cleanupInterval}ms`,
     version: config.version,
   });
 
-  let storage: Storage;
-  if (config.storageType === 'sqlite') {
-    storage = new SQLiteStorage(config.storagePath, config.masterEncryptionKey);
-    console.log('Using SQLite storage');
-  } else {
-    throw new Error('Unsupported storage type');
-  }
+  const storage: Storage = await createStorage({
+    type: config.storageType,
+    masterEncryptionKey: config.masterEncryptionKey,
+    sqlitePath: config.storagePath,
+    connectionString: config.databaseUrl,
+    poolSize: config.dbPoolSize,
+  });
+  console.log(`Using ${config.storageType} storage`);
 
   // Periodic cleanup
   const cleanupTimer = setInterval(async () => {

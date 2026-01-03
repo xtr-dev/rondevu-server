@@ -1,4 +1,5 @@
 import { Storage } from './storage/types.ts';
+import { StorageType } from './storage/factory.ts';
 
 /**
  * Application configuration
@@ -6,8 +7,10 @@ import { Storage } from './storage/types.ts';
  */
 export interface Config {
   port: number;
-  storageType: 'sqlite' | 'memory';
+  storageType: StorageType;
   storagePath: string;
+  databaseUrl: string;
+  dbPoolSize: number;
   corsOrigins: string[];
   version: string;
   offerDefaultTtl: number;
@@ -76,8 +79,10 @@ export function loadConfig(): Config {
 
   const config = {
     port: parsePositiveInt(process.env.PORT, '3000', 'PORT', 1),
-    storageType: (process.env.STORAGE_TYPE || 'sqlite') as 'sqlite' | 'memory',
+    storageType: (process.env.STORAGE_TYPE || 'memory') as StorageType,
     storagePath: process.env.STORAGE_PATH || ':memory:',
+    databaseUrl: process.env.DATABASE_URL || '',
+    dbPoolSize: parsePositiveInt(process.env.DB_POOL_SIZE, '10', 'DB_POOL_SIZE', 1),
     corsOrigins: process.env.CORS_ORIGINS
       ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
       : ['*'],
@@ -137,6 +142,8 @@ export function buildWorkerConfig(env: {
     port: 0, // Not used in Workers
     storageType: 'sqlite', // D1 is SQLite-compatible
     storagePath: '', // Not used with D1
+    databaseUrl: '', // Not used with D1
+    dbPoolSize: 10, // Not used with D1
     corsOrigins: env.CORS_ORIGINS?.split(',').map(o => o.trim()) ?? ['*'],
     version: env.VERSION ?? 'unknown',
     offerDefaultTtl: env.OFFER_DEFAULT_TTL ? parseInt(env.OFFER_DEFAULT_TTL, 10) : CONFIG_DEFAULTS.offerDefaultTtl,

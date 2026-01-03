@@ -4,23 +4,53 @@
 
 **WebRTC signaling server with tags-based discovery**
 
-HTTP signaling server with credential-based authentication, tag-based offer discovery, and JSON-RPC interface. Supports SQLite (Node.js) and Cloudflare D1 (Workers).
+HTTP signaling server with credential-based authentication, tag-based offer discovery, and JSON-RPC interface. Multiple storage backends supported.
 
 ## Quick Start
 
-**Node.js:**
+**In-memory (default, zero dependencies):**
 ```bash
 npm install && npm start
 ```
 
+**SQLite (persistent):**
+```bash
+STORAGE_TYPE=sqlite STORAGE_PATH=./rondevu.db npm start
+```
+
+**MySQL:**
+```bash
+STORAGE_TYPE=mysql DATABASE_URL=mysql://user:pass@localhost:3306/rondevu npm start
+```
+
+**PostgreSQL:**
+```bash
+STORAGE_TYPE=postgres DATABASE_URL=postgres://user:pass@localhost:5432/rondevu npm start
+```
+
 **Docker:**
 ```bash
-docker build -t rondevu . && docker run -p 3000:3000 -e STORAGE_PATH=:memory: rondevu
+docker build -t rondevu . && docker run -p 3000:3000 rondevu
 ```
 
 **Cloudflare Workers:**
 ```bash
 npx wrangler deploy
+```
+
+## Storage Backends
+
+| Backend | Use Case | Persistence |
+|---------|----------|-------------|
+| `memory` | Zero-config, ephemeral workloads | No |
+| `sqlite` | Single-instance VPS | Yes |
+| `mysql` | Production, multi-instance | Yes |
+| `postgres` | Production, multi-instance | Yes |
+
+For MySQL/PostgreSQL, install optional dependencies:
+```bash
+npm install mysql2  # for MySQL
+npm install pg      # for PostgreSQL
 ```
 
 ## RPC Interface
@@ -84,7 +114,10 @@ Headers: X-Name, X-Timestamp, X-Nonce, X-Signature (base64 HMAC)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
-| `STORAGE_PATH` | `./rondevu.db` | SQLite path (`:memory:` for in-memory) |
+| `STORAGE_TYPE` | `memory` | Storage backend: `memory`, `sqlite`, `mysql`, `postgres` |
+| `STORAGE_PATH` | `:memory:` | SQLite path (only for `sqlite` backend) |
+| `DATABASE_URL` | - | Connection string (for `mysql`/`postgres`) |
+| `DB_POOL_SIZE` | `10` | Connection pool size (for `mysql`/`postgres`) |
 | `CORS_ORIGINS` | `*` | Allowed origins |
 | `MASTER_ENCRYPTION_KEY` | - | 64-char hex for secret encryption |
 | `OFFER_DEFAULT_TTL` | `60000` | Default offer TTL (ms) |

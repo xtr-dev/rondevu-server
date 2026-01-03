@@ -125,6 +125,7 @@ export class RpcError extends Error {
 export interface RpcRequest {
   method: string;
   params?: any;
+  clientIp?: string;
 }
 
 /**

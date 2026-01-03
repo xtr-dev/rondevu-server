@@ -20,7 +20,10 @@ esbuild.build({
   external: [
     'better-sqlite3',
     '@hono/node-server',
-    'hono'
+    'hono',
+    'mysql2',
+    'mysql2/promise',
+    'pg'
   ],
   sourcemap: true,
   define: {
