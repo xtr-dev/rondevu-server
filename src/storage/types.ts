@@ -282,4 +282,32 @@ export interface Storage {
    * Closes the storage connection and releases resources
    */
   close(): Promise<void>;
+
+  // ===== Count Methods (for resource limits) =====
+
+  /**
+   * Gets total number of offers in storage
+   * @returns Total offer count
+   */
+  getOfferCount(): Promise<number>;
+
+  /**
+   * Gets number of offers for a specific user
+   * @param username Username identifier
+   * @returns Offer count for user
+   */
+  getOfferCountByUsername(username: string): Promise<number>;
+
+  /**
+   * Gets total number of credentials in storage
+   * @returns Total credential count
+   */
+  getCredentialCount(): Promise<number>;
+
+  /**
+   * Gets number of ICE candidates for a specific offer
+   * @param offerId Offer identifier
+   * @returns ICE candidate count for offer
+   */
+  getIceCandidateCount(offerId: string): Promise<number>;
 }

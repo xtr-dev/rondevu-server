@@ -522,6 +522,26 @@ export class MemoryStorage implements Storage {
     this.offersByAnswerer.clear();
   }
 
+  // ===== Count Methods (for resource limits) =====
+
+  async getOfferCount(): Promise<number> {
+    return this.offers.size;
+  }
+
+  async getOfferCountByUsername(username: string): Promise<number> {
+    const offerIds = this.offersByUsername.get(username);
+    return offerIds ? offerIds.size : 0;
+  }
+
+  async getCredentialCount(): Promise<number> {
+    return this.credentials.size;
+  }
+
+  async getIceCandidateCount(offerId: string): Promise<number> {
+    const candidates = this.iceCandidates.get(offerId);
+    return candidates ? candidates.length : 0;
+  }
+
   // ===== Helper Methods =====
 
   private removeOfferFromIndexes(offer: Offer): void {

@@ -565,6 +565,34 @@ export class PostgreSQLStorage implements Storage {
     await this.pool.end();
   }
 
+  // ===== Count Methods (for resource limits) =====
+
+  async getOfferCount(): Promise<number> {
+    const result = await this.pool.query('SELECT COUNT(*) as count FROM offers');
+    return Number(result.rows[0].count);
+  }
+
+  async getOfferCountByUsername(username: string): Promise<number> {
+    const result = await this.pool.query(
+      'SELECT COUNT(*) as count FROM offers WHERE username = $1',
+      [username]
+    );
+    return Number(result.rows[0].count);
+  }
+
+  async getCredentialCount(): Promise<number> {
+    const result = await this.pool.query('SELECT COUNT(*) as count FROM credentials');
+    return Number(result.rows[0].count);
+  }
+
+  async getIceCandidateCount(offerId: string): Promise<number> {
+    const result = await this.pool.query(
+      'SELECT COUNT(*) as count FROM ice_candidates WHERE offer_id = $1',
+      [offerId]
+    );
+    return Number(result.rows[0].count);
+  }
+
   // ===== Helper Methods =====
 
   private rowToOffer(row: any): Offer {

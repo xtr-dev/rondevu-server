@@ -631,6 +631,32 @@ export class D1Storage implements Storage {
     // Connections are managed by the Cloudflare Workers runtime
   }
 
+  // ===== Count Methods (for resource limits) =====
+
+  async getOfferCount(): Promise<number> {
+    const result = await this.db.prepare('SELECT COUNT(*) as count FROM offers').first() as { count: number } | null;
+    return result?.count ?? 0;
+  }
+
+  async getOfferCountByUsername(username: string): Promise<number> {
+    const result = await this.db.prepare('SELECT COUNT(*) as count FROM offers WHERE username = ?')
+      .bind(username)
+      .first() as { count: number } | null;
+    return result?.count ?? 0;
+  }
+
+  async getCredentialCount(): Promise<number> {
+    const result = await this.db.prepare('SELECT COUNT(*) as count FROM credentials').first() as { count: number } | null;
+    return result?.count ?? 0;
+  }
+
+  async getIceCandidateCount(offerId: string): Promise<number> {
+    const result = await this.db.prepare('SELECT COUNT(*) as count FROM ice_candidates WHERE offer_id = ?')
+      .bind(offerId)
+      .first() as { count: number } | null;
+    return result?.count ?? 0;
+  }
+
   // ===== Helper Methods =====
 
   /**

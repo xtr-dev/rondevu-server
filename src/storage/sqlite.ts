@@ -642,6 +642,28 @@ export class SQLiteStorage implements Storage {
     this.db.close();
   }
 
+  // ===== Count Methods (for resource limits) =====
+
+  async getOfferCount(): Promise<number> {
+    const result = this.db.prepare('SELECT COUNT(*) as count FROM offers').get() as { count: number };
+    return result.count;
+  }
+
+  async getOfferCountByUsername(username: string): Promise<number> {
+    const result = this.db.prepare('SELECT COUNT(*) as count FROM offers WHERE username = ?').get(username) as { count: number };
+    return result.count;
+  }
+
+  async getCredentialCount(): Promise<number> {
+    const result = this.db.prepare('SELECT COUNT(*) as count FROM credentials').get() as { count: number };
+    return result.count;
+  }
+
+  async getIceCandidateCount(offerId: string): Promise<number> {
+    const result = this.db.prepare('SELECT COUNT(*) as count FROM ice_candidates WHERE offer_id = ?').get(offerId) as { count: number };
+    return result.count;
+  }
+
   // ===== Helper Methods =====
 
   /**

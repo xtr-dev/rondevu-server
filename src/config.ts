@@ -27,6 +27,13 @@ export interface Config {
   timestampMaxAge: number; // Max age for timestamps (replay protection)
   timestampMaxFuture: number; // Max future tolerance for timestamps (clock skew)
   masterEncryptionKey: string; // 64-char hex string for encrypting secrets (32 bytes)
+  // Resource limits (for abuse prevention)
+  maxOffersPerUser: number; // Max concurrent offers per user
+  maxTotalOffers: number; // Max total offers in storage
+  maxTotalCredentials: number; // Max total credentials in storage
+  maxIceCandidatesPerOffer: number; // Max ICE candidates per offer
+  credentialsPerIpPerHour: number; // Rate limit: credentials per IP per hour
+  requestsPerIpPerSecond: number; // Rate limit: requests per IP per second
 }
 
 /**
@@ -56,7 +63,7 @@ export function loadConfig(): Config {
     console.error('⚠️  ONLY use NODE_ENV=development for local development');
     console.error('⚠️  Generate production key with: openssl rand -hex 32');
     // Random-looking dev key (not ASCII-readable to prevent accidental production use)
-    masterEncryptionKey = 'a3f8b9c2d1e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2';
+    masterEncryptionKey = 'a3f8b9c2d1e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0';
   }
 
   // Validate master encryption key format
@@ -101,6 +108,13 @@ export function loadConfig(): Config {
     timestampMaxAge: parsePositiveInt(process.env.TIMESTAMP_MAX_AGE, '60000', 'TIMESTAMP_MAX_AGE', 1000), // Min 1 second
     timestampMaxFuture: parsePositiveInt(process.env.TIMESTAMP_MAX_FUTURE, '60000', 'TIMESTAMP_MAX_FUTURE', 1000), // Min 1 second
     masterEncryptionKey,
+    // Resource limits
+    maxOffersPerUser: parsePositiveInt(process.env.MAX_OFFERS_PER_USER, '20', 'MAX_OFFERS_PER_USER', 1),
+    maxTotalOffers: parsePositiveInt(process.env.MAX_TOTAL_OFFERS, '10000', 'MAX_TOTAL_OFFERS', 1),
+    maxTotalCredentials: parsePositiveInt(process.env.MAX_TOTAL_CREDENTIALS, '50000', 'MAX_TOTAL_CREDENTIALS', 1),
+    maxIceCandidatesPerOffer: parsePositiveInt(process.env.MAX_ICE_CANDIDATES_PER_OFFER, '50', 'MAX_ICE_CANDIDATES_PER_OFFER', 1),
+    credentialsPerIpPerHour: parsePositiveInt(process.env.CREDENTIALS_PER_IP_PER_HOUR, '10', 'CREDENTIALS_PER_IP_PER_HOUR', 1),
+    requestsPerIpPerSecond: parsePositiveInt(process.env.REQUESTS_PER_IP_PER_SECOND, '50', 'REQUESTS_PER_IP_PER_SECOND', 1),
   };
 
   return config;
@@ -123,6 +137,13 @@ export const CONFIG_DEFAULTS = {
   maxTotalOperations: 1000,
   timestampMaxAge: 60000,
   timestampMaxFuture: 60000,
+  // Resource limits
+  maxOffersPerUser: 20,
+  maxTotalOffers: 10000,
+  maxTotalCredentials: 50000,
+  maxIceCandidatesPerOffer: 50,
+  credentialsPerIpPerHour: 10,
+  requestsPerIpPerSecond: 50,
 } as const;
 
 /**
@@ -160,6 +181,13 @@ export function buildWorkerConfig(env: {
     timestampMaxAge: CONFIG_DEFAULTS.timestampMaxAge,
     timestampMaxFuture: CONFIG_DEFAULTS.timestampMaxFuture,
     masterEncryptionKey: env.MASTER_ENCRYPTION_KEY,
+    // Resource limits
+    maxOffersPerUser: CONFIG_DEFAULTS.maxOffersPerUser,
+    maxTotalOffers: CONFIG_DEFAULTS.maxTotalOffers,
+    maxTotalCredentials: CONFIG_DEFAULTS.maxTotalCredentials,
+    maxIceCandidatesPerOffer: CONFIG_DEFAULTS.maxIceCandidatesPerOffer,
+    credentialsPerIpPerHour: CONFIG_DEFAULTS.credentialsPerIpPerHour,
+    requestsPerIpPerSecond: CONFIG_DEFAULTS.requestsPerIpPerSecond,
   };
 }
 

@@ -16,13 +16,13 @@ const MAX_PAGE_SIZE = 100;
 
 // ===== Rate Limiting =====
 
-// Rate limiting for credential generation (per IP)
+// Rate limiting windows (these are fixed, limits come from config)
 // NOTE: Uses fixed-window rate limiting with full window reset on expiry
-//   - Window starts on first request and expires after CREDENTIAL_RATE_WINDOW
+//   - Window starts on first request and expires after window duration
 //   - When window expires, counter resets to 0 and new window starts
 //   - This is simpler than sliding windows but may allow bursts at window boundaries
-const CREDENTIAL_RATE_LIMIT = 1; // Max credentials per second per IP
-const CREDENTIAL_RATE_WINDOW = 1000; // 1 second in milliseconds
+const CREDENTIAL_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in milliseconds
+const REQUEST_RATE_WINDOW = 1000; // 1 second in milliseconds
 
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
@@ -100,6 +100,9 @@ export const ErrorCodes = {
   SDP_TOO_LARGE: 'SDP_TOO_LARGE',
   BATCH_TOO_LARGE: 'BATCH_TOO_LARGE',
   RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
+  TOO_MANY_OFFERS_PER_USER: 'TOO_MANY_OFFERS_PER_USER',
+  STORAGE_FULL: 'STORAGE_FULL',
+  TOO_MANY_ICE_CANDIDATES: 'TOO_MANY_ICE_CANDIDATES',
 
   // Generic errors
   INTERNAL_ERROR: 'INTERNAL_ERROR',
@@ -276,6 +279,15 @@ const handlers: Record<string, RpcHandler> = {
    * SECURITY: Rate limited per IP to prevent abuse (database-backed for multi-instance support)
    */
   async generateCredentials(params: GenerateCredentialsParams, name, timestamp, signature, storage, config, request: RpcRequest & { clientIp?: string }) {
+    // Check total credentials limit
+    const credentialCount = await storage.getCredentialCount();
+    if (credentialCount >= config.maxTotalCredentials) {
+      throw new RpcError(
+        ErrorCodes.STORAGE_FULL,
+        `Server credential limit reached (${config.maxTotalCredentials}). Try again later.`
+      );
+    }
+
     // Rate limiting check (IP-based, stored in database)
     // SECURITY: Use stricter global rate limit for requests without identifiable IP
     let rateLimitKey: string;
@@ -289,7 +301,7 @@ const handlers: Record<string, RpcHandler> = {
       rateLimit = 2; // Only 2 credentials per hour globally for all unknown IPs combined
     } else {
       rateLimitKey = `cred_gen:${request.clientIp}`;
-      rateLimit = CREDENTIAL_RATE_LIMIT; // 10 per hour per IP
+      rateLimit = config.credentialsPerIpPerHour;
     }
 
     const allowed = await storage.checkRateLimit(
@@ -301,7 +313,7 @@ const handlers: Record<string, RpcHandler> = {
     if (!allowed) {
       throw new RpcError(
         ErrorCodes.RATE_LIMIT_EXCEEDED,
-        `Rate limit exceeded. Maximum ${rateLimit} credential per second${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
+        `Rate limit exceeded. Maximum ${rateLimit} credentials per hour${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
       );
     }
 
@@ -450,6 +462,24 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(
         ErrorCodes.TOO_MANY_OFFERS,
         `Too many offers (max ${config.maxOffersPerRequest})`
+      );
+    }
+
+    // Check per-user offer limit
+    const userOfferCount = await storage.getOfferCountByUsername(name);
+    if (userOfferCount + offers.length > config.maxOffersPerUser) {
+      throw new RpcError(
+        ErrorCodes.TOO_MANY_OFFERS_PER_USER,
+        `User offer limit exceeded. You have ${userOfferCount} offers, limit is ${config.maxOffersPerUser}.`
+      );
+    }
+
+    // Check total offers limit
+    const totalOfferCount = await storage.getOfferCount();
+    if (totalOfferCount + offers.length > config.maxTotalOffers) {
+      throw new RpcError(
+        ErrorCodes.STORAGE_FULL,
+        `Server offer limit reached (${config.maxTotalOffers}). Try again later.`
       );
     }
 
@@ -723,6 +753,15 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
+    // Check ICE candidates limit per offer
+    const currentCandidateCount = await storage.getIceCandidateCount(offerId);
+    if (currentCandidateCount + candidates.length > config.maxIceCandidatesPerOffer) {
+      throw new RpcError(
+        ErrorCodes.TOO_MANY_ICE_CANDIDATES,
+        `ICE candidate limit exceeded for offer. Current: ${currentCandidateCount}, limit: ${config.maxIceCandidatesPerOffer}.`
+      );
+    }
+
     const role = offer.username === name ? 'offerer' : 'answerer';
     const count = await storage.addIceCandidates(
       offerId,
@@ -806,6 +845,25 @@ export async function handleRpc(
     ctx.req.header('x-real-ip') || // Nginx
     ctx.req.header('x-forwarded-for')?.split(',')[0].trim() ||
     undefined; // Don't use fallback - let handlers decide how to handle missing IP
+
+  // General request rate limiting (per IP per second)
+  if (clientIp) {
+    const rateLimitKey = `req:${clientIp}`;
+    const allowed = await storage.checkRateLimit(
+      rateLimitKey,
+      config.requestsPerIpPerSecond,
+      REQUEST_RATE_WINDOW
+    );
+
+    if (!allowed) {
+      // Return error for all requests in the batch
+      return requests.map(() => ({
+        success: false,
+        error: `Rate limit exceeded. Maximum ${config.requestsPerIpPerSecond} requests per second per IP.`,
+        errorCode: ErrorCodes.RATE_LIMIT_EXCEEDED,
+      }));
+    }
+  }
 
   // Read auth headers (same for all requests in batch)
   const name = ctx.req.header('X-Name');
