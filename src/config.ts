@@ -1,20 +1,9 @@
 import { Storage } from './storage/types.ts';
 import { StorageType } from './storage/factory.ts';
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 
-// Read version from package.json for standalone server
-function getPackageVersion(): string {
-  try {
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const pkgPath = join(__dirname, '..', 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.version || 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
+// Version is injected at build time via esbuild define
+declare const RONDEVU_VERSION: string;
+const BUILD_VERSION = typeof RONDEVU_VERSION !== 'undefined' ? RONDEVU_VERSION : 'unknown';
 
 /**
  * Application configuration
@@ -108,7 +97,7 @@ export function loadConfig(): Config {
     corsOrigins: process.env.CORS_ORIGINS
       ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
       : ['*'],
-    version: process.env.VERSION || getPackageVersion(),
+    version: process.env.VERSION || BUILD_VERSION,
     offerDefaultTtl: parsePositiveInt(process.env.OFFER_DEFAULT_TTL, '60000', 'OFFER_DEFAULT_TTL', 1000),
     offerMaxTtl: parsePositiveInt(process.env.OFFER_MAX_TTL, '86400000', 'OFFER_MAX_TTL', 1000),
     offerMinTtl: parsePositiveInt(process.env.OFFER_MIN_TTL, '60000', 'OFFER_MIN_TTL', 1000),
