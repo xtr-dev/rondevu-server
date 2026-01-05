@@ -597,6 +597,15 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_ALREADY_ANSWERED, 'Offer already answered');
     }
 
+    // Validate that matchedTags are actually tags on the offer
+    if (matchedTags && matchedTags.length > 0) {
+      const offerTagSet = new Set(offer.tags);
+      const invalidTags = matchedTags.filter(tag => !offerTagSet.has(tag));
+      if (invalidTags.length > 0) {
+        throw new RpcError(ErrorCodes.INVALID_PARAMS, `matchedTags contains tags not on offer: ${invalidTags.join(', ')}`);
+      }
+    }
+
     await storage.answerOffer(offerId, name, sdp, matchedTags);
 
     return { success: true, offerId };
