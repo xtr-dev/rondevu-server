@@ -168,6 +168,7 @@ export interface DeleteOfferParams {
 export interface AnswerOfferParams {
   offerId: string;
   sdp: string;
+  matchedTags?: string[];  // Tags the answerer searched for to find this offer
 }
 
 export interface GetOfferAnswerParams {
@@ -565,7 +566,7 @@ const handlers: Record<string, RpcHandler> = {
    * Answer an offer
    */
   async answerOffer(params: AnswerOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
-    const { offerId, sdp } = params;
+    const { offerId, sdp, matchedTags } = params;
 
     // Validate input parameters
     validateStringParam(offerId, 'offerId');
@@ -582,6 +583,11 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large (max ${config.maxSdpSize} bytes)`);
     }
 
+    // Validate matchedTags if provided
+    if (matchedTags !== undefined && !Array.isArray(matchedTags)) {
+      throw new RpcError(ErrorCodes.INVALID_PARAMS, 'matchedTags must be an array');
+    }
+
     const offer = await storage.getOfferById(offerId);
     if (!offer) {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
@@ -591,7 +597,7 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_ALREADY_ANSWERED, 'Offer already answered');
     }
 
-    await storage.answerOffer(offerId, name, sdp);
+    await storage.answerOffer(offerId, name, sdp, matchedTags);
 
     return { success: true, offerId };
   },

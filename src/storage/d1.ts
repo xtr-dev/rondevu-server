@@ -45,7 +45,8 @@ export class D1Storage implements Storage {
         last_seen INTEGER NOT NULL,
         answerer_username TEXT,
         answer_sdp TEXT,
-        answered_at INTEGER
+        answered_at INTEGER,
+        matched_tags TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_offers_username ON offers(username);
@@ -176,7 +177,8 @@ export class D1Storage implements Storage {
   async answerOffer(
     offerId: string,
     answererUsername: string,
-    answerSdp: string
+    answerSdp: string,
+    matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
     // Check if offer exists and is not expired
     const offer = await this.getOfferById(offerId);
@@ -197,11 +199,12 @@ export class D1Storage implements Storage {
     }
 
     // Update offer with answer
+    const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
     const result = await this.db.prepare(`
       UPDATE offers
-      SET answerer_username = ?, answer_sdp = ?, answered_at = ?
+      SET answerer_username = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
       WHERE id = ? AND answerer_username IS NULL
-    `).bind(answererUsername, answerSdp, Date.now(), offerId).run();
+    `).bind(answererUsername, answerSdp, Date.now(), matchedTagsJson, offerId).run();
 
     if ((result.meta.changes || 0) === 0) {
       return {
@@ -674,6 +677,7 @@ export class D1Storage implements Storage {
       answererUsername: row.answerer_username || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at || undefined,
+      matchedTags: row.matched_tags ? JSON.parse(row.matched_tags) : undefined,
     };
   }
 }

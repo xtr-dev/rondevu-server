@@ -61,7 +61,8 @@ export class PostgreSQLStorage implements Storage {
           last_seen BIGINT NOT NULL,
           answerer_username VARCHAR(32),
           answer_sdp TEXT,
-          answered_at BIGINT
+          answered_at BIGINT,
+          matched_tags JSONB
         )
       `);
 
@@ -199,7 +200,8 @@ export class PostgreSQLStorage implements Storage {
   async answerOffer(
     offerId: string,
     answererUsername: string,
-    answerSdp: string
+    answerSdp: string,
+    matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
     const offer = await this.getOfferById(offerId);
 
@@ -211,10 +213,11 @@ export class PostgreSQLStorage implements Storage {
       return { success: false, error: 'Offer already answered' };
     }
 
+    const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
     const result = await this.pool.query(
-      `UPDATE offers SET answerer_username = $1, answer_sdp = $2, answered_at = $3
-       WHERE id = $4 AND answerer_username IS NULL`,
-      [answererUsername, answerSdp, Date.now(), offerId]
+      `UPDATE offers SET answerer_username = $1, answer_sdp = $2, answered_at = $3, matched_tags = $4
+       WHERE id = $5 AND answerer_username IS NULL`,
+      [answererUsername, answerSdp, Date.now(), matchedTagsJson, offerId]
     );
 
     if ((result.rowCount ?? 0) === 0) {
@@ -607,6 +610,7 @@ export class PostgreSQLStorage implements Storage {
       answererUsername: row.answerer_username || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at ? Number(row.answered_at) : undefined,
+      matchedTags: row.matched_tags || undefined,
     };
   }
 

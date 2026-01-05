@@ -12,6 +12,7 @@ export interface Offer {
   answererUsername?: string;
   answerSdp?: string;
   answeredAt?: number;
+  matchedTags?: string[];  // Tags the answerer searched for to find this offer
 }
 
 /**
@@ -118,9 +119,10 @@ export interface Storage {
    * @param offerId Offer identifier
    * @param answererUsername Answerer's username
    * @param answerSdp WebRTC answer SDP
+   * @param matchedTags Optional tags the answerer searched for to find this offer
    * @returns Success status and optional error message
    */
-  answerOffer(offerId: string, answererUsername: string, answerSdp: string): Promise<{
+  answerOffer(offerId: string, answererUsername: string, answerSdp: string, matchedTags?: string[]): Promise<{
     success: boolean;
     error?: string;
   }>;

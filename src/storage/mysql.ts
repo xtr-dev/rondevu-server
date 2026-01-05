@@ -64,6 +64,7 @@ export class MySQLStorage implements Storage {
           answerer_username VARCHAR(32),
           answer_sdp MEDIUMTEXT,
           answered_at BIGINT,
+          matched_tags JSON,
           INDEX idx_offers_username (username),
           INDEX idx_offers_expires (expires_at),
           INDEX idx_offers_last_seen (last_seen),
@@ -196,7 +197,8 @@ export class MySQLStorage implements Storage {
   async answerOffer(
     offerId: string,
     answererUsername: string,
-    answerSdp: string
+    answerSdp: string,
+    matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
     const offer = await this.getOfferById(offerId);
 
@@ -208,10 +210,11 @@ export class MySQLStorage implements Storage {
       return { success: false, error: 'Offer already answered' };
     }
 
+    const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
     const [result] = await this.pool.query<ResultSetHeader>(
-      `UPDATE offers SET answerer_username = ?, answer_sdp = ?, answered_at = ?
+      `UPDATE offers SET answerer_username = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
        WHERE id = ? AND answerer_username IS NULL`,
-      [answererUsername, answerSdp, Date.now(), offerId]
+      [answererUsername, answerSdp, Date.now(), matchedTagsJson, offerId]
     );
 
     if (result.affectedRows === 0) {
@@ -600,6 +603,7 @@ export class MySQLStorage implements Storage {
       answererUsername: row.answerer_username || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at ? Number(row.answered_at) : undefined,
+      matchedTags: row.matched_tags ? (typeof row.matched_tags === 'string' ? JSON.parse(row.matched_tags) : row.matched_tags) : undefined,
     };
   }
 

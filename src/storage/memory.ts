@@ -143,7 +143,8 @@ export class MemoryStorage implements Storage {
   async answerOffer(
     offerId: string,
     answererUsername: string,
-    answerSdp: string
+    answerSdp: string,
+    matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
     const offer = await this.getOfferById(offerId);
 
@@ -160,6 +161,7 @@ export class MemoryStorage implements Storage {
     offer.answererUsername = answererUsername;
     offer.answerSdp = answerSdp;
     offer.answeredAt = now;
+    offer.matchedTags = matchedTags;
 
     // Update answerer index
     if (!this.offersByAnswerer.has(answererUsername)) {
