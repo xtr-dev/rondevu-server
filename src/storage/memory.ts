@@ -3,12 +3,8 @@ import {
   Offer,
   IceCandidate,
   CreateOfferRequest,
-  Credential,
-  GenerateCredentialsRequest,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
-
-const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000;
 
 interface RateLimit {
   count: number;
@@ -25,26 +21,21 @@ interface NonceEntry {
  * Best for development, testing, or ephemeral deployments
  */
 export class MemoryStorage implements Storage {
-  private masterEncryptionKey: string;
-
   // Primary storage
-  private credentials = new Map<string, Credential>();
   private offers = new Map<string, Offer>();
   private iceCandidates = new Map<string, IceCandidate[]>(); // offerId → candidates
   private rateLimits = new Map<string, RateLimit>();
   private nonces = new Map<string, NonceEntry>();
 
   // Secondary indexes for efficient lookups
-  private offersByUsername = new Map<string, Set<string>>(); // username → offer IDs
+  private offersByPublicKey = new Map<string, Set<string>>(); // publicKey → offer IDs
   private offersByTag = new Map<string, Set<string>>(); // tag → offer IDs
-  private offersByAnswerer = new Map<string, Set<string>>(); // answerer username → offer IDs
+  private offersByAnswerer = new Map<string, Set<string>>(); // answerer publicKey → offer IDs
 
   // Auto-increment counter for ICE candidates
   private iceCandidateIdCounter = 0;
 
-  constructor(masterEncryptionKey: string) {
-    this.masterEncryptionKey = masterEncryptionKey;
-  }
+  constructor() {}
 
   // ===== Offer Management =====
 
@@ -57,7 +48,7 @@ export class MemoryStorage implements Storage {
 
       const offer: Offer = {
         id,
-        username: request.username,
+        publicKey: request.publicKey,
         tags: request.tags,
         sdp: request.sdp,
         createdAt: now,
@@ -68,11 +59,11 @@ export class MemoryStorage implements Storage {
       // Store offer
       this.offers.set(id, offer);
 
-      // Update username index
-      if (!this.offersByUsername.has(request.username)) {
-        this.offersByUsername.set(request.username, new Set());
+      // Update publicKey index
+      if (!this.offersByPublicKey.has(request.publicKey)) {
+        this.offersByPublicKey.set(request.publicKey, new Set());
       }
-      this.offersByUsername.get(request.username)!.add(id);
+      this.offersByPublicKey.get(request.publicKey)!.add(id);
 
       // Update tag indexes
       for (const tag of request.tags) {
@@ -88,9 +79,9 @@ export class MemoryStorage implements Storage {
     return created;
   }
 
-  async getOffersByUsername(username: string): Promise<Offer[]> {
+  async getOffersByPublicKey(publicKey: string): Promise<Offer[]> {
     const now = Date.now();
-    const offerIds = this.offersByUsername.get(username);
+    const offerIds = this.offersByPublicKey.get(publicKey);
     if (!offerIds) return [];
 
     const offers: Offer[] = [];
@@ -112,9 +103,9 @@ export class MemoryStorage implements Storage {
     return offer;
   }
 
-  async deleteOffer(offerId: string, ownerUsername: string): Promise<boolean> {
+  async deleteOffer(offerId: string, ownerPublicKey: string): Promise<boolean> {
     const offer = this.offers.get(offerId);
-    if (!offer || offer.username !== ownerUsername) {
+    if (!offer || offer.publicKey !== ownerPublicKey) {
       return false;
     }
 
@@ -142,7 +133,7 @@ export class MemoryStorage implements Storage {
 
   async answerOffer(
     offerId: string,
-    answererUsername: string,
+    answererPublicKey: string,
     answerSdp: string,
     matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
@@ -152,35 +143,35 @@ export class MemoryStorage implements Storage {
       return { success: false, error: 'Offer not found or expired' };
     }
 
-    if (offer.answererUsername) {
+    if (offer.answererPublicKey) {
       return { success: false, error: 'Offer already answered' };
     }
 
     // Update offer with answer
     const now = Date.now();
-    offer.answererUsername = answererUsername;
+    offer.answererPublicKey = answererPublicKey;
     offer.answerSdp = answerSdp;
     offer.answeredAt = now;
     offer.matchedTags = matchedTags;
 
     // Update answerer index
-    if (!this.offersByAnswerer.has(answererUsername)) {
-      this.offersByAnswerer.set(answererUsername, new Set());
+    if (!this.offersByAnswerer.has(answererPublicKey)) {
+      this.offersByAnswerer.set(answererPublicKey, new Set());
     }
-    this.offersByAnswerer.get(answererUsername)!.add(offerId);
+    this.offersByAnswerer.get(answererPublicKey)!.add(offerId);
 
     return { success: true };
   }
 
-  async getAnsweredOffers(offererUsername: string): Promise<Offer[]> {
+  async getAnsweredOffers(offererPublicKey: string): Promise<Offer[]> {
     const now = Date.now();
-    const offerIds = this.offersByUsername.get(offererUsername);
+    const offerIds = this.offersByPublicKey.get(offererPublicKey);
     if (!offerIds) return [];
 
     const offers: Offer[] = [];
     for (const id of offerIds) {
       const offer = this.offers.get(id);
-      if (offer && offer.answererUsername && offer.expiresAt > now) {
+      if (offer && offer.answererPublicKey && offer.expiresAt > now) {
         offers.push(offer);
       }
     }
@@ -188,9 +179,9 @@ export class MemoryStorage implements Storage {
     return offers.sort((a, b) => (b.answeredAt || 0) - (a.answeredAt || 0));
   }
 
-  async getOffersAnsweredBy(answererUsername: string): Promise<Offer[]> {
+  async getOffersAnsweredBy(answererPublicKey: string): Promise<Offer[]> {
     const now = Date.now();
-    const offerIds = this.offersByAnswerer.get(answererUsername);
+    const offerIds = this.offersByAnswerer.get(answererPublicKey);
     if (!offerIds) return [];
 
     const offers: Offer[] = [];
@@ -208,7 +199,7 @@ export class MemoryStorage implements Storage {
 
   async discoverOffers(
     tags: string[],
-    excludeUsername: string | null,
+    excludePublicKey: string | null,
     limit: number,
     offset: number
   ): Promise<Offer[]> {
@@ -234,8 +225,8 @@ export class MemoryStorage implements Storage {
       if (
         offer &&
         offer.expiresAt > now &&
-        !offer.answererUsername &&
-        (!excludeUsername || offer.username !== excludeUsername)
+        !offer.answererPublicKey &&
+        (!excludePublicKey || offer.publicKey !== excludePublicKey)
       ) {
         offers.push(offer);
       }
@@ -248,7 +239,7 @@ export class MemoryStorage implements Storage {
 
   async getRandomOffer(
     tags: string[],
-    excludeUsername: string | null
+    excludePublicKey: string | null
   ): Promise<Offer | null> {
     if (tags.length === 0) return null;
 
@@ -272,8 +263,8 @@ export class MemoryStorage implements Storage {
       if (
         offer &&
         offer.expiresAt > now &&
-        !offer.answererUsername &&
-        (!excludeUsername || offer.username !== excludeUsername)
+        !offer.answererPublicKey &&
+        (!excludePublicKey || offer.publicKey !== excludePublicKey)
       ) {
         matchingOffers.push(offer);
       }
@@ -290,7 +281,7 @@ export class MemoryStorage implements Storage {
 
   async addIceCandidates(
     offerId: string,
-    username: string,
+    publicKey: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number> {
@@ -306,7 +297,7 @@ export class MemoryStorage implements Storage {
       const candidate: IceCandidate = {
         id: ++this.iceCandidateIdCounter,
         offerId,
-        username,
+        publicKey,
         role,
         candidate: candidates[i],
         createdAt: baseTimestamp + i,
@@ -331,7 +322,7 @@ export class MemoryStorage implements Storage {
 
   async getIceCandidatesForMultipleOffers(
     offerIds: string[],
-    username: string,
+    publicKey: string,
     since?: number
   ): Promise<Map<string, IceCandidate[]>> {
     const result = new Map<string, IceCandidate[]>();
@@ -349,8 +340,8 @@ export class MemoryStorage implements Storage {
 
       // Determine which role's candidates to return
       // If user is offerer, return answerer candidates and vice versa
-      const isOfferer = offer.username === username;
-      const isAnswerer = offer.answererUsername === username;
+      const isOfferer = offer.publicKey === publicKey;
+      const isAnswerer = offer.answererPublicKey === publicKey;
 
       if (!isOfferer && !isAnswerer) continue;
 
@@ -366,97 +357,6 @@ export class MemoryStorage implements Storage {
     }
 
     return result;
-  }
-
-  // ===== Credential Management =====
-
-  async generateCredentials(request: GenerateCredentialsRequest): Promise<Credential> {
-    const now = Date.now();
-    const expiresAt = request.expiresAt || (now + YEAR_IN_MS);
-
-    const { generateCredentialName, generateSecret, encryptSecret } = await import('../crypto.ts');
-
-    let name: string;
-
-    if (request.name) {
-      if (this.credentials.has(request.name)) {
-        throw new Error('Username already taken');
-      }
-      name = request.name;
-    } else {
-      let attempts = 0;
-      const maxAttempts = 100;
-
-      while (attempts < maxAttempts) {
-        name = generateCredentialName();
-        if (!this.credentials.has(name)) break;
-        attempts++;
-      }
-
-      if (attempts >= maxAttempts) {
-        throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
-      }
-    }
-
-    const secret = generateSecret();
-
-    // Encrypt secret before storing
-    const encryptedSecret = await encryptSecret(secret, this.masterEncryptionKey);
-
-    const credential: Credential = {
-      name: name!,
-      secret: encryptedSecret,
-      createdAt: now,
-      expiresAt,
-      lastUsed: now,
-    };
-
-    this.credentials.set(name!, credential);
-
-    // Return plaintext secret to user
-    return {
-      ...credential,
-      secret, // Return plaintext, not encrypted
-    };
-  }
-
-  async getCredential(name: string): Promise<Credential | null> {
-    const credential = this.credentials.get(name);
-    if (!credential || credential.expiresAt <= Date.now()) {
-      return null;
-    }
-
-    try {
-      const { decryptSecret } = await import('../crypto.ts');
-      const decryptedSecret = await decryptSecret(credential.secret, this.masterEncryptionKey);
-
-      return {
-        ...credential,
-        secret: decryptedSecret,
-      };
-    } catch (error) {
-      console.error(`Failed to decrypt secret for credential '${name}':`, error);
-      return null;
-    }
-  }
-
-  async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
-    const credential = this.credentials.get(name);
-    if (credential) {
-      credential.lastUsed = lastUsed;
-      credential.expiresAt = expiresAt;
-    }
-  }
-
-  async deleteExpiredCredentials(now: number): Promise<number> {
-    let count = 0;
-    for (const [name, credential] of this.credentials) {
-      if (credential.expiresAt < now) {
-        this.credentials.delete(name);
-        count++;
-      }
-    }
-    return count;
   }
 
   // ===== Rate Limiting =====
@@ -514,12 +414,11 @@ export class MemoryStorage implements Storage {
 
   async close(): Promise<void> {
     // Clear all data
-    this.credentials.clear();
     this.offers.clear();
     this.iceCandidates.clear();
     this.rateLimits.clear();
     this.nonces.clear();
-    this.offersByUsername.clear();
+    this.offersByPublicKey.clear();
     this.offersByTag.clear();
     this.offersByAnswerer.clear();
   }
@@ -530,13 +429,9 @@ export class MemoryStorage implements Storage {
     return this.offers.size;
   }
 
-  async getOfferCountByUsername(username: string): Promise<number> {
-    const offerIds = this.offersByUsername.get(username);
+  async getOfferCountByPublicKey(publicKey: string): Promise<number> {
+    const offerIds = this.offersByPublicKey.get(publicKey);
     return offerIds ? offerIds.size : 0;
-  }
-
-  async getCredentialCount(): Promise<number> {
-    return this.credentials.size;
   }
 
   async getIceCandidateCount(offerId: string): Promise<number> {
@@ -547,12 +442,12 @@ export class MemoryStorage implements Storage {
   // ===== Helper Methods =====
 
   private removeOfferFromIndexes(offer: Offer): void {
-    // Remove from username index
-    const usernameOffers = this.offersByUsername.get(offer.username);
-    if (usernameOffers) {
-      usernameOffers.delete(offer.id);
-      if (usernameOffers.size === 0) {
-        this.offersByUsername.delete(offer.username);
+    // Remove from publicKey index
+    const publicKeyOffers = this.offersByPublicKey.get(offer.publicKey);
+    if (publicKeyOffers) {
+      publicKeyOffers.delete(offer.id);
+      if (publicKeyOffers.size === 0) {
+        this.offersByPublicKey.delete(offer.publicKey);
       }
     }
 
@@ -568,12 +463,12 @@ export class MemoryStorage implements Storage {
     }
 
     // Remove from answerer index
-    if (offer.answererUsername) {
-      const answererOffers = this.offersByAnswerer.get(offer.answererUsername);
+    if (offer.answererPublicKey) {
+      const answererOffers = this.offersByAnswerer.get(offer.answererPublicKey);
       if (answererOffers) {
         answererOffers.delete(offer.id);
         if (answererOffers.size === 0) {
-          this.offersByAnswerer.delete(offer.answererUsername);
+          this.offersByAnswerer.delete(offer.answererPublicKey);
         }
       }
     }

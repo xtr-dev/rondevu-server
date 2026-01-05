@@ -1,11 +1,10 @@
--- Fresh schema for Rondevu (Ed25519 Public Key Identity)
--- The public key IS the identity - no usernames
+-- Migration: Replace HMAC credentials with Ed25519 public key identities
+-- This is a breaking change - all existing data will be lost
 
--- Drop existing tables if they exist
+-- Drop existing tables (clean slate)
 DROP TABLE IF EXISTS ice_candidates;
 DROP TABLE IF EXISTS offers;
-DROP TABLE IF EXISTS identities;
-DROP TABLE IF EXISTS credentials;  -- Legacy, remove if exists
+DROP TABLE IF EXISTS credentials;
 DROP TABLE IF EXISTS rate_limits;
 DROP TABLE IF EXISTS nonces;
 
@@ -57,7 +56,7 @@ CREATE INDEX idx_ice_public_key ON ice_candidates(public_key);
 CREATE INDEX idx_ice_role ON ice_candidates(role);
 CREATE INDEX idx_ice_created ON ice_candidates(created_at);
 
--- Rate limits table
+-- Rate limits table (unchanged)
 CREATE TABLE rate_limits (
   identifier TEXT PRIMARY KEY,
   count INTEGER NOT NULL,
@@ -66,7 +65,7 @@ CREATE TABLE rate_limits (
 
 CREATE INDEX idx_rate_limits_reset ON rate_limits(reset_time);
 
--- Nonces table (for replay attack prevention)
+-- Nonces table (unchanged)
 CREATE TABLE nonces (
   nonce_key TEXT PRIMARY KEY,
   expires_at INTEGER NOT NULL

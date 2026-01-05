@@ -30,13 +30,10 @@ export interface Config {
   maxTotalOperations: number;
   timestampMaxAge: number; // Max age for timestamps (replay protection)
   timestampMaxFuture: number; // Max future tolerance for timestamps (clock skew)
-  masterEncryptionKey: string; // 64-char hex string for encrypting secrets (32 bytes)
   // Resource limits (for abuse prevention)
   maxOffersPerUser: number; // Max concurrent offers per user
   maxTotalOffers: number; // Max total offers in storage
-  maxTotalCredentials: number; // Max total credentials in storage
   maxIceCandidatesPerOffer: number; // Max ICE candidates per offer
-  credentialsPerIpPerSecond: number; // Rate limit: credentials per IP per second
   requestsPerIpPerSecond: number; // Rate limit: requests per IP per second
 }
 
@@ -44,38 +41,6 @@ export interface Config {
  * Loads configuration from environment variables
  */
 export function loadConfig(): Config {
-  // Master encryption key for secret storage
-  // CRITICAL: Set MASTER_ENCRYPTION_KEY in production to a secure random value
-  let masterEncryptionKey = process.env.MASTER_ENCRYPTION_KEY;
-
-  if (!masterEncryptionKey) {
-    // SECURITY: Fail fast unless explicitly in development mode
-    // Default to production-safe behavior if NODE_ENV is unset
-    const isDevelopment = process.env.NODE_ENV === 'development';
-
-    if (!isDevelopment) {
-      throw new Error(
-        'MASTER_ENCRYPTION_KEY environment variable must be set. ' +
-        'Generate with: openssl rand -hex 32\n' +
-        'For development only, set NODE_ENV=development to use insecure dev key.'
-      );
-    }
-
-    // Use deterministic key ONLY in explicit development mode
-    // WARNING: DO NOT USE THIS IN PRODUCTION - only for local development
-    console.error('⚠️  WARNING: Using insecure deterministic development key');
-    console.error('⚠️  ONLY use NODE_ENV=development for local development');
-    console.error('⚠️  Generate production key with: openssl rand -hex 32');
-    // Random-looking dev key (not ASCII-readable to prevent accidental production use)
-    masterEncryptionKey = 'a3f8b9c2d1e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0';
-  }
-
-  // Validate master encryption key format
-  // NOTE: Using regex here is safe since this runs at startup, not during request processing
-  if (masterEncryptionKey.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(masterEncryptionKey)) {
-    throw new Error('MASTER_ENCRYPTION_KEY must be 64-character hex string (32 bytes). Generate with: openssl rand -hex 32');
-  }
-
   // Helper to safely parse and validate integer config values
   function parsePositiveInt(value: string | undefined, defaultValue: string, name: string, min = 1): number {
     const parsed = parseInt(value || defaultValue, 10);
@@ -111,13 +76,10 @@ export function loadConfig(): Config {
     maxTotalOperations: parsePositiveInt(process.env.MAX_TOTAL_OPERATIONS, '1000', 'MAX_TOTAL_OPERATIONS', 1),
     timestampMaxAge: parsePositiveInt(process.env.TIMESTAMP_MAX_AGE, '60000', 'TIMESTAMP_MAX_AGE', 1000), // Min 1 second
     timestampMaxFuture: parsePositiveInt(process.env.TIMESTAMP_MAX_FUTURE, '60000', 'TIMESTAMP_MAX_FUTURE', 1000), // Min 1 second
-    masterEncryptionKey,
     // Resource limits
     maxOffersPerUser: parsePositiveInt(process.env.MAX_OFFERS_PER_USER, '1000', 'MAX_OFFERS_PER_USER', 1),
     maxTotalOffers: parsePositiveInt(process.env.MAX_TOTAL_OFFERS, '100000', 'MAX_TOTAL_OFFERS', 1),
-    maxTotalCredentials: parsePositiveInt(process.env.MAX_TOTAL_CREDENTIALS, '50000', 'MAX_TOTAL_CREDENTIALS', 1),
     maxIceCandidatesPerOffer: parsePositiveInt(process.env.MAX_ICE_CANDIDATES_PER_OFFER, '50', 'MAX_ICE_CANDIDATES_PER_OFFER', 1),
-    credentialsPerIpPerSecond: parsePositiveInt(process.env.CREDENTIALS_PER_IP_PER_SECOND, '5', 'CREDENTIALS_PER_IP_PER_SECOND', 1),
     requestsPerIpPerSecond: parsePositiveInt(process.env.REQUESTS_PER_IP_PER_SECOND, '50', 'REQUESTS_PER_IP_PER_SECOND', 1),
   };
 
@@ -144,9 +106,7 @@ export const CONFIG_DEFAULTS = {
   // Resource limits
   maxOffersPerUser: 1000,
   maxTotalOffers: 100000,
-  maxTotalCredentials: 50000,
   maxIceCandidatesPerOffer: 50,
-  credentialsPerIpPerSecond: 5,
   requestsPerIpPerSecond: 50,
 } as const;
 
@@ -154,7 +114,6 @@ export const CONFIG_DEFAULTS = {
  * Build config for Cloudflare Workers from env vars
  */
 export function buildWorkerConfig(env: {
-  MASTER_ENCRYPTION_KEY: string;
   OFFER_DEFAULT_TTL?: string;
   OFFER_MAX_TTL?: string;
   OFFER_MIN_TTL?: string;
@@ -184,13 +143,10 @@ export function buildWorkerConfig(env: {
     maxTotalOperations: CONFIG_DEFAULTS.maxTotalOperations,
     timestampMaxAge: CONFIG_DEFAULTS.timestampMaxAge,
     timestampMaxFuture: CONFIG_DEFAULTS.timestampMaxFuture,
-    masterEncryptionKey: env.MASTER_ENCRYPTION_KEY,
     // Resource limits
     maxOffersPerUser: CONFIG_DEFAULTS.maxOffersPerUser,
     maxTotalOffers: CONFIG_DEFAULTS.maxTotalOffers,
-    maxTotalCredentials: CONFIG_DEFAULTS.maxTotalCredentials,
     maxIceCandidatesPerOffer: CONFIG_DEFAULTS.maxIceCandidatesPerOffer,
-    credentialsPerIpPerSecond: CONFIG_DEFAULTS.credentialsPerIpPerSecond,
     requestsPerIpPerSecond: CONFIG_DEFAULTS.requestsPerIpPerSecond,
   };
 }
@@ -201,14 +157,12 @@ export function buildWorkerConfig(env: {
  */
 export async function runCleanup(storage: Storage, now: number): Promise<{
   offers: number;
-  credentials: number;
   rateLimits: number;
   nonces: number;
 }> {
   const offers = await storage.deleteExpiredOffers(now);
-  const credentials = await storage.deleteExpiredCredentials(now);
   const rateLimits = await storage.deleteExpiredRateLimits(now);
   const nonces = await storage.deleteExpiredNonces(now);
 
-  return { offers, credentials, rateLimits, nonces };
+  return { offers, rateLimits, nonces };
 }

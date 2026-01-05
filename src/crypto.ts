@@ -1,86 +1,26 @@
 /**
- * Crypto utilities for credential generation and validation
- * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
+ * Crypto utilities for Ed25519 signature verification and validation
+ * Uses @noble/ed25519 for Ed25519 operations and Web Crypto API for SHA-512
  */
 
 import { Buffer } from 'node:buffer';
+import * as ed from '@noble/ed25519';
 
-// Username validation
-// Rules: 4-32 chars, lowercase alphanumeric + dashes + periods, must start/end with alphanumeric
-const USERNAME_REGEX = /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/;
-const USERNAME_MIN_LENGTH = 4;
-const USERNAME_MAX_LENGTH = 32;
-
-/**
- * Generates a random credential name
- * Format: {adjective}-{noun}-{random}
- * Example: "brave-tiger-7a3f2b1c9d8e", "quick-river-9b2e4c1a5f3d"
- */
-export function generateCredentialName(): string {
-  const adjectives = [
-    'brave', 'calm', 'eager', 'fancy', 'gentle', 'happy', 'jolly', 'kind',
-    'lively', 'merry', 'nice', 'proud', 'quiet', 'swift', 'witty', 'young',
-    'bright', 'clever', 'daring', 'fair', 'grand', 'humble', 'noble', 'quick'
-  ];
-
-  const nouns = [
-    'tiger', 'eagle', 'river', 'mountain', 'ocean', 'forest', 'desert', 'valley',
-    'thunder', 'wind', 'fire', 'stone', 'cloud', 'star', 'moon', 'sun',
-    'wolf', 'bear', 'hawk', 'lion', 'fox', 'deer', 'owl', 'swan'
-  ];
-
-  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-
-  // Generate 16-character hex suffix for uniqueness (8 bytes = 2^64 combinations)
-  // With 576 adjective-noun pairs, total space: 576 × 2^64 ≈ 1.06 × 10^22 names
-  // Birthday paradox collision at ~4.3 billion credentials (extremely safe for large deployments)
-  // Increased from 6 bytes to 8 bytes for maximum collision resistance
-  const random = crypto.getRandomValues(new Uint8Array(8));
-  const hex = Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('');
-
-  return `${adjective}-${noun}-${hex}`;
-}
-
-/**
- * Generates a random secret (API key style)
- * Format: 64-character hex string (256 bits of entropy)
- * 256 bits provides optimal security for HMAC-SHA256 and future-proofs against brute force
- */
-export function generateSecret(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32)); // 32 bytes = 256 bits
-  const secret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-
-  // Validation: Ensure output is exactly 64 characters and valid hex
-  if (secret.length !== 64) {
-    throw new Error('Secret generation failed: invalid length');
-  }
-
-  // Validate all characters are valid hex digits (0-9, a-f)
-  for (let i = 0; i < secret.length; i++) {
-    const c = secret[i];
-    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
-      throw new Error(`Secret generation failed: invalid hex character at position ${i}: '${c}'`);
-    }
-  }
-
-  return secret;
-}
-
-// ===== Secret Encryption/Decryption (Database Storage) =====
+// Configure @noble/ed25519 to use Web Crypto API's SHA-512
+// Required for both Node.js and Cloudflare Workers compatibility
+ed.hashes.sha512Async = async (message: Uint8Array): Promise<Uint8Array> => {
+  const hashBuffer = await crypto.subtle.digest('SHA-512', message);
+  return new Uint8Array(hashBuffer);
+};
 
 /**
  * Convert hex string to byte array with validation
- * @param hex Hex string (must be even length)
- * @returns Uint8Array of bytes
  */
 function hexToBytes(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) {
     throw new Error('Hex string must have even length');
   }
 
-  // Pre-validate that all characters are valid hex digits (0-9, a-f, A-F)
-  // This prevents parseInt from silently truncating invalid input like "0z" -> 0
   for (let i = 0; i < hex.length; i++) {
     const c = hex[i].toLowerCase();
     if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
@@ -103,192 +43,9 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 /**
- * Encrypt a secret using AES-256-GCM with master key
- * Format: iv:ciphertext (all hex-encoded, auth tag included in ciphertext)
- *
- * @param secret The plaintext secret to encrypt
- * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
- * @returns Encrypted secret in format "iv:ciphertext"
- */
-export async function encryptSecret(secret: string, masterKeyHex: string): Promise<string> {
-  // Validate master key
-  if (!masterKeyHex || masterKeyHex.length !== 64) {
-    throw new Error('Master key must be 64-character hex string (32 bytes)');
-  }
-
-  // Convert master key from hex to bytes (with validation)
-  const keyBytes = hexToBytes(masterKeyHex);
-
-  // Import master key
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBytes,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt']
-  );
-
-  // Generate random IV (12 bytes for AES-GCM)
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-
-  // Encrypt secret
-  const encoder = new TextEncoder();
-  const secretBytes = encoder.encode(secret);
-
-  // AES-GCM returns ciphertext with auth tag already appended (no manual splitting needed)
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, tagLength: 128 },
-    key,
-    secretBytes
-  );
-
-  // Convert to hex: iv:ciphertext (ciphertext includes 16-byte auth tag at end)
-  const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
-  const ciphertextHex = Array.from(new Uint8Array(ciphertext))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-
-  return `${ivHex}:${ciphertextHex}`;
-}
-
-/**
- * Decrypt a secret using AES-256-GCM with master key
- *
- * @param encryptedSecret Encrypted secret in format "iv:ciphertext" (ciphertext includes auth tag)
- * @param masterKeyHex The master encryption key (64-char hex = 32 bytes)
- * @returns Decrypted plaintext secret
- */
-export async function decryptSecret(encryptedSecret: string, masterKeyHex: string): Promise<string> {
-  // Validate master key
-  if (!masterKeyHex || masterKeyHex.length !== 64) {
-    throw new Error('Master key must be 64-character hex string (32 bytes)');
-  }
-
-  // Parse encrypted format: iv:ciphertext
-  const parts = encryptedSecret.split(':');
-  if (parts.length !== 2) {
-    throw new Error('Invalid encrypted secret format (expected iv:ciphertext)');
-  }
-
-  const [ivHex, ciphertextHex] = parts;
-
-  // Validate IV length (must be 12 bytes = 24 hex characters for AES-GCM)
-  if (ivHex.length !== 24) {
-    throw new Error('Invalid IV length (expected 12 bytes = 24 hex characters)');
-  }
-
-  // Validate ciphertext length (must include at least 16-byte auth tag)
-  // Minimum: 16 bytes for auth tag = 32 hex characters
-  if (ciphertextHex.length < 32) {
-    throw new Error('Invalid ciphertext length (must include 16-byte auth tag)');
-  }
-
-  // Convert from hex to bytes (with validation)
-  const iv = hexToBytes(ivHex);
-  const ciphertext = hexToBytes(ciphertextHex);
-
-  // Convert master key from hex to bytes (with validation)
-  const keyBytes = hexToBytes(masterKeyHex);
-
-  // Import master key
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBytes,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['decrypt']
-  );
-
-  // Decrypt (ciphertext already includes 16-byte auth tag at end)
-  const decryptedBytes = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv, tagLength: 128 },
-    key,
-    ciphertext
-  );
-
-  // Convert to string
-  const decoder = new TextDecoder();
-  return decoder.decode(decryptedBytes);
-}
-
-// ===== HMAC Signature Generation and Verification =====
-
-/**
- * Generate HMAC-SHA256 signature for request authentication
- * Uses Web Crypto API for compatibility with both Node.js and Cloudflare Workers
- *
- * @param secret The credential secret (hex string)
- * @param message The message to sign (typically: timestamp + method + params)
- * @returns Promise<string> Base64-encoded signature
- */
-export async function generateSignature(secret: string, message: string): Promise<string> {
-  // Convert secret from hex to bytes (with validation)
-  const secretBytes = hexToBytes(secret);
-
-  // Import secret as HMAC key
-  const key = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  // Convert message to bytes
-  const encoder = new TextEncoder();
-  const messageBytes = encoder.encode(message);
-
-  // Generate HMAC signature
-  const signatureBytes = await crypto.subtle.sign('HMAC', key, messageBytes);
-
-  // Convert to base64
-  return Buffer.from(signatureBytes).toString('base64');
-}
-
-/**
- * Verify HMAC-SHA256 signature for request authentication
- * Uses crypto.subtle.verify() for constant-time comparison
- *
- * @param secret The credential secret (hex string)
- * @param message The message that was signed
- * @param signature The signature to verify (base64)
- * @returns Promise<boolean> True if signature is valid
- */
-export async function verifySignature(secret: string, message: string, signature: string): Promise<boolean> {
-  try {
-    // Convert secret from hex to bytes (with validation)
-    const secretBytes = hexToBytes(secret);
-
-    // Import secret as HMAC key for verification
-    const key = await crypto.subtle.importKey(
-      'raw',
-      secretBytes,
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-
-    // Convert message to bytes
-    const encoder = new TextEncoder();
-    const messageBytes = encoder.encode(message);
-
-    // Convert signature from base64 to bytes
-    const signatureBytes = Buffer.from(signature, 'base64');
-
-    // Use Web Crypto API's verify() for constant-time comparison
-    // This is cryptographically secure and resistant to timing attacks
-    return await crypto.subtle.verify('HMAC', key, signatureBytes, messageBytes);
-  } catch (error) {
-    // Log error for debugging (helps identify implementation bugs)
-    console.error('Signature verification error:', error);
-    return false;
-  }
-}
-
-/**
- * Canonical JSON serialization with sorted keys
- * Ensures deterministic output regardless of property insertion order
- * Must match client's canonicalJSON implementation exactly
+ * Canonical JSON serialization with sorted keys.
+ * Ensures deterministic output regardless of property insertion order.
+ * Must match client's canonicalJSON implementation exactly.
  */
 function canonicalJSON(obj: any, depth: number = 0): string {
   const MAX_DEPTH = 100;
@@ -318,46 +75,29 @@ function canonicalJSON(obj: any, depth: number = 0): string {
 }
 
 /**
- * Build the message string for signing
+ * Build the message string for signing.
  * Format: timestamp:nonce:method:canonicalJSON(params || {})
- * Uses colons as delimiters to prevent collision attacks
- * Includes nonce to prevent signature reuse within timestamp window
- * Uses canonical JSON (sorted keys) for deterministic serialization
- *
- * @param timestamp Unix timestamp in milliseconds
- * @param nonce Cryptographic nonce (UUID v4) to prevent replay attacks
- * @param method RPC method name
- * @param params RPC method parameters (optional)
- * @returns String to be signed
  */
 export function buildSignatureMessage(timestamp: number, nonce: string, method: string, params?: any): string {
-  // Validate nonce is UUID v4 format to prevent colon injection attacks
-  // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (8-4-4-4-12 hex digits with dashes)
-  // Use simple format checks instead of regex to avoid any timing or ReDoS concerns
-
-  // Check total length (36 characters for UUID v4)
+  // Validate nonce is UUID v4 format
   if (nonce.length !== 36) {
     throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
   }
 
-  // Check dash positions (indices 8, 13, 18, 23)
   if (nonce[8] !== '-' || nonce[13] !== '-' || nonce[18] !== '-' || nonce[23] !== '-') {
     throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
   }
 
-  // Check version (character at index 14 must be '4')
   if (nonce[14] !== '4') {
     throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
   }
 
-  // Check variant (character at index 19 must be 8, 9, a, or b)
   const variant = nonce[19].toLowerCase();
   if (variant !== '8' && variant !== '9' && variant !== 'a' && variant !== 'b') {
     throw new Error('Nonce must be a valid UUID v4 (use crypto.randomUUID())');
   }
 
-  // Validate all other characters are hex digits (0-9, a-f)
-  const hexChars = nonce.replace(/-/g, ''); // Remove dashes
+  const hexChars = nonce.replace(/-/g, '');
   for (let i = 0; i < hexChars.length; i++) {
     const c = hexChars[i].toLowerCase();
     if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
@@ -365,53 +105,83 @@ export function buildSignatureMessage(timestamp: number, nonce: string, method: 
     }
   }
 
-  // Use canonical JSON (sorted keys) to match client's signature
   const paramsStr = canonicalJSON(params || {});
-  // Use delimiters to prevent collision: timestamp=12,method="34" vs timestamp=1,method="234"
-  // Include nonce to make each request unique (prevents signature reuse in same millisecond)
   return `${timestamp}:${nonce}:${method}:${paramsStr}`;
 }
 
-// ===== Username Validation =====
+// ===== Ed25519 Public Key Identity =====
+
+const ED25519_PUBLIC_KEY_LENGTH = 32; // 32 bytes = 64 hex chars
+const ED25519_SIGNATURE_LENGTH = 64;  // 64 bytes
 
 /**
- * Validates username format
- * Rules: 4-32 chars, lowercase alphanumeric + dashes + periods, must start/end with alphanumeric
+ * Validates an Ed25519 public key format.
+ * @param publicKey 64-character lowercase hex string (32 bytes)
  */
-export function validateUsername(username: string): { valid: boolean; error?: string } {
-  if (typeof username !== 'string') {
-    return { valid: false, error: 'Username must be a string' };
+export function validatePublicKey(publicKey: string): { valid: boolean; error?: string } {
+  if (typeof publicKey !== 'string') {
+    return { valid: false, error: 'Public key must be a string' };
   }
 
-  if (username.length < USERNAME_MIN_LENGTH) {
-    return { valid: false, error: `Username must be at least ${USERNAME_MIN_LENGTH} characters` };
+  if (publicKey.length !== ED25519_PUBLIC_KEY_LENGTH * 2) {
+    return { valid: false, error: `Public key must be ${ED25519_PUBLIC_KEY_LENGTH * 2} hex characters (${ED25519_PUBLIC_KEY_LENGTH} bytes)` };
   }
 
-  if (username.length > USERNAME_MAX_LENGTH) {
-    return { valid: false, error: `Username must be at most ${USERNAME_MAX_LENGTH} characters` };
-  }
-
-  if (!USERNAME_REGEX.test(username)) {
-    return { valid: false, error: 'Username must be lowercase alphanumeric with optional dashes/periods, and start/end with alphanumeric' };
+  for (let i = 0; i < publicKey.length; i++) {
+    const c = publicKey[i];
+    if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      return { valid: false, error: `Invalid hex character at position ${i}: '${c}' (use lowercase hex)` };
+    }
   }
 
   return { valid: true };
 }
 
+/**
+ * Verify an Ed25519 signature.
+ * @param publicKey Signer's public key (64-char hex)
+ * @param message Message that was signed
+ * @param signature Signature to verify (base64 encoded)
+ */
+export async function verifyEd25519Signature(
+  publicKey: string,
+  message: string,
+  signature: string
+): Promise<boolean> {
+  try {
+    const pkValidation = validatePublicKey(publicKey);
+    if (!pkValidation.valid) {
+      console.error('Ed25519 verification error: invalid public key:', pkValidation.error);
+      return false;
+    }
+
+    const publicKeyBytes = hexToBytes(publicKey);
+    const encoder = new TextEncoder();
+    const messageBytes = encoder.encode(message);
+    const signatureBytes = Buffer.from(signature, 'base64');
+
+    if (signatureBytes.length !== ED25519_SIGNATURE_LENGTH) {
+      console.error(`Ed25519 verification error: signature length ${signatureBytes.length}, expected ${ED25519_SIGNATURE_LENGTH}`);
+      return false;
+    }
+
+    return await ed.verifyAsync(signatureBytes, messageBytes, publicKeyBytes);
+  } catch (error) {
+    console.error('Ed25519 verification error:', error);
+    return false;
+  }
+}
+
 // ===== Tag Validation =====
 
-// Tag validation constants
 const TAG_MIN_LENGTH = 1;
 const TAG_MAX_LENGTH = 64;
 const TAG_REGEX = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
 
 /**
- * Validates a single tag format
- * Rules: 1-64 chars, lowercase alphanumeric with optional dots/dashes
- * Must start and end with alphanumeric character
- *
- * Valid examples: "chat", "video-call", "com.example.service", "v2"
- * Invalid examples: "", "UPPERCASE", "-starts-dash", "ends-dash-"
+ * Validates a single tag format.
+ * Rules: 1-64 chars, lowercase alphanumeric with optional dots/dashes,
+ * must start and end with alphanumeric character.
  */
 export function validateTag(tag: string): { valid: boolean; error?: string } {
   if (typeof tag !== 'string') {
@@ -426,7 +196,6 @@ export function validateTag(tag: string): { valid: boolean; error?: string } {
     return { valid: false, error: `Tag must be at most ${TAG_MAX_LENGTH} characters` };
   }
 
-  // Single character tags just need to be alphanumeric
   if (tag.length === 1) {
     if (!/^[a-z0-9]$/.test(tag)) {
       return { valid: false, error: 'Tag must be lowercase alphanumeric' };
@@ -434,7 +203,6 @@ export function validateTag(tag: string): { valid: boolean; error?: string } {
     return { valid: true };
   }
 
-  // Multi-character tags must match the pattern
   if (!TAG_REGEX.test(tag)) {
     return { valid: false, error: 'Tag must be lowercase alphanumeric with optional dots/dashes, and start/end with alphanumeric' };
   }
@@ -443,7 +211,7 @@ export function validateTag(tag: string): { valid: boolean; error?: string } {
 }
 
 /**
- * Validates an array of tags
+ * Validates an array of tags.
  * @param tags Array of tags to validate
  * @param maxTags Maximum number of tags allowed (default: 20)
  */
@@ -460,7 +228,6 @@ export function validateTags(tags: string[], maxTags: number = 20): { valid: boo
     return { valid: false, error: `Maximum ${maxTags} tags allowed` };
   }
 
-  // Validate each tag
   for (let i = 0; i < tags.length; i++) {
     const result = validateTag(tags[i]);
     if (!result.valid) {
@@ -468,7 +235,6 @@ export function validateTags(tags: string[], maxTags: number = 20): { valid: boo
     }
   }
 
-  // Check for duplicates
   const uniqueTags = new Set(tags);
   if (uniqueTags.size !== tags.length) {
     return { valid: false, error: 'Duplicate tags are not allowed' };

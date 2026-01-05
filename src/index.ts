@@ -21,7 +21,6 @@ async function main() {
 
   const storage: Storage = await createStorage({
     type: config.storageType,
-    masterEncryptionKey: config.masterEncryptionKey,
     sqlitePath: config.storagePath,
     connectionString: config.databaseUrl,
     poolSize: config.dbPoolSize,
@@ -32,9 +31,9 @@ async function main() {
   const cleanupTimer = setInterval(async () => {
     try {
       const result = await runCleanup(storage, Date.now());
-      const total = result.offers + result.credentials + result.rateLimits + result.nonces;
+      const total = result.offers + result.rateLimits + result.nonces;
       if (total > 0) {
-        console.log(`Cleanup: ${result.offers} offers, ${result.credentials} credentials, ${result.rateLimits} rate limits, ${result.nonces} nonces`);
+        console.log(`Cleanup: ${result.offers} offers, ${result.rateLimits} rate limits, ${result.nonces} nonces`);
       }
     } catch (err) {
       console.error('Cleanup error:', err);

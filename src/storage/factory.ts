@@ -10,8 +10,6 @@ export type StorageType = 'memory' | 'sqlite' | 'mysql' | 'postgres';
  */
 export interface StorageConfig {
   type: StorageType;
-  /** Master encryption key for secrets (64-char hex string) */
-  masterEncryptionKey: string;
   /** SQLite database path (default: ':memory:') */
   sqlitePath?: string;
   /** Connection string for MySQL/PostgreSQL */
@@ -28,15 +26,12 @@ export async function createStorage(config: StorageConfig): Promise<Storage> {
   switch (config.type) {
     case 'memory': {
       const { MemoryStorage } = await import('./memory.ts');
-      return new MemoryStorage(config.masterEncryptionKey);
+      return new MemoryStorage();
     }
 
     case 'sqlite': {
       const { SQLiteStorage } = await import('./sqlite.ts');
-      return new SQLiteStorage(
-        config.sqlitePath || ':memory:',
-        config.masterEncryptionKey
-      );
+      return new SQLiteStorage(config.sqlitePath || ':memory:');
     }
 
     case 'mysql': {
@@ -44,11 +39,7 @@ export async function createStorage(config: StorageConfig): Promise<Storage> {
         throw new Error('MySQL storage requires DATABASE_URL connection string');
       }
       const { MySQLStorage } = await import('./mysql.ts');
-      return MySQLStorage.create(
-        config.connectionString,
-        config.masterEncryptionKey,
-        config.poolSize || 10
-      );
+      return MySQLStorage.create(config.connectionString, config.poolSize || 10);
     }
 
     case 'postgres': {
@@ -56,11 +47,7 @@ export async function createStorage(config: StorageConfig): Promise<Storage> {
         throw new Error('PostgreSQL storage requires DATABASE_URL connection string');
       }
       const { PostgreSQLStorage } = await import('./postgres.ts');
-      return PostgreSQLStorage.create(
-        config.connectionString,
-        config.masterEncryptionKey,
-        config.poolSize || 10
-      );
+      return PostgreSQLStorage.create(config.connectionString, config.poolSize || 10);
     }
 
     default:

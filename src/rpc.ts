@@ -3,45 +3,25 @@ import { Storage } from './storage/types.ts';
 import { Config } from './config.ts';
 import {
   validateTags,
-  validateUsername,
-  verifySignature,
+  validatePublicKey,
+  verifyEd25519Signature,
   buildSignatureMessage,
 } from './crypto.ts';
 
 // Constants (non-configurable)
 const MAX_PAGE_SIZE = 100;
-
-// NOTE: MAX_SDP_SIZE, MAX_CANDIDATE_SIZE, MAX_CANDIDATE_DEPTH, and MAX_CANDIDATES_PER_REQUEST
-// are now configurable via environment variables (see config.ts)
-
-// ===== Rate Limiting =====
-
-// Rate limiting windows (these are fixed, limits come from config)
-// NOTE: Uses fixed-window rate limiting with full window reset on expiry
-//   - Window starts on first request and expires after window duration
-//   - When window expires, counter resets to 0 and new window starts
-//   - This is simpler than sliding windows but may allow bursts at window boundaries
-const CREDENTIAL_RATE_WINDOW = 1000; // 1 second in milliseconds
 const REQUEST_RATE_WINDOW = 1000; // 1 second in milliseconds
 
 /**
  * Check JSON object depth to prevent stack overflow from deeply nested objects
- * CRITICAL: Checks depth BEFORE recursing to prevent stack overflow
- * @param obj Object to check
- * @param maxDepth Maximum allowed depth
- * @param currentDepth Current recursion depth
- * @returns Actual depth of the object (returns maxDepth + 1 if exceeded)
  */
 function getJsonDepth(obj: any, maxDepth: number, currentDepth = 0): number {
-  // Check for primitives/null first
   if (obj === null || typeof obj !== 'object') {
     return currentDepth;
   }
 
-  // CRITICAL: Check depth BEFORE recursing to prevent stack overflow
-  // If we're already at max depth, don't recurse further
   if (currentDepth >= maxDepth) {
-    return currentDepth + 1; // Indicate exceeded
+    return currentDepth + 1;
   }
 
   let maxChildDepth = currentDepth;
@@ -50,7 +30,6 @@ function getJsonDepth(obj: any, maxDepth: number, currentDepth = 0): number {
       const childDepth = getJsonDepth(obj[key], maxDepth, currentDepth + 1);
       maxChildDepth = Math.max(maxChildDepth, childDepth);
 
-      // Early exit if exceeded
       if (maxChildDepth > maxDepth) {
         return maxChildDepth;
       }
@@ -62,7 +41,6 @@ function getJsonDepth(obj: any, maxDepth: number, currentDepth = 0): number {
 
 /**
  * Validate parameter is a non-empty string
- * Prevents type coercion issues and injection attacks
  */
 function validateStringParam(value: any, paramName: string): void {
   if (typeof value !== 'string' || value.length === 0) {
@@ -79,7 +57,7 @@ export const ErrorCodes = {
   INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
 
   // Validation errors
-  INVALID_NAME: 'INVALID_NAME',
+  INVALID_PUBLIC_KEY: 'INVALID_PUBLIC_KEY',
   INVALID_TAG: 'INVALID_TAG',
   INVALID_SDP: 'INVALID_SDP',
   INVALID_PARAMS: 'INVALID_PARAMS',
@@ -144,11 +122,6 @@ export interface RpcResponse {
 /**
  * RPC Method Parameter Interfaces
  */
-export interface GenerateCredentialsParams {
-  name?: string;       // Optional: claim specific username (4-32 chars, alphanumeric + dashes + periods)
-  expiresAt?: number;
-}
-
 export interface DiscoverParams {
   tags: string[];
   limit?: number;
@@ -168,7 +141,7 @@ export interface DeleteOfferParams {
 export interface AnswerOfferParams {
   offerId: string;
   sdp: string;
-  matchedTags?: string[];  // Tags the answerer searched for to find this offer
+  matchedTags?: string[];
 }
 
 export interface GetOfferAnswerParams {
@@ -191,11 +164,10 @@ export interface GetIceCandidatesParams {
 
 /**
  * RPC method handler
- * Generic type parameter allows individual handlers to specify their param types
  */
 type RpcHandler<TParams = any> = (
   params: TParams,
-  name: string,
+  publicKey: string,
   timestamp: number,
   signature: string,
   storage: Storage,
@@ -205,28 +177,25 @@ type RpcHandler<TParams = any> = (
 
 /**
  * Validate timestamp for replay attack prevention
- * Throws RpcError if timestamp is invalid
  */
 function validateTimestamp(timestamp: number, config: Config): void {
   const now = Date.now();
 
-  // Check if timestamp is too old (replay attack)
   if (now - timestamp > config.timestampMaxAge) {
     throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Timestamp too old');
   }
 
-  // Check if timestamp is too far in future (clock skew)
   if (timestamp - now > config.timestampMaxFuture) {
     throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Timestamp too far in future');
   }
 }
 
 /**
- * Verify request signature for authentication
- * Throws RpcError on authentication failure
+ * Verify request signature using Ed25519
+ * Stateless verification - no identity registration required
  */
 async function verifyRequestSignature(
-  name: string,
+  publicKey: string,
   timestamp: number,
   nonce: string,
   signature: string,
@@ -238,143 +207,40 @@ async function verifyRequestSignature(
   // Validate timestamp first
   validateTimestamp(timestamp, config);
 
-  // Get credential to retrieve secret
-  const credential = await storage.getCredential(name);
-  if (!credential) {
-    throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials');
+  // Validate public key format
+  const pkValidation = validatePublicKey(publicKey);
+  if (!pkValidation.valid) {
+    throw new RpcError(ErrorCodes.INVALID_PUBLIC_KEY, pkValidation.error || 'Invalid public key');
   }
 
-  // Build message and verify signature (includes nonce to prevent signature reuse)
+  // Build message and verify Ed25519 signature
   const message = buildSignatureMessage(timestamp, nonce, method, params);
-  const isValid = await verifySignature(credential.secret, message, signature);
+  const isValid = await verifyEd25519Signature(publicKey, message, signature);
 
   if (!isValid) {
     throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid signature');
   }
 
   // Check nonce uniqueness AFTER successful signature verification
-  // This prevents DoS where invalid signatures burn nonces
-  // Only valid authenticated requests can mark nonces as used
-  const nonceKey = `nonce:${name}:${nonce}`;
+  const nonceKey = `nonce:${publicKey}:${nonce}`;
   const nonceExpiresAt = timestamp + config.timestampMaxAge;
   const nonceIsNew = await storage.checkAndMarkNonce(nonceKey, nonceExpiresAt);
 
   if (!nonceIsNew) {
     throw new RpcError(ErrorCodes.INVALID_CREDENTIALS, 'Nonce already used (replay attack detected)');
   }
-
-  // Update last used timestamp
-  const now = Date.now();
-  const credentialExpiresAt = now + (365 * 24 * 60 * 60 * 1000); // 1 year
-  await storage.updateCredentialUsage(name, now, credentialExpiresAt);
 }
 
 /**
  * RPC Method Handlers
  */
-
 const handlers: Record<string, RpcHandler> = {
   /**
-   * Generate new credentials (name + secret pair)
-   * No authentication required - this is how users get started
-   * SECURITY: Rate limited per IP to prevent abuse (database-backed for multi-instance support)
+   * Discover offers by tags
    */
-  async generateCredentials(params: GenerateCredentialsParams, name, timestamp, signature, storage, config, request: RpcRequest & { clientIp?: string }) {
-    // Check total credentials limit
-    const credentialCount = await storage.getCredentialCount();
-    if (credentialCount >= config.maxTotalCredentials) {
-      throw new RpcError(
-        ErrorCodes.STORAGE_FULL,
-        `Server credential limit reached (${config.maxTotalCredentials}). Try again later.`
-      );
-    }
-
-    // Rate limiting check (IP-based, stored in database)
-    // SECURITY: Use stricter global rate limit for requests without identifiable IP
-    let rateLimitKey: string;
-    let rateLimit: number;
-
-    if (!request.clientIp) {
-      // Warn about missing IP (suggests proxy misconfiguration)
-      console.warn('⚠️  WARNING: Unable to determine client IP for credential generation. Using global rate limit.');
-      // Use global rate limit with much stricter limit (prevents DoS while allowing basic function)
-      rateLimitKey = 'cred_gen:global_unknown';
-      rateLimit = 2; // Only 2 credentials per second globally for all unknown IPs combined
-    } else {
-      rateLimitKey = `cred_gen:${request.clientIp}`;
-      rateLimit = config.credentialsPerIpPerSecond;
-    }
-
-    const allowed = await storage.checkRateLimit(
-      rateLimitKey,
-      rateLimit,
-      CREDENTIAL_RATE_WINDOW
-    );
-
-    if (!allowed) {
-      throw new RpcError(
-        ErrorCodes.RATE_LIMIT_EXCEEDED,
-        `Rate limit exceeded. Maximum ${rateLimit} credentials per second${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
-      );
-    }
-
-    // Validate username if provided
-    if (params.name !== undefined) {
-      if (typeof params.name !== 'string') {
-        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'name must be a string');
-      }
-      const usernameValidation = validateUsername(params.name);
-      if (!usernameValidation.valid) {
-        throw new RpcError(ErrorCodes.INVALID_PARAMS, usernameValidation.error || 'Invalid username');
-      }
-    }
-
-    // Validate expiresAt if provided
-    if (params.expiresAt !== undefined) {
-      if (typeof params.expiresAt !== 'number' || isNaN(params.expiresAt) || !Number.isFinite(params.expiresAt)) {
-        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'expiresAt must be a valid timestamp');
-      }
-      // Prevent setting expiry in the past (with 1 minute tolerance for clock skew)
-      const now = Date.now();
-      if (params.expiresAt < now - 60000) {
-        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'expiresAt cannot be in the past');
-      }
-      // Prevent unreasonably far future expiry (max 10 years)
-      const maxFuture = now + (10 * 365 * 24 * 60 * 60 * 1000);
-      if (params.expiresAt > maxFuture) {
-        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'expiresAt cannot be more than 10 years in the future');
-      }
-    }
-
-    try {
-      const credential = await storage.generateCredentials({
-        name: params.name,
-        expiresAt: params.expiresAt,
-      });
-
-      return {
-        name: credential.name,
-        secret: credential.secret,
-        createdAt: credential.createdAt,
-        expiresAt: credential.expiresAt,
-      };
-    } catch (error: any) {
-      if (error.message === 'Username already taken') {
-        throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Username already taken');
-      }
-      throw error;
-    }
-  },
-
-  /**
-   * Discover offers by tags - Supports 2 modes:
-   * 1. Paginated discovery: tags array with limit/offset
-   * 2. Random discovery: tags array without limit (returns single random offer)
-   */
-  async discover(params: DiscoverParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async discover(params: DiscoverParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { tags, limit, offset } = params;
 
-    // Validate tags
     const tagsValidation = validateTags(tags);
     if (!tagsValidation.valid) {
       throw new RpcError(ErrorCodes.INVALID_TAG, tagsValidation.error || 'Invalid tags');
@@ -382,7 +248,6 @@ const handlers: Record<string, RpcHandler> = {
 
     // Mode 1: Paginated discovery
     if (limit !== undefined) {
-      // Validate numeric parameters
       if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0) {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, 'limit must be a non-negative integer');
       }
@@ -393,12 +258,11 @@ const handlers: Record<string, RpcHandler> = {
       const pageLimit = Math.min(Math.max(1, limit), MAX_PAGE_SIZE);
       const pageOffset = Math.max(0, offset || 0);
 
-      // Exclude self if authenticated
-      const excludeUsername = name || null;
+      const excludePublicKey = publicKey || null;
 
       const offers = await storage.discoverOffers(
         tags,
-        excludeUsername,
+        excludePublicKey,
         pageLimit,
         pageOffset
       );
@@ -406,7 +270,7 @@ const handlers: Record<string, RpcHandler> = {
       return {
         offers: offers.map(offer => ({
           offerId: offer.id,
-          username: offer.username,
+          publicKey: offer.publicKey,
           tags: offer.tags,
           sdp: offer.sdp,
           createdAt: offer.createdAt,
@@ -418,11 +282,9 @@ const handlers: Record<string, RpcHandler> = {
       };
     }
 
-    // Mode 2: Random discovery (no limit provided)
-    // Exclude self if authenticated
-    const excludeUsername = name || null;
-
-    const offer = await storage.getRandomOffer(tags, excludeUsername);
+    // Mode 2: Random discovery
+    const excludePublicKey = publicKey || null;
+    const offer = await storage.getRandomOffer(tags, excludePublicKey);
 
     if (!offer) {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'No offers found matching tags');
@@ -430,7 +292,7 @@ const handlers: Record<string, RpcHandler> = {
 
     return {
       offerId: offer.id,
-      username: offer.username,
+      publicKey: offer.publicKey,
       tags: offer.tags,
       sdp: offer.sdp,
       createdAt: offer.createdAt,
@@ -441,20 +303,18 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Publish offers with tags
    */
-  async publishOffer(params: PublishOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async publishOffer(params: PublishOfferParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { tags, offers, ttl } = params;
 
-    if (!name) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required for offer publishing');
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required for offer publishing');
     }
 
-    // Validate tags
     const tagsValidation = validateTags(tags);
     if (!tagsValidation.valid) {
       throw new RpcError(ErrorCodes.INVALID_TAG, tagsValidation.error || 'Invalid tags');
     }
 
-    // Validate offers
     if (!offers || !Array.isArray(offers) || offers.length === 0) {
       throw new RpcError(ErrorCodes.MISSING_PARAMS, 'Must provide at least one offer');
     }
@@ -466,8 +326,7 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
-    // Check per-user offer limit
-    const userOfferCount = await storage.getOfferCountByUsername(name);
+    const userOfferCount = await storage.getOfferCountByPublicKey(publicKey);
     if (userOfferCount + offers.length > config.maxOffersPerUser) {
       throw new RpcError(
         ErrorCodes.TOO_MANY_OFFERS_PER_USER,
@@ -475,7 +334,6 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
-    // Check total offers limit
     const totalOfferCount = await storage.getOfferCount();
     if (totalOfferCount + offers.length > config.maxTotalOffers) {
       throw new RpcError(
@@ -484,7 +342,6 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
-    // Validate each offer has valid SDP
     offers.forEach((offer, index) => {
       if (!offer || typeof offer !== 'object') {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, `Invalid offer at index ${index}: must be an object`);
@@ -500,27 +357,21 @@ const handlers: Record<string, RpcHandler> = {
       }
     });
 
-    // Validate TTL if provided
     if (ttl !== undefined) {
       if (typeof ttl !== 'number' || isNaN(ttl) || ttl < 0) {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, 'TTL must be a non-negative number');
       }
     }
 
-    // Create offers with tags
     const now = Date.now();
     const offerTtl =
       ttl !== undefined
-        ? Math.min(
-            Math.max(ttl, config.offerMinTtl),
-            config.offerMaxTtl
-          )
+        ? Math.min(Math.max(ttl, config.offerMinTtl), config.offerMaxTtl)
         : config.offerDefaultTtl;
     const expiresAt = now + offerTtl;
 
-    // Prepare offer requests with tags
     const offerRequests = offers.map(offer => ({
-      username: name,
+      publicKey,
       tags,
       sdp: offer.sdp,
       expiresAt,
@@ -529,7 +380,7 @@ const handlers: Record<string, RpcHandler> = {
     const createdOffers = await storage.createOffers(offerRequests);
 
     return {
-      username: name,
+      publicKey,
       tags,
       offers: createdOffers.map(offer => ({
         offerId: offer.id,
@@ -545,18 +396,18 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Delete an offer by ID
    */
-  async deleteOffer(params: DeleteOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async deleteOffer(params: DeleteOfferParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { offerId } = params;
 
-    if (!name) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required');
     }
 
     validateStringParam(offerId, 'offerId');
 
-    const deleted = await storage.deleteOffer(offerId, name);
+    const deleted = await storage.deleteOffer(offerId, publicKey);
     if (!deleted) {
-      throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Offer not found or not owned by this name');
+      throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Offer not found or not owned by this identity');
     }
 
     return { success: true };
@@ -565,14 +416,13 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Answer an offer
    */
-  async answerOffer(params: AnswerOfferParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async answerOffer(params: AnswerOfferParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { offerId, sdp, matchedTags } = params;
 
-    // Validate input parameters
     validateStringParam(offerId, 'offerId');
 
-    if (!name) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required');
     }
 
     if (!sdp || typeof sdp !== 'string' || sdp.length === 0) {
@@ -583,7 +433,6 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.SDP_TOO_LARGE, `SDP too large (max ${config.maxSdpSize} bytes)`);
     }
 
-    // Validate matchedTags if provided
     if (matchedTags !== undefined && !Array.isArray(matchedTags)) {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'matchedTags must be an array');
     }
@@ -593,11 +442,10 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
-    if (offer.answererUsername) {
+    if (offer.answererPublicKey) {
       throw new RpcError(ErrorCodes.OFFER_ALREADY_ANSWERED, 'Offer already answered');
     }
 
-    // Validate that matchedTags are actually tags on the offer
     if (matchedTags && matchedTags.length > 0) {
       const offerTagSet = new Set(offer.tags);
       const invalidTags = matchedTags.filter(tag => !offerTagSet.has(tag));
@@ -606,7 +454,7 @@ const handlers: Record<string, RpcHandler> = {
       }
     }
 
-    await storage.answerOffer(offerId, name, sdp, matchedTags);
+    await storage.answerOffer(offerId, publicKey, sdp, matchedTags);
 
     return { success: true, offerId };
   },
@@ -614,14 +462,13 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get answer for an offer
    */
-  async getOfferAnswer(params: GetOfferAnswerParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async getOfferAnswer(params: GetOfferAnswerParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { offerId } = params;
 
-    // Validate input parameters
     validateStringParam(offerId, 'offerId');
 
-    if (!name) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required');
     }
 
     const offer = await storage.getOfferById(offerId);
@@ -629,18 +476,18 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
-    if (offer.username !== name) {
+    if (offer.publicKey !== publicKey) {
       throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Not authorized to access this offer');
     }
 
-    if (!offer.answererUsername || !offer.answerSdp) {
+    if (!offer.answererPublicKey || !offer.answerSdp) {
       throw new RpcError(ErrorCodes.OFFER_NOT_ANSWERED, 'Offer not yet answered');
     }
 
     return {
       sdp: offer.answerSdp,
       offerId: offer.id,
-      answererId: offer.answererUsername,
+      answererPublicKey: offer.answererPublicKey,
       answeredAt: offer.answeredAt,
     };
   },
@@ -648,49 +495,38 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Combined polling for answers and ICE candidates
    */
-  async poll(params: PollParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async poll(params: PollParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { since } = params;
 
-    if (!name) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required');
     }
 
-    // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Invalid since parameter: must be a non-negative number');
     }
     const sinceTimestamp = since !== undefined ? since : 0;
 
-    // Get all answered offers (where user is the offerer)
-    const answeredOffers = await storage.getAnsweredOffers(name);
+    const answeredOffers = await storage.getAnsweredOffers(publicKey);
     const filteredAnswers = answeredOffers.filter(
       (offer) => offer.answeredAt && offer.answeredAt > sinceTimestamp
     );
 
-    // Get all user's offers (where user is offerer)
-    const ownedOffers = await storage.getOffersByUsername(name);
+    const ownedOffers = await storage.getOffersByPublicKey(publicKey);
+    const answeredByUser = await storage.getOffersAnsweredBy(publicKey);
 
-    // Get all offers the user has answered (where user is answerer)
-    const answeredByUser = await storage.getOffersAnsweredBy(name);
-
-    // Combine offer IDs from both sources for ICE candidate fetching
-    // The storage method handles filtering by role automatically
     const allOfferIds = [
       ...ownedOffers.map(offer => offer.id),
       ...answeredByUser.map(offer => offer.id),
     ];
-    // Remove duplicates (shouldn't happen, but defensive)
     const offerIds = [...new Set(allOfferIds)];
 
-    // Batch fetch ICE candidates for all offers using JOIN to avoid N+1 query problem
-    // Server filters by role - offerers get answerer candidates, answerers get offerer candidates
     const iceCandidatesMap = await storage.getIceCandidatesForMultipleOffers(
       offerIds,
-      name,
+      publicKey,
       sinceTimestamp
     );
 
-    // Convert Map to Record for response
     const iceCandidatesByOffer: Record<string, any[]> = {};
     for (const [offerId, candidates] of iceCandidatesMap.entries()) {
       iceCandidatesByOffer[offerId] = candidates;
@@ -699,7 +535,7 @@ const handlers: Record<string, RpcHandler> = {
     return {
       answers: filteredAnswers.map((offer) => ({
         offerId: offer.id,
-        answererId: offer.answererUsername,
+        answererPublicKey: offer.answererPublicKey,
         sdp: offer.answerSdp,
         answeredAt: offer.answeredAt,
       })),
@@ -710,14 +546,13 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Add ICE candidates
    */
-  async addIceCandidates(params: AddIceCandidatesParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async addIceCandidates(params: AddIceCandidatesParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { offerId, candidates } = params;
 
-    // Validate input parameters
     validateStringParam(offerId, 'offerId');
 
-    if (!name) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required');
     }
 
     if (!Array.isArray(candidates) || candidates.length === 0) {
@@ -731,13 +566,11 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
-    // Validate each candidate is an object (don't enforce structure per CLAUDE.md)
     candidates.forEach((candidate, index) => {
       if (!candidate || typeof candidate !== 'object') {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, `Invalid candidate at index ${index}: must be an object`);
       }
 
-      // Check JSON depth to prevent stack overflow from deeply nested objects
       const depth = getJsonDepth(candidate, config.maxCandidateDepth + 1);
       if (depth > config.maxCandidateDepth) {
         throw new RpcError(
@@ -746,7 +579,6 @@ const handlers: Record<string, RpcHandler> = {
         );
       }
 
-      // Ensure candidate is serializable and check size (will be stored as JSON)
       let candidateJson: string;
       try {
         candidateJson = JSON.stringify(candidate);
@@ -754,7 +586,6 @@ const handlers: Record<string, RpcHandler> = {
         throw new RpcError(ErrorCodes.INVALID_PARAMS, `Candidate at index ${index} is not serializable`);
       }
 
-      // Validate candidate size to prevent abuse
       if (candidateJson.length > config.maxCandidateSize) {
         throw new RpcError(
           ErrorCodes.INVALID_PARAMS,
@@ -768,7 +599,6 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
-    // Check ICE candidates limit per offer
     const currentCandidateCount = await storage.getIceCandidateCount(offerId);
     if (currentCandidateCount + candidates.length > config.maxIceCandidatesPerOffer) {
       throw new RpcError(
@@ -777,10 +607,10 @@ const handlers: Record<string, RpcHandler> = {
       );
     }
 
-    const role = offer.username === name ? 'offerer' : 'answerer';
+    const role = offer.publicKey === publicKey ? 'offerer' : 'answerer';
     const count = await storage.addIceCandidates(
       offerId,
-      name,
+      publicKey,
       role,
       candidates
     );
@@ -791,17 +621,15 @@ const handlers: Record<string, RpcHandler> = {
   /**
    * Get ICE candidates
    */
-  async getIceCandidates(params: GetIceCandidatesParams, name, timestamp, signature, storage, config, request: RpcRequest) {
+  async getIceCandidates(params: GetIceCandidatesParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
     const { offerId, since } = params;
 
-    // Validate input parameters
     validateStringParam(offerId, 'offerId');
 
-    if (!name) {
-      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Name required');
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required');
     }
 
-    // Validate since parameter
     if (since !== undefined && (typeof since !== 'number' || since < 0 || !Number.isFinite(since))) {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'Invalid since parameter: must be a non-negative number');
     }
@@ -812,10 +640,8 @@ const handlers: Record<string, RpcHandler> = {
       throw new RpcError(ErrorCodes.OFFER_NOT_FOUND, 'Offer not found');
     }
 
-    // Validate that user is authorized to access this offer's candidates
-    // Only the offerer and answerer can access ICE candidates
-    const isOfferer = offer.username === name;
-    const isAnswerer = offer.answererUsername === name;
+    const isOfferer = offer.publicKey === publicKey;
+    const isAnswerer = offer.answererPublicKey === publicKey;
 
     if (!isOfferer && !isAnswerer) {
       throw new RpcError(ErrorCodes.NOT_AUTHORIZED, 'Not authorized to access ICE candidates for this offer');
@@ -840,7 +666,7 @@ const handlers: Record<string, RpcHandler> = {
 };
 
 // Methods that don't require authentication
-const UNAUTHENTICATED_METHODS = new Set(['generateCredentials', 'discover']);
+const UNAUTHENTICATED_METHODS = new Set(['discover']);
 
 /**
  * Handle RPC batch request with header-based authentication
@@ -853,13 +679,11 @@ export async function handleRpc(
 ): Promise<RpcResponse[]> {
   const responses: RpcResponse[] = [];
 
-  // Extract client IP for rate limiting
-  // Try multiple headers for proxy compatibility
   const clientIp =
-    ctx.req.header('cf-connecting-ip') || // Cloudflare
-    ctx.req.header('x-real-ip') || // Nginx
+    ctx.req.header('cf-connecting-ip') ||
+    ctx.req.header('x-real-ip') ||
     ctx.req.header('x-forwarded-for')?.split(',')[0].trim() ||
-    undefined; // Don't use fallback - let handlers decide how to handle missing IP
+    undefined;
 
   // General request rate limiting (per IP per second)
   if (clientIp) {
@@ -871,7 +695,6 @@ export async function handleRpc(
     );
 
     if (!allowed) {
-      // Return error for all requests in the batch
       return requests.map(() => ({
         success: false,
         error: `Rate limit exceeded. Maximum ${config.requestsPerIpPerSecond} requests per second per IP.`,
@@ -880,21 +703,16 @@ export async function handleRpc(
     }
   }
 
-  // Read auth headers (same for all requests in batch)
-  const name = ctx.req.header('X-Name');
+  // Read auth headers (X-PublicKey instead of X-Name)
+  const publicKey = ctx.req.header('X-PublicKey');
   const timestampHeader = ctx.req.header('X-Timestamp');
   const nonce = ctx.req.header('X-Nonce');
   const signature = ctx.req.header('X-Signature');
 
-  // Parse timestamp if present
   const timestamp = timestampHeader ? parseInt(timestampHeader, 10) : 0;
 
-  // CRITICAL: Pre-calculate total operations BEFORE processing any requests
-  // This prevents DoS where first N requests complete before limit triggers
-  // Example attack prevented: 100 publishOffer × 100 offers = 10,000 operations
+  // Pre-calculate total operations
   let totalOperations = 0;
-
-  // Count all operations across all requests first
   for (const request of requests) {
     const { method, params } = request;
     if (method === 'publishOffer' && params?.offers && Array.isArray(params.offers)) {
@@ -902,13 +720,10 @@ export async function handleRpc(
     } else if (method === 'addIceCandidates' && params?.candidates && Array.isArray(params.candidates)) {
       totalOperations += params.candidates.length;
     } else {
-      totalOperations += 1; // Single operation
+      totalOperations += 1;
     }
   }
 
-  // Reject entire batch if total operations exceed limit
-  // This happens BEFORE processing any requests
-  // Return error for EACH request to maintain response array alignment
   if (totalOperations > config.maxTotalOperations) {
     return requests.map(() => ({
       success: false,
@@ -922,7 +737,6 @@ export async function handleRpc(
     try {
       const { method, params } = request;
 
-      // Validate request
       if (!method || typeof method !== 'string') {
         responses.push({
           success: false,
@@ -932,7 +746,6 @@ export async function handleRpc(
         continue;
       }
 
-      // Get handler
       const handler = handlers[method];
       if (!handler) {
         responses.push({
@@ -943,14 +756,13 @@ export async function handleRpc(
         continue;
       }
 
-      // Validate auth headers only for methods that require authentication
       const requiresAuth = !UNAUTHENTICATED_METHODS.has(method);
 
       if (requiresAuth) {
-        if (!name || typeof name !== 'string') {
+        if (!publicKey || typeof publicKey !== 'string') {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-Name header',
+            error: 'Missing or invalid X-PublicKey header',
             errorCode: ErrorCodes.AUTH_REQUIRED,
           });
           continue;
@@ -983,9 +795,9 @@ export async function handleRpc(
           continue;
         }
 
-        // Verify signature (validates timestamp, nonce, and signature)
+        // Verify Ed25519 signature
         await verifyRequestSignature(
-          name,
+          publicKey,
           timestamp,
           nonce,
           signature,
@@ -995,10 +807,9 @@ export async function handleRpc(
           config
         );
 
-        // Execute handler with auth
         const result = await handler(
           params || {},
-          name,
+          publicKey,
           timestamp,
           signature,
           storage,
@@ -1014,9 +825,9 @@ export async function handleRpc(
         // Execute handler without strict auth requirement
         const result = await handler(
           params || {},
-          name || '',
-          0, // timestamp
-          '', // signature
+          publicKey || '',
+          0,
+          '',
           storage,
           config,
           { ...request, clientIp }
@@ -1035,8 +846,6 @@ export async function handleRpc(
           errorCode: err.errorCode,
         });
       } else {
-        // Generic error - don't leak internal details
-        // Log the actual error for debugging
         console.error('Unexpected RPC error:', err);
         responses.push({
           success: false,

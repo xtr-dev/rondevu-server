@@ -1,40 +1,29 @@
-import mysql, { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import mysql, { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import {
   Storage,
   Offer,
   IceCandidate,
   CreateOfferRequest,
-  Credential,
-  GenerateCredentialsRequest,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 
-const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000;
-
 /**
  * MySQL storage adapter for rondevu signaling system
- * Uses connection pooling for efficient resource management
+ * Uses Ed25519 public key as identity (no usernames, no secrets)
  */
 export class MySQLStorage implements Storage {
   private pool: Pool;
-  private masterEncryptionKey: string;
 
-  private constructor(pool: Pool, masterEncryptionKey: string) {
+  private constructor(pool: Pool) {
     this.pool = pool;
-    this.masterEncryptionKey = masterEncryptionKey;
   }
 
   /**
    * Creates a new MySQL storage instance with connection pooling
    * @param connectionString MySQL connection URL
-   * @param masterEncryptionKey 64-char hex string for encrypting secrets
    * @param poolSize Maximum number of connections in the pool
    */
-  static async create(
-    connectionString: string,
-    masterEncryptionKey: string,
-    poolSize: number = 10
-  ): Promise<MySQLStorage> {
+  static async create(connectionString: string, poolSize: number = 10): Promise<MySQLStorage> {
     const pool = mysql.createPool({
       uri: connectionString,
       waitForConnections: true,
@@ -44,7 +33,7 @@ export class MySQLStorage implements Storage {
       keepAliveInitialDelay: 10000,
     });
 
-    const storage = new MySQLStorage(pool, masterEncryptionKey);
+    const storage = new MySQLStorage(pool);
     await storage.initializeDatabase();
     return storage;
   }
@@ -53,22 +42,33 @@ export class MySQLStorage implements Storage {
     const conn = await this.pool.getConnection();
     try {
       await conn.query(`
+        CREATE TABLE IF NOT EXISTS identities (
+          public_key CHAR(64) PRIMARY KEY,
+          created_at BIGINT NOT NULL,
+          expires_at BIGINT NOT NULL,
+          last_used BIGINT NOT NULL,
+          INDEX idx_identities_expires (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+
+      await conn.query(`
         CREATE TABLE IF NOT EXISTS offers (
           id VARCHAR(64) PRIMARY KEY,
-          username VARCHAR(32) NOT NULL,
+          public_key CHAR(64) NOT NULL,
           tags JSON NOT NULL,
           sdp MEDIUMTEXT NOT NULL,
           created_at BIGINT NOT NULL,
           expires_at BIGINT NOT NULL,
           last_seen BIGINT NOT NULL,
-          answerer_username VARCHAR(32),
+          answerer_public_key CHAR(64),
           answer_sdp MEDIUMTEXT,
           answered_at BIGINT,
           matched_tags JSON,
-          INDEX idx_offers_username (username),
+          INDEX idx_offers_public_key (public_key),
           INDEX idx_offers_expires (expires_at),
           INDEX idx_offers_last_seen (last_seen),
-          INDEX idx_offers_answerer (answerer_username)
+          INDEX idx_offers_answerer (answerer_public_key),
+          FOREIGN KEY (public_key) REFERENCES identities(public_key) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
       `);
 
@@ -76,25 +76,14 @@ export class MySQLStorage implements Storage {
         CREATE TABLE IF NOT EXISTS ice_candidates (
           id BIGINT AUTO_INCREMENT PRIMARY KEY,
           offer_id VARCHAR(64) NOT NULL,
-          username VARCHAR(32) NOT NULL,
+          public_key CHAR(64) NOT NULL,
           role ENUM('offerer', 'answerer') NOT NULL,
           candidate JSON NOT NULL,
           created_at BIGINT NOT NULL,
           INDEX idx_ice_offer (offer_id),
-          INDEX idx_ice_username (username),
+          INDEX idx_ice_public_key (public_key),
           INDEX idx_ice_created (created_at),
           FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-
-      await conn.query(`
-        CREATE TABLE IF NOT EXISTS credentials (
-          name VARCHAR(32) PRIMARY KEY,
-          secret VARCHAR(512) NOT NULL UNIQUE,
-          created_at BIGINT NOT NULL,
-          expires_at BIGINT NOT NULL,
-          last_used BIGINT NOT NULL,
-          INDEX idx_credentials_expires (expires_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
       `);
 
@@ -135,14 +124,14 @@ export class MySQLStorage implements Storage {
         const id = request.id || await generateOfferHash(request.sdp);
 
         await conn.query(
-          `INSERT INTO offers (id, username, tags, sdp, created_at, expires_at, last_seen)
+          `INSERT INTO offers (id, public_key, tags, sdp, created_at, expires_at, last_seen)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [id, request.username, JSON.stringify(request.tags), request.sdp, now, request.expiresAt, now]
+          [id, request.publicKey, JSON.stringify(request.tags), request.sdp, now, request.expiresAt, now]
         );
 
         created.push({
           id,
-          username: request.username,
+          publicKey: request.publicKey,
           tags: request.tags,
           sdp: request.sdp,
           createdAt: now,
@@ -162,10 +151,10 @@ export class MySQLStorage implements Storage {
     return created;
   }
 
-  async getOffersByUsername(username: string): Promise<Offer[]> {
+  async getOffersByPublicKey(publicKey: string): Promise<Offer[]> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT * FROM offers WHERE username = ? AND expires_at > ? ORDER BY last_seen DESC`,
-      [username, Date.now()]
+      `SELECT * FROM offers WHERE public_key = ? AND expires_at > ? ORDER BY last_seen DESC`,
+      [publicKey, Date.now()]
     );
     return rows.map(row => this.rowToOffer(row));
   }
@@ -178,10 +167,10 @@ export class MySQLStorage implements Storage {
     return rows.length > 0 ? this.rowToOffer(rows[0]) : null;
   }
 
-  async deleteOffer(offerId: string, ownerUsername: string): Promise<boolean> {
+  async deleteOffer(offerId: string, ownerPublicKey: string): Promise<boolean> {
     const [result] = await this.pool.query<ResultSetHeader>(
-      `DELETE FROM offers WHERE id = ? AND username = ?`,
-      [offerId, ownerUsername]
+      `DELETE FROM offers WHERE id = ? AND public_key = ?`,
+      [offerId, ownerPublicKey]
     );
     return result.affectedRows > 0;
   }
@@ -196,7 +185,7 @@ export class MySQLStorage implements Storage {
 
   async answerOffer(
     offerId: string,
-    answererUsername: string,
+    answererPublicKey: string,
     answerSdp: string,
     matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
@@ -206,15 +195,15 @@ export class MySQLStorage implements Storage {
       return { success: false, error: 'Offer not found or expired' };
     }
 
-    if (offer.answererUsername) {
+    if (offer.answererPublicKey) {
       return { success: false, error: 'Offer already answered' };
     }
 
     const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
     const [result] = await this.pool.query<ResultSetHeader>(
-      `UPDATE offers SET answerer_username = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
-       WHERE id = ? AND answerer_username IS NULL`,
-      [answererUsername, answerSdp, Date.now(), matchedTagsJson, offerId]
+      `UPDATE offers SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
+       WHERE id = ? AND answerer_public_key IS NULL`,
+      [answererPublicKey, answerSdp, Date.now(), matchedTagsJson, offerId]
     );
 
     if (result.affectedRows === 0) {
@@ -224,22 +213,22 @@ export class MySQLStorage implements Storage {
     return { success: true };
   }
 
-  async getAnsweredOffers(offererUsername: string): Promise<Offer[]> {
+  async getAnsweredOffers(offererPublicKey: string): Promise<Offer[]> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `SELECT * FROM offers
-       WHERE username = ? AND answerer_username IS NOT NULL AND expires_at > ?
+       WHERE public_key = ? AND answerer_public_key IS NOT NULL AND expires_at > ?
        ORDER BY answered_at DESC`,
-      [offererUsername, Date.now()]
+      [offererPublicKey, Date.now()]
     );
     return rows.map(row => this.rowToOffer(row));
   }
 
-  async getOffersAnsweredBy(answererUsername: string): Promise<Offer[]> {
+  async getOffersAnsweredBy(answererPublicKey: string): Promise<Offer[]> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `SELECT * FROM offers
-       WHERE answerer_username = ? AND expires_at > ?
+       WHERE answerer_public_key = ? AND expires_at > ?
        ORDER BY answered_at DESC`,
-      [answererUsername, Date.now()]
+      [answererPublicKey, Date.now()]
     );
     return rows.map(row => this.rowToOffer(row));
   }
@@ -248,27 +237,25 @@ export class MySQLStorage implements Storage {
 
   async discoverOffers(
     tags: string[],
-    excludeUsername: string | null,
+    excludePublicKey: string | null,
     limit: number,
     offset: number
   ): Promise<Offer[]> {
     if (tags.length === 0) return [];
 
-    // Use JSON_OVERLAPS for efficient tag matching (MySQL 8.0.17+)
-    // Falls back to JSON_CONTAINS for each tag with OR logic
     const tagArray = JSON.stringify(tags);
 
     let query = `
       SELECT DISTINCT o.* FROM offers o
       WHERE JSON_OVERLAPS(o.tags, ?)
         AND o.expires_at > ?
-        AND o.answerer_username IS NULL
+        AND o.answerer_public_key IS NULL
     `;
     const params: any[] = [tagArray, Date.now()];
 
-    if (excludeUsername) {
-      query += ' AND o.username != ?';
-      params.push(excludeUsername);
+    if (excludePublicKey) {
+      query += ' AND o.public_key != ?';
+      params.push(excludePublicKey);
     }
 
     query += ' ORDER BY o.created_at DESC LIMIT ? OFFSET ?';
@@ -280,7 +267,7 @@ export class MySQLStorage implements Storage {
 
   async getRandomOffer(
     tags: string[],
-    excludeUsername: string | null
+    excludePublicKey: string | null
   ): Promise<Offer | null> {
     if (tags.length === 0) return null;
 
@@ -290,13 +277,13 @@ export class MySQLStorage implements Storage {
       SELECT DISTINCT o.* FROM offers o
       WHERE JSON_OVERLAPS(o.tags, ?)
         AND o.expires_at > ?
-        AND o.answerer_username IS NULL
+        AND o.answerer_public_key IS NULL
     `;
     const params: any[] = [tagArray, Date.now()];
 
-    if (excludeUsername) {
-      query += ' AND o.username != ?';
-      params.push(excludeUsername);
+    if (excludePublicKey) {
+      query += ' AND o.public_key != ?';
+      params.push(excludePublicKey);
     }
 
     query += ' ORDER BY RAND() LIMIT 1';
@@ -309,7 +296,7 @@ export class MySQLStorage implements Storage {
 
   async addIceCandidates(
     offerId: string,
-    username: string,
+    publicKey: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number> {
@@ -318,14 +305,14 @@ export class MySQLStorage implements Storage {
     const baseTimestamp = Date.now();
     const values = candidates.map((c, i) => [
       offerId,
-      username,
+      publicKey,
       role,
       JSON.stringify(c),
       baseTimestamp + i,
     ]);
 
     await this.pool.query(
-      `INSERT INTO ice_candidates (offer_id, username, role, candidate, created_at)
+      `INSERT INTO ice_candidates (offer_id, public_key, role, candidate, created_at)
        VALUES ?`,
       [values]
     );
@@ -354,7 +341,7 @@ export class MySQLStorage implements Storage {
 
   async getIceCandidatesForMultipleOffers(
     offerIds: string[],
-    username: string,
+    publicKey: string,
     since?: number
   ): Promise<Map<string, IceCandidate[]>> {
     const result = new Map<string, IceCandidate[]>();
@@ -367,16 +354,16 @@ export class MySQLStorage implements Storage {
     const placeholders = offerIds.map(() => '?').join(',');
 
     let query = `
-      SELECT ic.*, o.username as offer_username
+      SELECT ic.*, o.public_key as offer_public_key
       FROM ice_candidates ic
       INNER JOIN offers o ON o.id = ic.offer_id
       WHERE ic.offer_id IN (${placeholders})
       AND (
-        (o.username = ? AND ic.role = 'answerer')
-        OR (o.answerer_username = ? AND ic.role = 'offerer')
+        (o.public_key = ? AND ic.role = 'answerer')
+        OR (o.answerer_public_key = ? AND ic.role = 'offerer')
       )
     `;
-    const params: any[] = [...offerIds, username, username];
+    const params: any[] = [...offerIds, publicKey, publicKey];
 
     if (since !== undefined) {
       query += ' AND ic.created_at > ?';
@@ -398,113 +385,12 @@ export class MySQLStorage implements Storage {
     return result;
   }
 
-  // ===== Credential Management =====
-
-  async generateCredentials(request: GenerateCredentialsRequest): Promise<Credential> {
-    const now = Date.now();
-    const expiresAt = request.expiresAt || (now + YEAR_IN_MS);
-
-    const { generateCredentialName, generateSecret, encryptSecret } = await import('../crypto.ts');
-
-    let name: string;
-
-    if (request.name) {
-      const [existing] = await this.pool.query<RowDataPacket[]>(
-        `SELECT name FROM credentials WHERE name = ?`,
-        [request.name]
-      );
-
-      if (existing.length > 0) {
-        throw new Error('Username already taken');
-      }
-
-      name = request.name;
-    } else {
-      let attempts = 0;
-      const maxAttempts = 100;
-
-      while (attempts < maxAttempts) {
-        name = generateCredentialName();
-
-        const [existing] = await this.pool.query<RowDataPacket[]>(
-          `SELECT name FROM credentials WHERE name = ?`,
-          [name]
-        );
-
-        if (existing.length === 0) break;
-        attempts++;
-      }
-
-      if (attempts >= maxAttempts) {
-        throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
-      }
-    }
-
-    const secret = generateSecret();
-    const encryptedSecret = await encryptSecret(secret, this.masterEncryptionKey);
-
-    await this.pool.query(
-      `INSERT INTO credentials (name, secret, created_at, expires_at, last_used)
-       VALUES (?, ?, ?, ?, ?)`,
-      [name!, encryptedSecret, now, expiresAt, now]
-    );
-
-    return {
-      name: name!,
-      secret,
-      createdAt: now,
-      expiresAt,
-      lastUsed: now,
-    };
-  }
-
-  async getCredential(name: string): Promise<Credential | null> {
-    const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT * FROM credentials WHERE name = ? AND expires_at > ?`,
-      [name, Date.now()]
-    );
-
-    if (rows.length === 0) return null;
-
-    try {
-      const { decryptSecret } = await import('../crypto.ts');
-      const decryptedSecret = await decryptSecret(rows[0].secret, this.masterEncryptionKey);
-
-      return {
-        name: rows[0].name,
-        secret: decryptedSecret,
-        createdAt: Number(rows[0].created_at),
-        expiresAt: Number(rows[0].expires_at),
-        lastUsed: Number(rows[0].last_used),
-      };
-    } catch (error) {
-      console.error(`Failed to decrypt secret for credential '${name}':`, error);
-      return null;
-    }
-  }
-
-  async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
-    await this.pool.query(
-      `UPDATE credentials SET last_used = ?, expires_at = ? WHERE name = ?`,
-      [lastUsed, expiresAt, name]
-    );
-  }
-
-  async deleteExpiredCredentials(now: number): Promise<number> {
-    const [result] = await this.pool.query<ResultSetHeader>(
-      `DELETE FROM credentials WHERE expires_at < ?`,
-      [now]
-    );
-    return result.affectedRows;
-  }
-
   // ===== Rate Limiting =====
 
   async checkRateLimit(identifier: string, limit: number, windowMs: number): Promise<boolean> {
     const now = Date.now();
     const resetTime = now + windowMs;
 
-    // Use INSERT ... ON DUPLICATE KEY UPDATE for atomic upsert
     await this.pool.query(
       `INSERT INTO rate_limits (identifier, count, reset_time)
        VALUES (?, 1, ?)
@@ -514,7 +400,6 @@ export class MySQLStorage implements Storage {
       [identifier, resetTime, now, now, resetTime]
     );
 
-    // Get current count
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `SELECT count FROM rate_limits WHERE identifier = ?`,
       [identifier]
@@ -541,7 +426,6 @@ export class MySQLStorage implements Storage {
       );
       return true;
     } catch (error: any) {
-      // MySQL duplicate key error code
       if (error.code === 'ER_DUP_ENTRY') {
         return false;
       }
@@ -568,16 +452,11 @@ export class MySQLStorage implements Storage {
     return Number(rows[0].count);
   }
 
-  async getOfferCountByUsername(username: string): Promise<number> {
+  async getOfferCountByPublicKey(publicKey: string): Promise<number> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
-      'SELECT COUNT(*) as count FROM offers WHERE username = ?',
-      [username]
+      'SELECT COUNT(*) as count FROM offers WHERE public_key = ?',
+      [publicKey]
     );
-    return Number(rows[0].count);
-  }
-
-  async getCredentialCount(): Promise<number> {
-    const [rows] = await this.pool.query<RowDataPacket[]>('SELECT COUNT(*) as count FROM credentials');
     return Number(rows[0].count);
   }
 
@@ -594,13 +473,13 @@ export class MySQLStorage implements Storage {
   private rowToOffer(row: RowDataPacket): Offer {
     return {
       id: row.id,
-      username: row.username,
+      publicKey: row.public_key,
       tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags,
       sdp: row.sdp,
       createdAt: Number(row.created_at),
       expiresAt: Number(row.expires_at),
       lastSeen: Number(row.last_seen),
-      answererUsername: row.answerer_username || undefined,
+      answererPublicKey: row.answerer_public_key || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at ? Number(row.answered_at) : undefined,
       matchedTags: row.matched_tags ? (typeof row.matched_tags === 'string' ? JSON.parse(row.matched_tags) : row.matched_tags) : undefined,
@@ -611,7 +490,7 @@ export class MySQLStorage implements Storage {
     return {
       id: Number(row.id),
       offerId: row.offer_id,
-      username: row.username,
+      publicKey: row.public_key,
       role: row.role as 'offerer' | 'answerer',
       candidate: typeof row.candidate === 'string' ? JSON.parse(row.candidate) : row.candidate,
       createdAt: Number(row.created_at),

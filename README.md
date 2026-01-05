@@ -4,7 +4,7 @@
 
 **WebRTC signaling server with tags-based discovery**
 
-HTTP signaling server with credential-based authentication, tag-based offer discovery, and JSON-RPC interface. Multiple storage backends supported.
+HTTP signaling server with stateless Ed25519 authentication, tag-based offer discovery, and JSON-RPC interface. Multiple storage backends supported.
 
 ## Quick Start
 
@@ -57,21 +57,10 @@ npm install pg      # for PostgreSQL
 
 All API calls go to `POST /rpc` with JSON-RPC format. Requests must be arrays.
 
-### Generate Credentials
-
-```json
-[{ "method": "generateCredentials", "params": { "name": "alice" } }]
-```
-
-Response:
-```json
-[{ "success": true, "result": { "name": "alice", "secret": "5a7f3e..." } }]
-```
-
 ### Publish Offer (authenticated)
 
 ```
-Headers: X-Name, X-Timestamp, X-Nonce, X-Signature
+Headers: X-PublicKey, X-Timestamp, X-Nonce, X-Signature
 ```
 
 ```json
@@ -81,7 +70,7 @@ Headers: X-Name, X-Timestamp, X-Nonce, X-Signature
 }]
 ```
 
-### Discover Offers
+### Discover Offers (unauthenticated)
 
 ```json
 [{ "method": "discover", "params": { "tags": ["chat"], "limit": 10 } }]
@@ -97,17 +86,19 @@ Headers: X-Name, X-Timestamp, X-Nonce, X-Signature
 
 - `addIceCandidates` - Add ICE candidates
 - `getIceCandidates` - Get ICE candidates
-- `poll` - Poll for answers
+- `poll` - Poll for answers and ICE candidates
 - `deleteOffer` - Delete an offer
 
 ## Authentication
 
-Authenticated methods require HMAC-SHA256 signatures:
+**Stateless Ed25519**: No registration required. Generate a keypair locally and sign requests.
 
 ```
-Message: timestamp:nonce:method:JSON.stringify(params)
-Headers: X-Name, X-Timestamp, X-Nonce, X-Signature (base64 HMAC)
+Message: timestamp:nonce:method:canonicalJSON(params)
+Headers: X-PublicKey, X-Timestamp, X-Nonce, X-Signature (base64 Ed25519)
 ```
+
+The server verifies signatures directly using the public key from the header - no identity table, no registration step. Your public key IS your identity.
 
 ## Configuration
 
@@ -119,11 +110,8 @@ Headers: X-Name, X-Timestamp, X-Nonce, X-Signature (base64 HMAC)
 | `DATABASE_URL` | - | Connection string (for `mysql`/`postgres`) |
 | `DB_POOL_SIZE` | `10` | Connection pool size (for `mysql`/`postgres`) |
 | `CORS_ORIGINS` | `*` | Allowed origins |
-| `MASTER_ENCRYPTION_KEY` | - | 64-char hex for secret encryption |
 | `OFFER_DEFAULT_TTL` | `60000` | Default offer TTL (ms) |
 | `OFFER_MAX_TTL` | `86400000` | Max offer TTL (24h) |
-
-Generate encryption key: `openssl rand -hex 32`
 
 ## Tag Validation
 

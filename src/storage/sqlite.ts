@@ -4,12 +4,8 @@ import {
   Offer,
   IceCandidate,
   CreateOfferRequest,
-  Credential,
-  GenerateCredentialsRequest,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
-
-const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
 
 /**
  * SQLite storage adapter for rondevu signaling system
@@ -17,49 +13,58 @@ const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
  */
 export class SQLiteStorage implements Storage {
   private db: Database.Database;
-  private masterEncryptionKey: string;
 
   /**
    * Creates a new SQLite storage instance
    * @param path Path to SQLite database file, or ':memory:' for in-memory database
-   * @param masterEncryptionKey 64-char hex string for encrypting secrets (32 bytes)
    */
-  constructor(path: string = ':memory:', masterEncryptionKey: string) {
+  constructor(path: string = ':memory:') {
     this.db = new Database(path);
-    this.masterEncryptionKey = masterEncryptionKey;
     this.initializeDatabase();
   }
 
   /**
-   * Initializes database schema with tags-based offers
+   * Initializes database schema with Ed25519 public key identity
    */
   private initializeDatabase(): void {
     this.db.exec(`
+      -- Identities table (Ed25519 public key as identity)
+      CREATE TABLE IF NOT EXISTS identities (
+        public_key TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_used INTEGER NOT NULL,
+        CHECK(length(public_key) = 64)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_identities_expires ON identities(expires_at);
+
       -- WebRTC signaling offers with tags
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
-        username TEXT NOT NULL,
+        public_key TEXT NOT NULL,
         tags TEXT NOT NULL,
         sdp TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         last_seen INTEGER NOT NULL,
-        answerer_username TEXT,
+        answerer_public_key TEXT,
         answer_sdp TEXT,
         answered_at INTEGER,
-        matched_tags TEXT
+        matched_tags TEXT,
+        FOREIGN KEY (public_key) REFERENCES identities(public_key) ON DELETE CASCADE
       );
 
-      CREATE INDEX IF NOT EXISTS idx_offers_username ON offers(username);
+      CREATE INDEX IF NOT EXISTS idx_offers_public_key ON offers(public_key);
       CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
       CREATE INDEX IF NOT EXISTS idx_offers_last_seen ON offers(last_seen);
-      CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_username);
+      CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_public_key);
 
       -- ICE candidates table
       CREATE TABLE IF NOT EXISTS ice_candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         offer_id TEXT NOT NULL,
-        username TEXT NOT NULL,
+        public_key TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
         candidate TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -67,21 +72,8 @@ export class SQLiteStorage implements Storage {
       );
 
       CREATE INDEX IF NOT EXISTS idx_ice_offer ON ice_candidates(offer_id);
-      CREATE INDEX IF NOT EXISTS idx_ice_username ON ice_candidates(username);
+      CREATE INDEX IF NOT EXISTS idx_ice_public_key ON ice_candidates(public_key);
       CREATE INDEX IF NOT EXISTS idx_ice_created ON ice_candidates(created_at);
-
-      -- Credentials table (replaces usernames with simpler name + secret auth)
-      CREATE TABLE IF NOT EXISTS credentials (
-        name TEXT PRIMARY KEY,
-        secret TEXT NOT NULL UNIQUE,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        last_used INTEGER NOT NULL,
-        CHECK(length(name) >= 3 AND length(name) <= 32)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_credentials_expires ON credentials(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_credentials_secret ON credentials(secret);
 
       -- Rate limits table (for distributed rate limiting)
       CREATE TABLE IF NOT EXISTS rate_limits (
@@ -121,7 +113,7 @@ export class SQLiteStorage implements Storage {
     // Use transaction for atomic creation
     const transaction = this.db.transaction((offersWithIds: (CreateOfferRequest & { id: string })[]) => {
       const offerStmt = this.db.prepare(`
-        INSERT INTO offers (id, username, tags, sdp, created_at, expires_at, last_seen)
+        INSERT INTO offers (id, public_key, tags, sdp, created_at, expires_at, last_seen)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
 
@@ -131,7 +123,7 @@ export class SQLiteStorage implements Storage {
         // Insert offer with JSON-serialized tags
         offerStmt.run(
           offer.id,
-          offer.username,
+          offer.publicKey,
           JSON.stringify(offer.tags),
           offer.sdp,
           now,
@@ -141,7 +133,7 @@ export class SQLiteStorage implements Storage {
 
         created.push({
           id: offer.id,
-          username: offer.username,
+          publicKey: offer.publicKey,
           tags: offer.tags,
           sdp: offer.sdp,
           createdAt: now,
@@ -155,14 +147,14 @@ export class SQLiteStorage implements Storage {
     return created;
   }
 
-  async getOffersByUsername(username: string): Promise<Offer[]> {
+  async getOffersByPublicKey(publicKey: string): Promise<Offer[]> {
     const stmt = this.db.prepare(`
       SELECT * FROM offers
-      WHERE username = ? AND expires_at > ?
+      WHERE public_key = ? AND expires_at > ?
       ORDER BY last_seen DESC
     `);
 
-    const rows = stmt.all(username, Date.now()) as any[];
+    const rows = stmt.all(publicKey, Date.now()) as any[];
     return rows.map(row => this.rowToOffer(row));
   }
 
@@ -181,13 +173,13 @@ export class SQLiteStorage implements Storage {
     return this.rowToOffer(row);
   }
 
-  async deleteOffer(offerId: string, ownerUsername: string): Promise<boolean> {
+  async deleteOffer(offerId: string, ownerPublicKey: string): Promise<boolean> {
     const stmt = this.db.prepare(`
       DELETE FROM offers
-      WHERE id = ? AND username = ?
+      WHERE id = ? AND public_key = ?
     `);
 
-    const result = stmt.run(offerId, ownerUsername);
+    const result = stmt.run(offerId, ownerPublicKey);
     return result.changes > 0;
   }
 
@@ -199,7 +191,7 @@ export class SQLiteStorage implements Storage {
 
   async answerOffer(
     offerId: string,
-    answererUsername: string,
+    answererPublicKey: string,
     answerSdp: string,
     matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
@@ -214,7 +206,7 @@ export class SQLiteStorage implements Storage {
     }
 
     // Check if offer already has an answerer
-    if (offer.answererUsername) {
+    if (offer.answererPublicKey) {
       return {
         success: false,
         error: 'Offer already answered'
@@ -224,12 +216,12 @@ export class SQLiteStorage implements Storage {
     // Update offer with answer
     const stmt = this.db.prepare(`
       UPDATE offers
-      SET answerer_username = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
-      WHERE id = ? AND answerer_username IS NULL
+      SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
+      WHERE id = ? AND answerer_public_key IS NULL
     `);
 
     const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
-    const result = stmt.run(answererUsername, answerSdp, Date.now(), matchedTagsJson, offerId);
+    const result = stmt.run(answererPublicKey, answerSdp, Date.now(), matchedTagsJson, offerId);
 
     if (result.changes === 0) {
       return {
@@ -241,25 +233,25 @@ export class SQLiteStorage implements Storage {
     return { success: true };
   }
 
-  async getAnsweredOffers(offererUsername: string): Promise<Offer[]> {
+  async getAnsweredOffers(offererPublicKey: string): Promise<Offer[]> {
     const stmt = this.db.prepare(`
       SELECT * FROM offers
-      WHERE username = ? AND answerer_username IS NOT NULL AND expires_at > ?
+      WHERE public_key = ? AND answerer_public_key IS NOT NULL AND expires_at > ?
       ORDER BY answered_at DESC
     `);
 
-    const rows = stmt.all(offererUsername, Date.now()) as any[];
+    const rows = stmt.all(offererPublicKey, Date.now()) as any[];
     return rows.map(row => this.rowToOffer(row));
   }
 
-  async getOffersAnsweredBy(answererUsername: string): Promise<Offer[]> {
+  async getOffersAnsweredBy(answererPublicKey: string): Promise<Offer[]> {
     const stmt = this.db.prepare(`
       SELECT * FROM offers
-      WHERE answerer_username = ? AND expires_at > ?
+      WHERE answerer_public_key = ? AND expires_at > ?
       ORDER BY answered_at DESC
     `);
 
-    const rows = stmt.all(answererUsername, Date.now()) as any[];
+    const rows = stmt.all(answererPublicKey, Date.now()) as any[];
     return rows.map(row => this.rowToOffer(row));
   }
 
@@ -267,7 +259,7 @@ export class SQLiteStorage implements Storage {
 
   async discoverOffers(
     tags: string[],
-    excludeUsername: string | null,
+    excludePublicKey: string | null,
     limit: number,
     offset: number
   ): Promise<Offer[]> {
@@ -283,14 +275,14 @@ export class SQLiteStorage implements Storage {
       SELECT DISTINCT o.* FROM offers o, json_each(o.tags) as t
       WHERE t.value IN (${placeholders})
         AND o.expires_at > ?
-        AND o.answerer_username IS NULL
+        AND o.answerer_public_key IS NULL
     `;
 
     const params: any[] = [...tags, Date.now()];
 
-    if (excludeUsername) {
-      query += ' AND o.username != ?';
-      params.push(excludeUsername);
+    if (excludePublicKey) {
+      query += ' AND o.public_key != ?';
+      params.push(excludePublicKey);
     }
 
     query += ' ORDER BY o.created_at DESC LIMIT ? OFFSET ?';
@@ -303,7 +295,7 @@ export class SQLiteStorage implements Storage {
 
   async getRandomOffer(
     tags: string[],
-    excludeUsername: string | null
+    excludePublicKey: string | null
   ): Promise<Offer | null> {
     if (tags.length === 0) {
       return null;
@@ -316,14 +308,14 @@ export class SQLiteStorage implements Storage {
       SELECT DISTINCT o.* FROM offers o, json_each(o.tags) as t
       WHERE t.value IN (${placeholders})
         AND o.expires_at > ?
-        AND o.answerer_username IS NULL
+        AND o.answerer_public_key IS NULL
     `;
 
     const params: any[] = [...tags, Date.now()];
 
-    if (excludeUsername) {
-      query += ' AND o.username != ?';
-      params.push(excludeUsername);
+    if (excludePublicKey) {
+      query += ' AND o.public_key != ?';
+      params.push(excludePublicKey);
     }
 
     query += ' ORDER BY RANDOM() LIMIT 1';
@@ -338,12 +330,12 @@ export class SQLiteStorage implements Storage {
 
   async addIceCandidates(
     offerId: string,
-    username: string,
+    publicKey: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number> {
     const stmt = this.db.prepare(`
-      INSERT INTO ice_candidates (offer_id, username, role, candidate, created_at)
+      INSERT INTO ice_candidates (offer_id, public_key, role, candidate, created_at)
       VALUES (?, ?, ?, ?, ?)
     `);
 
@@ -352,7 +344,7 @@ export class SQLiteStorage implements Storage {
       for (let i = 0; i < candidates.length; i++) {
         stmt.run(
           offerId,
-          username,
+          publicKey,
           role,
           JSON.stringify(candidates[i]),
           baseTimestamp + i
@@ -389,7 +381,7 @@ export class SQLiteStorage implements Storage {
     return rows.map(row => ({
       id: row.id,
       offerId: row.offer_id,
-      username: row.username,
+      publicKey: row.public_key,
       role: row.role,
       candidate: JSON.parse(row.candidate),
       createdAt: row.created_at,
@@ -398,7 +390,7 @@ export class SQLiteStorage implements Storage {
 
   async getIceCandidatesForMultipleOffers(
     offerIds: string[],
-    username: string,
+    publicKey: string,
     since?: number
   ): Promise<Map<string, IceCandidate[]>> {
     const result = new Map<string, IceCandidate[]>();
@@ -423,17 +415,17 @@ export class SQLiteStorage implements Storage {
     const placeholders = offerIds.map(() => '?').join(',');
 
     let query = `
-      SELECT ic.*, o.username as offer_username
+      SELECT ic.*, o.public_key as offer_public_key
       FROM ice_candidates ic
       INNER JOIN offers o ON o.id = ic.offer_id
       WHERE ic.offer_id IN (${placeholders})
       AND (
-        (o.username = ? AND ic.role = 'answerer')
-        OR (o.answerer_username = ? AND ic.role = 'offerer')
+        (o.public_key = ? AND ic.role = 'answerer')
+        OR (o.answerer_public_key = ? AND ic.role = 'offerer')
       )
     `;
 
-    const params: any[] = [...offerIds, username, username];
+    const params: any[] = [...offerIds, publicKey, publicKey];
 
     if (since !== undefined) {
       query += ' AND ic.created_at > ?';
@@ -450,7 +442,7 @@ export class SQLiteStorage implements Storage {
       const candidate: IceCandidate = {
         id: row.id,
         offerId: row.offer_id,
-        username: row.username,
+        publicKey: row.public_key,
         role: row.role,
         candidate: JSON.parse(row.candidate),
         createdAt: row.created_at,
@@ -463,122 +455,6 @@ export class SQLiteStorage implements Storage {
     }
 
     return result;
-  }
-
-  // ===== Credential Management =====
-
-  async generateCredentials(request: GenerateCredentialsRequest): Promise<Credential> {
-    const now = Date.now();
-    const expiresAt = request.expiresAt || (now + YEAR_IN_MS);
-
-    const { generateCredentialName, generateSecret } = await import('../crypto.ts');
-
-    let name: string;
-
-    if (request.name) {
-      // User requested specific username - check if available
-      const existing = this.db.prepare(`
-        SELECT name FROM credentials WHERE name = ?
-      `).get(request.name);
-
-      if (existing) {
-        throw new Error('Username already taken');
-      }
-
-      name = request.name;
-    } else {
-      // Generate random name - retry until unique
-      let attempts = 0;
-      const maxAttempts = 100;
-
-      while (attempts < maxAttempts) {
-        name = generateCredentialName();
-
-        const existing = this.db.prepare(`
-          SELECT name FROM credentials WHERE name = ?
-        `).get(name);
-
-        if (!existing) {
-          break;
-        }
-
-        attempts++;
-      }
-
-      if (attempts >= maxAttempts) {
-        throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
-      }
-    }
-
-    const secret = generateSecret();
-
-    // Encrypt secret before storing (AES-256-GCM)
-    const { encryptSecret } = await import('../crypto.ts');
-    const encryptedSecret = await encryptSecret(secret, this.masterEncryptionKey);
-
-    // Insert credential with encrypted secret
-    const stmt = this.db.prepare(`
-      INSERT INTO credentials (name, secret, created_at, expires_at, last_used)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    stmt.run(name!, encryptedSecret, now, expiresAt, now);
-
-    // Return plaintext secret to user (only time they'll see it)
-    return {
-      name: name!,
-      secret, // Return plaintext secret, not encrypted
-      createdAt: now,
-      expiresAt,
-      lastUsed: now,
-    };
-  }
-
-  async getCredential(name: string): Promise<Credential | null> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM credentials
-      WHERE name = ? AND expires_at > ?
-    `);
-
-    const row = stmt.get(name, Date.now()) as any;
-
-    if (!row) {
-      return null;
-    }
-
-    // Decrypt secret before returning
-    // If decryption fails (e.g., master key rotated), treat as credential not found
-    try {
-      const { decryptSecret } = await import('../crypto.ts');
-      const decryptedSecret = await decryptSecret(row.secret, this.masterEncryptionKey);
-
-      return {
-        name: row.name,
-        secret: decryptedSecret, // Return decrypted secret
-        createdAt: row.created_at,
-        expiresAt: row.expires_at,
-        lastUsed: row.last_used,
-      };
-    } catch (error) {
-      console.error(`Failed to decrypt secret for credential '${name}':`, error);
-      return null; // Treat as credential not found (fail-safe behavior)
-    }
-  }
-
-  async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
-    const stmt = this.db.prepare(`
-      UPDATE credentials
-      SET last_used = ?, expires_at = ?
-      WHERE name = ?
-    `);
-
-    stmt.run(lastUsed, expiresAt, name);
-  }
-
-  async deleteExpiredCredentials(now: number): Promise<number> {
-    const stmt = this.db.prepare('DELETE FROM credentials WHERE expires_at < ?');
-    const result = stmt.run(now);
-    return result.changes;
   }
 
   // ===== Rate Limiting =====
@@ -652,13 +528,8 @@ export class SQLiteStorage implements Storage {
     return result.count;
   }
 
-  async getOfferCountByUsername(username: string): Promise<number> {
-    const result = this.db.prepare('SELECT COUNT(*) as count FROM offers WHERE username = ?').get(username) as { count: number };
-    return result.count;
-  }
-
-  async getCredentialCount(): Promise<number> {
-    const result = this.db.prepare('SELECT COUNT(*) as count FROM credentials').get() as { count: number };
+  async getOfferCountByPublicKey(publicKey: string): Promise<number> {
+    const result = this.db.prepare('SELECT COUNT(*) as count FROM offers WHERE public_key = ?').get(publicKey) as { count: number };
     return result.count;
   }
 
@@ -675,13 +546,13 @@ export class SQLiteStorage implements Storage {
   private rowToOffer(row: any): Offer {
     return {
       id: row.id,
-      username: row.username,
+      publicKey: row.public_key,
       tags: JSON.parse(row.tags),
       sdp: row.sdp,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastSeen: row.last_seen,
-      answererUsername: row.answerer_username || undefined,
+      answererPublicKey: row.answerer_public_key || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at || undefined,
       matchedTags: row.matched_tags ? JSON.parse(row.matched_tags) : undefined,

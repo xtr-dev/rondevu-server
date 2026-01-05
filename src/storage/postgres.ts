@@ -1,40 +1,29 @@
-import { Pool, QueryResult } from 'pg';
+import { Pool } from 'pg';
 import {
   Storage,
   Offer,
   IceCandidate,
   CreateOfferRequest,
-  Credential,
-  GenerateCredentialsRequest,
 } from './types.ts';
 import { generateOfferHash } from './hash-id.ts';
 
-const YEAR_IN_MS = 365 * 24 * 60 * 60 * 1000;
-
 /**
  * PostgreSQL storage adapter for rondevu signaling system
- * Uses connection pooling for efficient resource management
+ * Uses Ed25519 public key as identity (no usernames, no secrets)
  */
 export class PostgreSQLStorage implements Storage {
   private pool: Pool;
-  private masterEncryptionKey: string;
 
-  private constructor(pool: Pool, masterEncryptionKey: string) {
+  private constructor(pool: Pool) {
     this.pool = pool;
-    this.masterEncryptionKey = masterEncryptionKey;
   }
 
   /**
    * Creates a new PostgreSQL storage instance with connection pooling
    * @param connectionString PostgreSQL connection URL
-   * @param masterEncryptionKey 64-char hex string for encrypting secrets
    * @param poolSize Maximum number of connections in the pool
    */
-  static async create(
-    connectionString: string,
-    masterEncryptionKey: string,
-    poolSize: number = 10
-  ): Promise<PostgreSQLStorage> {
+  static async create(connectionString: string, poolSize: number = 10): Promise<PostgreSQLStorage> {
     const pool = new Pool({
       connectionString,
       max: poolSize,
@@ -42,7 +31,7 @@ export class PostgreSQLStorage implements Storage {
       connectionTimeoutMillis: 5000,
     });
 
-    const storage = new PostgreSQLStorage(pool, masterEncryptionKey);
+    const storage = new PostgreSQLStorage(pool);
     await storage.initializeDatabase();
     return storage;
   }
@@ -51,32 +40,43 @@ export class PostgreSQLStorage implements Storage {
     const client = await this.pool.connect();
     try {
       await client.query(`
+        CREATE TABLE IF NOT EXISTS identities (
+          public_key CHAR(64) PRIMARY KEY,
+          created_at BIGINT NOT NULL,
+          expires_at BIGINT NOT NULL,
+          last_used BIGINT NOT NULL
+        )
+      `);
+
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_identities_expires ON identities(expires_at)`);
+
+      await client.query(`
         CREATE TABLE IF NOT EXISTS offers (
           id VARCHAR(64) PRIMARY KEY,
-          username VARCHAR(32) NOT NULL,
+          public_key CHAR(64) NOT NULL REFERENCES identities(public_key) ON DELETE CASCADE,
           tags JSONB NOT NULL,
           sdp TEXT NOT NULL,
           created_at BIGINT NOT NULL,
           expires_at BIGINT NOT NULL,
           last_seen BIGINT NOT NULL,
-          answerer_username VARCHAR(32),
+          answerer_public_key CHAR(64),
           answer_sdp TEXT,
           answered_at BIGINT,
           matched_tags JSONB
         )
       `);
 
-      await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_username ON offers(username)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_public_key ON offers(public_key)`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at)`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_last_seen ON offers(last_seen)`);
-      await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_username)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_public_key)`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_tags ON offers USING GIN(tags)`);
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS ice_candidates (
           id BIGSERIAL PRIMARY KEY,
           offer_id VARCHAR(64) NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
-          username VARCHAR(32) NOT NULL,
+          public_key CHAR(64) NOT NULL,
           role VARCHAR(8) NOT NULL CHECK (role IN ('offerer', 'answerer')),
           candidate JSONB NOT NULL,
           created_at BIGINT NOT NULL
@@ -84,20 +84,8 @@ export class PostgreSQLStorage implements Storage {
       `);
 
       await client.query(`CREATE INDEX IF NOT EXISTS idx_ice_offer ON ice_candidates(offer_id)`);
-      await client.query(`CREATE INDEX IF NOT EXISTS idx_ice_username ON ice_candidates(username)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_ice_public_key ON ice_candidates(public_key)`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_ice_created ON ice_candidates(created_at)`);
-
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS credentials (
-          name VARCHAR(32) PRIMARY KEY,
-          secret VARCHAR(512) NOT NULL UNIQUE,
-          created_at BIGINT NOT NULL,
-          expires_at BIGINT NOT NULL,
-          last_used BIGINT NOT NULL
-        )
-      `);
-
-      await client.query(`CREATE INDEX IF NOT EXISTS idx_credentials_expires ON credentials(expires_at)`);
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS rate_limits (
@@ -138,14 +126,14 @@ export class PostgreSQLStorage implements Storage {
         const id = request.id || await generateOfferHash(request.sdp);
 
         await client.query(
-          `INSERT INTO offers (id, username, tags, sdp, created_at, expires_at, last_seen)
+          `INSERT INTO offers (id, public_key, tags, sdp, created_at, expires_at, last_seen)
            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [id, request.username, JSON.stringify(request.tags), request.sdp, now, request.expiresAt, now]
+          [id, request.publicKey, JSON.stringify(request.tags), request.sdp, now, request.expiresAt, now]
         );
 
         created.push({
           id,
-          username: request.username,
+          publicKey: request.publicKey,
           tags: request.tags,
           sdp: request.sdp,
           createdAt: now,
@@ -165,10 +153,10 @@ export class PostgreSQLStorage implements Storage {
     return created;
   }
 
-  async getOffersByUsername(username: string): Promise<Offer[]> {
+  async getOffersByPublicKey(publicKey: string): Promise<Offer[]> {
     const result = await this.pool.query(
-      `SELECT * FROM offers WHERE username = $1 AND expires_at > $2 ORDER BY last_seen DESC`,
-      [username, Date.now()]
+      `SELECT * FROM offers WHERE public_key = $1 AND expires_at > $2 ORDER BY last_seen DESC`,
+      [publicKey, Date.now()]
     );
     return result.rows.map(row => this.rowToOffer(row));
   }
@@ -181,10 +169,10 @@ export class PostgreSQLStorage implements Storage {
     return result.rows.length > 0 ? this.rowToOffer(result.rows[0]) : null;
   }
 
-  async deleteOffer(offerId: string, ownerUsername: string): Promise<boolean> {
+  async deleteOffer(offerId: string, ownerPublicKey: string): Promise<boolean> {
     const result = await this.pool.query(
-      `DELETE FROM offers WHERE id = $1 AND username = $2`,
-      [offerId, ownerUsername]
+      `DELETE FROM offers WHERE id = $1 AND public_key = $2`,
+      [offerId, ownerPublicKey]
     );
     return (result.rowCount ?? 0) > 0;
   }
@@ -199,7 +187,7 @@ export class PostgreSQLStorage implements Storage {
 
   async answerOffer(
     offerId: string,
-    answererUsername: string,
+    answererPublicKey: string,
     answerSdp: string,
     matchedTags?: string[]
   ): Promise<{ success: boolean; error?: string }> {
@@ -209,15 +197,15 @@ export class PostgreSQLStorage implements Storage {
       return { success: false, error: 'Offer not found or expired' };
     }
 
-    if (offer.answererUsername) {
+    if (offer.answererPublicKey) {
       return { success: false, error: 'Offer already answered' };
     }
 
     const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
     const result = await this.pool.query(
-      `UPDATE offers SET answerer_username = $1, answer_sdp = $2, answered_at = $3, matched_tags = $4
-       WHERE id = $5 AND answerer_username IS NULL`,
-      [answererUsername, answerSdp, Date.now(), matchedTagsJson, offerId]
+      `UPDATE offers SET answerer_public_key = $1, answer_sdp = $2, answered_at = $3, matched_tags = $4
+       WHERE id = $5 AND answerer_public_key IS NULL`,
+      [answererPublicKey, answerSdp, Date.now(), matchedTagsJson, offerId]
     );
 
     if ((result.rowCount ?? 0) === 0) {
@@ -227,22 +215,22 @@ export class PostgreSQLStorage implements Storage {
     return { success: true };
   }
 
-  async getAnsweredOffers(offererUsername: string): Promise<Offer[]> {
+  async getAnsweredOffers(offererPublicKey: string): Promise<Offer[]> {
     const result = await this.pool.query(
       `SELECT * FROM offers
-       WHERE username = $1 AND answerer_username IS NOT NULL AND expires_at > $2
+       WHERE public_key = $1 AND answerer_public_key IS NOT NULL AND expires_at > $2
        ORDER BY answered_at DESC`,
-      [offererUsername, Date.now()]
+      [offererPublicKey, Date.now()]
     );
     return result.rows.map(row => this.rowToOffer(row));
   }
 
-  async getOffersAnsweredBy(answererUsername: string): Promise<Offer[]> {
+  async getOffersAnsweredBy(answererPublicKey: string): Promise<Offer[]> {
     const result = await this.pool.query(
       `SELECT * FROM offers
-       WHERE answerer_username = $1 AND expires_at > $2
+       WHERE answerer_public_key = $1 AND expires_at > $2
        ORDER BY answered_at DESC`,
-      [answererUsername, Date.now()]
+      [answererPublicKey, Date.now()]
     );
     return result.rows.map(row => this.rowToOffer(row));
   }
@@ -251,25 +239,24 @@ export class PostgreSQLStorage implements Storage {
 
   async discoverOffers(
     tags: string[],
-    excludeUsername: string | null,
+    excludePublicKey: string | null,
     limit: number,
     offset: number
   ): Promise<Offer[]> {
     if (tags.length === 0) return [];
 
-    // Use PostgreSQL's ?| operator for JSONB array overlap
     let query = `
       SELECT DISTINCT o.* FROM offers o
       WHERE o.tags ?| $1
         AND o.expires_at > $2
-        AND o.answerer_username IS NULL
+        AND o.answerer_public_key IS NULL
     `;
     const params: any[] = [tags, Date.now()];
     let paramIndex = 3;
 
-    if (excludeUsername) {
-      query += ` AND o.username != $${paramIndex}`;
-      params.push(excludeUsername);
+    if (excludePublicKey) {
+      query += ` AND o.public_key != $${paramIndex}`;
+      params.push(excludePublicKey);
       paramIndex++;
     }
 
@@ -282,7 +269,7 @@ export class PostgreSQLStorage implements Storage {
 
   async getRandomOffer(
     tags: string[],
-    excludeUsername: string | null
+    excludePublicKey: string | null
   ): Promise<Offer | null> {
     if (tags.length === 0) return null;
 
@@ -290,14 +277,14 @@ export class PostgreSQLStorage implements Storage {
       SELECT DISTINCT o.* FROM offers o
       WHERE o.tags ?| $1
         AND o.expires_at > $2
-        AND o.answerer_username IS NULL
+        AND o.answerer_public_key IS NULL
     `;
     const params: any[] = [tags, Date.now()];
     let paramIndex = 3;
 
-    if (excludeUsername) {
-      query += ` AND o.username != $${paramIndex}`;
-      params.push(excludeUsername);
+    if (excludePublicKey) {
+      query += ` AND o.public_key != $${paramIndex}`;
+      params.push(excludePublicKey);
     }
 
     query += ' ORDER BY RANDOM() LIMIT 1';
@@ -310,7 +297,7 @@ export class PostgreSQLStorage implements Storage {
 
   async addIceCandidates(
     offerId: string,
-    username: string,
+    publicKey: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number> {
@@ -324,9 +311,9 @@ export class PostgreSQLStorage implements Storage {
 
       for (let i = 0; i < candidates.length; i++) {
         await client.query(
-          `INSERT INTO ice_candidates (offer_id, username, role, candidate, created_at)
+          `INSERT INTO ice_candidates (offer_id, public_key, role, candidate, created_at)
            VALUES ($1, $2, $3, $4, $5)`,
-          [offerId, username, role, JSON.stringify(candidates[i]), baseTimestamp + i]
+          [offerId, publicKey, role, JSON.stringify(candidates[i]), baseTimestamp + i]
         );
       }
 
@@ -362,7 +349,7 @@ export class PostgreSQLStorage implements Storage {
 
   async getIceCandidatesForMultipleOffers(
     offerIds: string[],
-    username: string,
+    publicKey: string,
     since?: number
   ): Promise<Map<string, IceCandidate[]>> {
     const resultMap = new Map<string, IceCandidate[]>();
@@ -373,16 +360,16 @@ export class PostgreSQLStorage implements Storage {
     }
 
     let query = `
-      SELECT ic.*, o.username as offer_username
+      SELECT ic.*, o.public_key as offer_public_key
       FROM ice_candidates ic
       INNER JOIN offers o ON o.id = ic.offer_id
       WHERE ic.offer_id = ANY($1)
       AND (
-        (o.username = $2 AND ic.role = 'answerer')
-        OR (o.answerer_username = $2 AND ic.role = 'offerer')
+        (o.public_key = $2 AND ic.role = 'answerer')
+        OR (o.answerer_public_key = $2 AND ic.role = 'offerer')
       )
     `;
-    const params: any[] = [offerIds, username];
+    const params: any[] = [offerIds, publicKey];
 
     if (since !== undefined) {
       query += ' AND ic.created_at > $3';
@@ -404,113 +391,12 @@ export class PostgreSQLStorage implements Storage {
     return resultMap;
   }
 
-  // ===== Credential Management =====
-
-  async generateCredentials(request: GenerateCredentialsRequest): Promise<Credential> {
-    const now = Date.now();
-    const expiresAt = request.expiresAt || (now + YEAR_IN_MS);
-
-    const { generateCredentialName, generateSecret, encryptSecret } = await import('../crypto.ts');
-
-    let name: string;
-
-    if (request.name) {
-      const existing = await this.pool.query(
-        `SELECT name FROM credentials WHERE name = $1`,
-        [request.name]
-      );
-
-      if (existing.rows.length > 0) {
-        throw new Error('Username already taken');
-      }
-
-      name = request.name;
-    } else {
-      let attempts = 0;
-      const maxAttempts = 100;
-
-      while (attempts < maxAttempts) {
-        name = generateCredentialName();
-
-        const existing = await this.pool.query(
-          `SELECT name FROM credentials WHERE name = $1`,
-          [name]
-        );
-
-        if (existing.rows.length === 0) break;
-        attempts++;
-      }
-
-      if (attempts >= maxAttempts) {
-        throw new Error(`Failed to generate unique credential name after ${maxAttempts} attempts`);
-      }
-    }
-
-    const secret = generateSecret();
-    const encryptedSecret = await encryptSecret(secret, this.masterEncryptionKey);
-
-    await this.pool.query(
-      `INSERT INTO credentials (name, secret, created_at, expires_at, last_used)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [name!, encryptedSecret, now, expiresAt, now]
-    );
-
-    return {
-      name: name!,
-      secret,
-      createdAt: now,
-      expiresAt,
-      lastUsed: now,
-    };
-  }
-
-  async getCredential(name: string): Promise<Credential | null> {
-    const result = await this.pool.query(
-      `SELECT * FROM credentials WHERE name = $1 AND expires_at > $2`,
-      [name, Date.now()]
-    );
-
-    if (result.rows.length === 0) return null;
-
-    try {
-      const { decryptSecret } = await import('../crypto.ts');
-      const decryptedSecret = await decryptSecret(result.rows[0].secret, this.masterEncryptionKey);
-
-      return {
-        name: result.rows[0].name,
-        secret: decryptedSecret,
-        createdAt: Number(result.rows[0].created_at),
-        expiresAt: Number(result.rows[0].expires_at),
-        lastUsed: Number(result.rows[0].last_used),
-      };
-    } catch (error) {
-      console.error(`Failed to decrypt secret for credential '${name}':`, error);
-      return null;
-    }
-  }
-
-  async updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void> {
-    await this.pool.query(
-      `UPDATE credentials SET last_used = $1, expires_at = $2 WHERE name = $3`,
-      [lastUsed, expiresAt, name]
-    );
-  }
-
-  async deleteExpiredCredentials(now: number): Promise<number> {
-    const result = await this.pool.query(
-      `DELETE FROM credentials WHERE expires_at < $1`,
-      [now]
-    );
-    return result.rowCount ?? 0;
-  }
-
   // ===== Rate Limiting =====
 
   async checkRateLimit(identifier: string, limit: number, windowMs: number): Promise<boolean> {
     const now = Date.now();
     const resetTime = now + windowMs;
 
-    // Use INSERT ... ON CONFLICT for atomic upsert
     const result = await this.pool.query(
       `INSERT INTO rate_limits (identifier, count, reset_time)
        VALUES ($1, 1, $2)
@@ -548,7 +434,6 @@ export class PostgreSQLStorage implements Storage {
       );
       return true;
     } catch (error: any) {
-      // PostgreSQL unique violation error code
       if (error.code === '23505') {
         return false;
       }
@@ -575,16 +460,11 @@ export class PostgreSQLStorage implements Storage {
     return Number(result.rows[0].count);
   }
 
-  async getOfferCountByUsername(username: string): Promise<number> {
+  async getOfferCountByPublicKey(publicKey: string): Promise<number> {
     const result = await this.pool.query(
-      'SELECT COUNT(*) as count FROM offers WHERE username = $1',
-      [username]
+      'SELECT COUNT(*) as count FROM offers WHERE public_key = $1',
+      [publicKey]
     );
-    return Number(result.rows[0].count);
-  }
-
-  async getCredentialCount(): Promise<number> {
-    const result = await this.pool.query('SELECT COUNT(*) as count FROM credentials');
     return Number(result.rows[0].count);
   }
 
@@ -601,13 +481,13 @@ export class PostgreSQLStorage implements Storage {
   private rowToOffer(row: any): Offer {
     return {
       id: row.id,
-      username: row.username,
+      publicKey: row.public_key.trim(),
       tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags,
       sdp: row.sdp,
       createdAt: Number(row.created_at),
       expiresAt: Number(row.expires_at),
       lastSeen: Number(row.last_seen),
-      answererUsername: row.answerer_username || undefined,
+      answererPublicKey: row.answerer_public_key?.trim() || undefined,
       answerSdp: row.answer_sdp || undefined,
       answeredAt: row.answered_at ? Number(row.answered_at) : undefined,
       matchedTags: row.matched_tags || undefined,
@@ -618,7 +498,7 @@ export class PostgreSQLStorage implements Storage {
     return {
       id: Number(row.id),
       offerId: row.offer_id,
-      username: row.username,
+      publicKey: row.public_key.trim(),
       role: row.role as 'offerer' | 'answerer',
       candidate: typeof row.candidate === 'string' ? JSON.parse(row.candidate) : row.candidate,
       createdAt: Number(row.created_at),

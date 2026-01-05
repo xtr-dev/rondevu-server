@@ -3,13 +3,13 @@
  */
 export interface Offer {
   id: string;
-  username: string;
+  publicKey: string;  // Owner's Ed25519 public key
   tags: string[]; // Tags for discovery (match ANY)
   sdp: string;
   createdAt: number;
   expiresAt: number;
   lastSeen: number;
-  answererUsername?: string;
+  answererPublicKey?: string;
   answerSdp?: string;
   answeredAt?: number;
   matchedTags?: string[];  // Tags the answerer searched for to find this offer
@@ -22,7 +22,7 @@ export interface Offer {
 export interface IceCandidate {
   id: number;
   offerId: string;
-  username: string;
+  publicKey: string;  // Sender's Ed25519 public key
   role: 'offerer' | 'answerer';
   candidate: any; // Full candidate object as JSON - don't enforce structure
   createdAt: number;
@@ -33,30 +33,10 @@ export interface IceCandidate {
  */
 export interface CreateOfferRequest {
   id?: string;
-  username: string;
+  publicKey: string;  // Owner's Ed25519 public key
   tags: string[]; // Tags for discovery
   sdp: string;
   expiresAt: number;
-}
-
-/**
- * Represents a credential (random name + secret pair)
- * Replaces the old username/publicKey system for simpler authentication
- */
-export interface Credential {
-  name: string; // Random name (e.g., "brave-tiger-7a3f")
-  secret: string; // Random secret (API key style)
-  createdAt: number;
-  expiresAt: number; // 365 days from creation/last use
-  lastUsed: number;
-}
-
-/**
- * Request to generate new credentials
- */
-export interface GenerateCredentialsRequest {
-  name?: string;      // Optional: claim specific username (must be unique, 4-32 chars)
-  expiresAt?: number; // Optional: override default expiry
 }
 
 /**
@@ -86,11 +66,11 @@ export interface Storage {
   createOffers(offers: CreateOfferRequest[]): Promise<Offer[]>;
 
   /**
-   * Retrieves all offers from a specific user
-   * @param username Username identifier
-   * @returns Array of offers from the user
+   * Retrieves all offers from a specific owner
+   * @param publicKey Owner's Ed25519 public key
+   * @returns Array of offers from the owner
    */
-  getOffersByUsername(username: string): Promise<Offer[]>;
+  getOffersByPublicKey(publicKey: string): Promise<Offer[]>;
 
   /**
    * Retrieves a specific offer by ID
@@ -102,10 +82,10 @@ export interface Storage {
   /**
    * Deletes an offer (with ownership verification)
    * @param offerId Offer identifier
-   * @param ownerUsername Username of the owner (for verification)
+   * @param ownerPublicKey Public key of the owner (for verification)
    * @returns true if deleted, false if not found or not owned
    */
-  deleteOffer(offerId: string, ownerUsername: string): Promise<boolean>;
+  deleteOffer(offerId: string, ownerPublicKey: string): Promise<boolean>;
 
   /**
    * Deletes all expired offers
@@ -117,44 +97,44 @@ export interface Storage {
   /**
    * Answers an offer (locks it to the answerer)
    * @param offerId Offer identifier
-   * @param answererUsername Answerer's username
+   * @param answererPublicKey Answerer's public key
    * @param answerSdp WebRTC answer SDP
    * @param matchedTags Optional tags the answerer searched for to find this offer
    * @returns Success status and optional error message
    */
-  answerOffer(offerId: string, answererUsername: string, answerSdp: string, matchedTags?: string[]): Promise<{
+  answerOffer(offerId: string, answererPublicKey: string, answerSdp: string, matchedTags?: string[]): Promise<{
     success: boolean;
     error?: string;
   }>;
 
   /**
    * Retrieves all answered offers for a specific offerer
-   * @param offererUsername Offerer's username
+   * @param offererPublicKey Offerer's public key
    * @returns Array of answered offers
    */
-  getAnsweredOffers(offererUsername: string): Promise<Offer[]>;
+  getAnsweredOffers(offererPublicKey: string): Promise<Offer[]>;
 
   /**
    * Retrieves all offers answered by a specific user (where they are the answerer)
-   * @param answererUsername Answerer's username
+   * @param answererPublicKey Answerer's public key
    * @returns Array of offers the user has answered
    */
-  getOffersAnsweredBy(answererUsername: string): Promise<Offer[]>;
+  getOffersAnsweredBy(answererPublicKey: string): Promise<Offer[]>;
 
   // ===== Discovery =====
 
   /**
    * Discovers offers by tags with pagination
-   * Returns available offers (where answerer_username IS NULL) matching ANY of the provided tags
+   * Returns available offers (where answerer_public_key IS NULL) matching ANY of the provided tags
    * @param tags Array of tags to match (OR logic)
-   * @param excludeUsername Optional username to exclude from results (self-exclusion)
+   * @param excludePublicKey Optional public key to exclude from results (self-exclusion)
    * @param limit Maximum number of offers to return
    * @param offset Number of offers to skip
    * @returns Array of available offers matching tags
    */
   discoverOffers(
     tags: string[],
-    excludeUsername: string | null,
+    excludePublicKey: string | null,
     limit: number,
     offset: number
   ): Promise<Offer[]>;
@@ -162,12 +142,12 @@ export interface Storage {
   /**
    * Gets a random available offer matching any of the provided tags
    * @param tags Array of tags to match (OR logic)
-   * @param excludeUsername Optional username to exclude (self-exclusion)
+   * @param excludePublicKey Optional public key to exclude (self-exclusion)
    * @returns Random available offer, or null if none found
    */
   getRandomOffer(
     tags: string[],
-    excludeUsername: string | null
+    excludePublicKey: string | null
   ): Promise<Offer | null>;
 
   // ===== ICE Candidate Management =====
@@ -175,14 +155,14 @@ export interface Storage {
   /**
    * Adds ICE candidates for an offer
    * @param offerId Offer identifier
-   * @param username Username posting the candidates
+   * @param publicKey Public key posting the candidates
    * @param role Role of the user (offerer or answerer)
    * @param candidates Array of candidate objects (stored as plain JSON)
    * @returns Number of candidates added
    */
   addIceCandidates(
     offerId: string,
-    username: string,
+    publicKey: string,
     role: 'offerer' | 'answerer',
     candidates: any[]
   ): Promise<number>;
@@ -203,47 +183,15 @@ export interface Storage {
   /**
    * Retrieves ICE candidates for multiple offers (batch operation)
    * @param offerIds Array of offer identifiers
-   * @param username Username requesting the candidates
+   * @param publicKey Public key requesting the candidates
    * @param since Optional timestamp - only return candidates after this time
    * @returns Map of offer ID to ICE candidates
    */
   getIceCandidatesForMultipleOffers(
     offerIds: string[],
-    username: string,
+    publicKey: string,
     since?: number
   ): Promise<Map<string, IceCandidate[]>>;
-
-  // ===== Credential Management =====
-
-  /**
-   * Generates a new credential (random name + secret)
-   * @param request Credential generation request
-   * @returns Created credential record
-   */
-  generateCredentials(request: GenerateCredentialsRequest): Promise<Credential>;
-
-  /**
-   * Gets a credential by name
-   * @param name Credential name
-   * @returns Credential record if found, null otherwise
-   */
-  getCredential(name: string): Promise<Credential | null>;
-
-  /**
-   * Updates credential usage timestamp and expiry
-   * Called after successful signature verification
-   * @param name Credential name
-   * @param lastUsed Last used timestamp
-   * @param expiresAt New expiry timestamp
-   */
-  updateCredentialUsage(name: string, lastUsed: number, expiresAt: number): Promise<void>;
-
-  /**
-   * Deletes all expired credentials
-   * @param now Current timestamp
-   * @returns Number of credentials deleted
-   */
-  deleteExpiredCredentials(now: number): Promise<number>;
 
   // ===== Rate Limiting =====
 
@@ -267,7 +215,7 @@ export interface Storage {
 
   /**
    * Check if nonce has been used and mark it as used (atomic operation)
-   * @param nonceKey Unique nonce identifier (format: "nonce:{name}:{nonce}")
+   * @param nonceKey Unique nonce identifier (format: "nonce:{publicKey}:{nonce}")
    * @param expiresAt Timestamp when nonce expires (should be timestamp + timestampMaxAge)
    * @returns true if nonce is new (allowed), false if already used (replay attack)
    */
@@ -294,17 +242,11 @@ export interface Storage {
   getOfferCount(): Promise<number>;
 
   /**
-   * Gets number of offers for a specific user
-   * @param username Username identifier
-   * @returns Offer count for user
+   * Gets number of offers for a specific owner
+   * @param publicKey Owner's public key
+   * @returns Offer count for owner
    */
-  getOfferCountByUsername(username: string): Promise<number>;
-
-  /**
-   * Gets total number of credentials in storage
-   * @returns Total credential count
-   */
-  getCredentialCount(): Promise<number>;
+  getOfferCountByPublicKey(publicKey: string): Promise<number>;
 
   /**
    * Gets number of ICE candidates for a specific offer
