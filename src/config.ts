@@ -32,7 +32,7 @@ export interface Config {
   maxTotalOffers: number; // Max total offers in storage
   maxTotalCredentials: number; // Max total credentials in storage
   maxIceCandidatesPerOffer: number; // Max ICE candidates per offer
-  credentialsPerIpPerHour: number; // Rate limit: credentials per IP per hour
+  credentialsPerIpPerSecond: number; // Rate limit: credentials per IP per second
   requestsPerIpPerSecond: number; // Rate limit: requests per IP per second
 }
 
@@ -113,7 +113,7 @@ export function loadConfig(): Config {
     maxTotalOffers: parsePositiveInt(process.env.MAX_TOTAL_OFFERS, '10000', 'MAX_TOTAL_OFFERS', 1),
     maxTotalCredentials: parsePositiveInt(process.env.MAX_TOTAL_CREDENTIALS, '50000', 'MAX_TOTAL_CREDENTIALS', 1),
     maxIceCandidatesPerOffer: parsePositiveInt(process.env.MAX_ICE_CANDIDATES_PER_OFFER, '50', 'MAX_ICE_CANDIDATES_PER_OFFER', 1),
-    credentialsPerIpPerHour: parsePositiveInt(process.env.CREDENTIALS_PER_IP_PER_HOUR, '10', 'CREDENTIALS_PER_IP_PER_HOUR', 1),
+    credentialsPerIpPerSecond: parsePositiveInt(process.env.CREDENTIALS_PER_IP_PER_SECOND, '5', 'CREDENTIALS_PER_IP_PER_SECOND', 1),
     requestsPerIpPerSecond: parsePositiveInt(process.env.REQUESTS_PER_IP_PER_SECOND, '50', 'REQUESTS_PER_IP_PER_SECOND', 1),
   };
 
@@ -138,11 +138,11 @@ export const CONFIG_DEFAULTS = {
   timestampMaxAge: 60000,
   timestampMaxFuture: 60000,
   // Resource limits
-  maxOffersPerUser: 20,
-  maxTotalOffers: 10000,
+  maxOffersPerUser: 1000,
+  maxTotalOffers: 100000,
   maxTotalCredentials: 50000,
   maxIceCandidatesPerOffer: 50,
-  credentialsPerIpPerHour: 10,
+  credentialsPerIpPerSecond: 5,
   requestsPerIpPerSecond: 50,
 } as const;
 
@@ -186,7 +186,7 @@ export function buildWorkerConfig(env: {
     maxTotalOffers: CONFIG_DEFAULTS.maxTotalOffers,
     maxTotalCredentials: CONFIG_DEFAULTS.maxTotalCredentials,
     maxIceCandidatesPerOffer: CONFIG_DEFAULTS.maxIceCandidatesPerOffer,
-    credentialsPerIpPerHour: CONFIG_DEFAULTS.credentialsPerIpPerHour,
+    credentialsPerIpPerSecond: CONFIG_DEFAULTS.credentialsPerIpPerSecond,
     requestsPerIpPerSecond: CONFIG_DEFAULTS.requestsPerIpPerSecond,
   };
 }

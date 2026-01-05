@@ -21,7 +21,7 @@ const MAX_PAGE_SIZE = 100;
 //   - Window starts on first request and expires after window duration
 //   - When window expires, counter resets to 0 and new window starts
 //   - This is simpler than sliding windows but may allow bursts at window boundaries
-const CREDENTIAL_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in milliseconds
+const CREDENTIAL_RATE_WINDOW = 1000; // 1 second in milliseconds
 const REQUEST_RATE_WINDOW = 1000; // 1 second in milliseconds
 
 /**
@@ -298,10 +298,10 @@ const handlers: Record<string, RpcHandler> = {
       console.warn('⚠️  WARNING: Unable to determine client IP for credential generation. Using global rate limit.');
       // Use global rate limit with much stricter limit (prevents DoS while allowing basic function)
       rateLimitKey = 'cred_gen:global_unknown';
-      rateLimit = 2; // Only 2 credentials per hour globally for all unknown IPs combined
+      rateLimit = 2; // Only 2 credentials per second globally for all unknown IPs combined
     } else {
       rateLimitKey = `cred_gen:${request.clientIp}`;
-      rateLimit = config.credentialsPerIpPerHour;
+      rateLimit = config.credentialsPerIpPerSecond;
     }
 
     const allowed = await storage.checkRateLimit(
@@ -313,7 +313,7 @@ const handlers: Record<string, RpcHandler> = {
     if (!allowed) {
       throw new RpcError(
         ErrorCodes.RATE_LIMIT_EXCEEDED,
-        `Rate limit exceeded. Maximum ${rateLimit} credentials per hour${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
+        `Rate limit exceeded. Maximum ${rateLimit} credentials per second${request.clientIp ? ' per IP' : ' (global limit for unidentified IPs)'}.`
       );
     }
 
