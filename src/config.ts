@@ -113,8 +113,8 @@ export function loadConfig(): Config {
     timestampMaxFuture: parsePositiveInt(process.env.TIMESTAMP_MAX_FUTURE, '60000', 'TIMESTAMP_MAX_FUTURE', 1000), // Min 1 second
     masterEncryptionKey,
     // Resource limits
-    maxOffersPerUser: parsePositiveInt(process.env.MAX_OFFERS_PER_USER, '20', 'MAX_OFFERS_PER_USER', 1),
-    maxTotalOffers: parsePositiveInt(process.env.MAX_TOTAL_OFFERS, '10000', 'MAX_TOTAL_OFFERS', 1),
+    maxOffersPerUser: parsePositiveInt(process.env.MAX_OFFERS_PER_USER, '1000', 'MAX_OFFERS_PER_USER', 1),
+    maxTotalOffers: parsePositiveInt(process.env.MAX_TOTAL_OFFERS, '100000', 'MAX_TOTAL_OFFERS', 1),
     maxTotalCredentials: parsePositiveInt(process.env.MAX_TOTAL_CREDENTIALS, '50000', 'MAX_TOTAL_CREDENTIALS', 1),
     maxIceCandidatesPerOffer: parsePositiveInt(process.env.MAX_ICE_CANDIDATES_PER_OFFER, '50', 'MAX_ICE_CANDIDATES_PER_OFFER', 1),
     credentialsPerIpPerSecond: parsePositiveInt(process.env.CREDENTIALS_PER_IP_PER_SECOND, '5', 'CREDENTIALS_PER_IP_PER_SECOND', 1),
