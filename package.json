@@ -25,6 +25,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.6",
     "@xtr-dev/rondevu-client": "^0.13.0",
+    "@xtr-dev/rondevu-server": "^0.5.10",
     "better-sqlite3": "^12.4.1",
     "hono": "^4.10.4"
   },
