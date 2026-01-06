@@ -1,9 +1,14 @@
 // Build script using esbuild
 const esbuild = require('esbuild');
-const pkg = require('./package.json');
+const { execSync } = require('child_process');
 
-// Use package.json version
-const version = pkg.version || 'unknown';
+// Use git commit hash for version (like Cloudflare Workers deployment)
+let version = 'unknown';
+try {
+  version = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+} catch (e) {
+  console.warn('Could not get git commit hash, using "unknown"');
+}
 
 esbuild.build({
   entryPoints: ['src/index.ts'],
