@@ -193,7 +193,8 @@ export class SQLiteStorage implements Storage {
     offerId: string,
     answererPublicKey: string,
     answerSdp: string,
-    matchedTags?: string[]
+    matchedTags?: string[],
+    newExpiresAt?: number
   ): Promise<{ success: boolean; error?: string }> {
     // Check if offer exists and is not expired
     const offer = await this.getOfferById(offerId);
@@ -213,15 +214,19 @@ export class SQLiteStorage implements Storage {
       };
     }
 
-    // Update offer with answer
+    // Update offer with answer (optionally reduce TTL for faster cleanup)
+    const now = Date.now();
     const stmt = this.db.prepare(`
       UPDATE offers
-      SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
+      SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?${newExpiresAt ? ', expires_at = ?' : ''}
       WHERE id = ? AND answerer_public_key IS NULL
     `);
 
     const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
-    const result = stmt.run(answererPublicKey, answerSdp, Date.now(), matchedTagsJson, offerId);
+    const params = newExpiresAt
+      ? [answererPublicKey, answerSdp, now, matchedTagsJson, newExpiresAt, offerId]
+      : [answererPublicKey, answerSdp, now, matchedTagsJson, offerId];
+    const result = stmt.run(...params);
 
     if (result.changes === 0) {
       return {

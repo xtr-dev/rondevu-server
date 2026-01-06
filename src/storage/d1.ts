@@ -166,7 +166,8 @@ export class D1Storage implements Storage {
     offerId: string,
     answererPublicKey: string,
     answerSdp: string,
-    matchedTags?: string[]
+    matchedTags?: string[],
+    newExpiresAt?: number
   ): Promise<{ success: boolean; error?: string }> {
     const offer = await this.getOfferById(offerId);
 
@@ -178,12 +179,19 @@ export class D1Storage implements Storage {
       return { success: false, error: 'Offer already answered' };
     }
 
+    const now = Date.now();
     const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
-    const result = await this.db.prepare(`
-      UPDATE offers
-      SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
-      WHERE id = ? AND answerer_public_key IS NULL
-    `).bind(answererPublicKey, answerSdp, Date.now(), matchedTagsJson, offerId).run();
+
+    // Optionally reduce TTL for faster cleanup after answer
+    const query = newExpiresAt
+      ? `UPDATE offers SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?, expires_at = ? WHERE id = ? AND answerer_public_key IS NULL`
+      : `UPDATE offers SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ? WHERE id = ? AND answerer_public_key IS NULL`;
+
+    const params = newExpiresAt
+      ? [answererPublicKey, answerSdp, now, matchedTagsJson, newExpiresAt, offerId]
+      : [answererPublicKey, answerSdp, now, matchedTagsJson, offerId];
+
+    const result = await this.db.prepare(query).bind(...params).run();
 
     if ((result.meta.changes || 0) === 0) {
       return { success: false, error: 'Offer already answered (race condition)' };

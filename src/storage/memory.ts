@@ -135,7 +135,8 @@ export class MemoryStorage implements Storage {
     offerId: string,
     answererPublicKey: string,
     answerSdp: string,
-    matchedTags?: string[]
+    matchedTags?: string[],
+    newExpiresAt?: number
   ): Promise<{ success: boolean; error?: string }> {
     const offer = await this.getOfferById(offerId);
 
@@ -153,6 +154,11 @@ export class MemoryStorage implements Storage {
     offer.answerSdp = answerSdp;
     offer.answeredAt = now;
     offer.matchedTags = matchedTags;
+
+    // Optionally reduce TTL for faster cleanup after answer
+    if (newExpiresAt !== undefined) {
+      offer.expiresAt = newExpiresAt;
+    }
 
     // Update answerer index
     if (!this.offersByAnswerer.has(answererPublicKey)) {

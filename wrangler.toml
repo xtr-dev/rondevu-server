@@ -6,6 +6,8 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 preview_urls = true
 
+# Note: api.ronde.vu is a standalone VPS deployment (manual deployment)
+# This worker is deployed to test.ronde.vu for testing purposes
 routes = [{ pattern = "test.ronde.vu/*", zone_name = "ronde.vu" }]
 
 # Cleanup runs every 5 minutes

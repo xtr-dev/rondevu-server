@@ -454,7 +454,9 @@ const handlers: Record<string, RpcHandler> = {
       }
     }
 
-    await storage.answerOffer(offerId, publicKey, sdp, matchedTags);
+    // Reduce TTL after answer for faster cleanup (answered offers no longer appear in discovery)
+    const newExpiresAt = Date.now() + config.answeredOfferTtl;
+    await storage.answerOffer(offerId, publicKey, sdp, matchedTags, newExpiresAt);
 
     return { success: true, offerId };
   },

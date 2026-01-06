@@ -187,7 +187,8 @@ export class MySQLStorage implements Storage {
     offerId: string,
     answererPublicKey: string,
     answerSdp: string,
-    matchedTags?: string[]
+    matchedTags?: string[],
+    newExpiresAt?: number
   ): Promise<{ success: boolean; error?: string }> {
     const offer = await this.getOfferById(offerId);
 
@@ -199,12 +200,19 @@ export class MySQLStorage implements Storage {
       return { success: false, error: 'Offer already answered' };
     }
 
+    const now = Date.now();
     const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
-    const [result] = await this.pool.query<ResultSetHeader>(
-      `UPDATE offers SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?
-       WHERE id = ? AND answerer_public_key IS NULL`,
-      [answererPublicKey, answerSdp, Date.now(), matchedTagsJson, offerId]
-    );
+
+    // Optionally reduce TTL for faster cleanup after answer
+    const query = newExpiresAt
+      ? `UPDATE offers SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ?, expires_at = ? WHERE id = ? AND answerer_public_key IS NULL`
+      : `UPDATE offers SET answerer_public_key = ?, answer_sdp = ?, answered_at = ?, matched_tags = ? WHERE id = ? AND answerer_public_key IS NULL`;
+
+    const params = newExpiresAt
+      ? [answererPublicKey, answerSdp, now, matchedTagsJson, newExpiresAt, offerId]
+      : [answererPublicKey, answerSdp, now, matchedTagsJson, offerId];
+
+    const [result] = await this.pool.query<ResultSetHeader>(query, params);
 
     if (result.affectedRows === 0) {
       return { success: false, error: 'Offer already answered (race condition)' };

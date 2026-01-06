@@ -189,7 +189,8 @@ export class PostgreSQLStorage implements Storage {
     offerId: string,
     answererPublicKey: string,
     answerSdp: string,
-    matchedTags?: string[]
+    matchedTags?: string[],
+    newExpiresAt?: number
   ): Promise<{ success: boolean; error?: string }> {
     const offer = await this.getOfferById(offerId);
 
@@ -201,12 +202,19 @@ export class PostgreSQLStorage implements Storage {
       return { success: false, error: 'Offer already answered' };
     }
 
+    const now = Date.now();
     const matchedTagsJson = matchedTags ? JSON.stringify(matchedTags) : null;
-    const result = await this.pool.query(
-      `UPDATE offers SET answerer_public_key = $1, answer_sdp = $2, answered_at = $3, matched_tags = $4
-       WHERE id = $5 AND answerer_public_key IS NULL`,
-      [answererPublicKey, answerSdp, Date.now(), matchedTagsJson, offerId]
-    );
+
+    // Optionally reduce TTL for faster cleanup after answer
+    const query = newExpiresAt
+      ? `UPDATE offers SET answerer_public_key = $1, answer_sdp = $2, answered_at = $3, matched_tags = $4, expires_at = $5 WHERE id = $6 AND answerer_public_key IS NULL`
+      : `UPDATE offers SET answerer_public_key = $1, answer_sdp = $2, answered_at = $3, matched_tags = $4 WHERE id = $5 AND answerer_public_key IS NULL`;
+
+    const params = newExpiresAt
+      ? [answererPublicKey, answerSdp, now, matchedTagsJson, newExpiresAt, offerId]
+      : [answererPublicKey, answerSdp, now, matchedTagsJson, offerId];
+
+    const result = await this.pool.query(query, params);
 
     if ((result.rowCount ?? 0) === 0) {
       return { success: false, error: 'Offer already answered (race condition)' };

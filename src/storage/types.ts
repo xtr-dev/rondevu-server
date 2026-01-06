@@ -100,9 +100,10 @@ export interface Storage {
    * @param answererPublicKey Answerer's public key
    * @param answerSdp WebRTC answer SDP
    * @param matchedTags Optional tags the answerer searched for to find this offer
+   * @param newExpiresAt Optional new expiry time (to reduce TTL after answer for faster cleanup)
    * @returns Success status and optional error message
    */
-  answerOffer(offerId: string, answererPublicKey: string, answerSdp: string, matchedTags?: string[]): Promise<{
+  answerOffer(offerId: string, answererPublicKey: string, answerSdp: string, matchedTags?: string[], newExpiresAt?: number): Promise<{
     success: boolean;
     error?: string;
   }>;

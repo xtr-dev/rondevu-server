@@ -20,6 +20,7 @@ export interface Config {
   offerDefaultTtl: number;
   offerMaxTtl: number;
   offerMinTtl: number;
+  answeredOfferTtl: number; // TTL after offer is answered (for ICE exchange)
   cleanupInterval: number;
   maxOffersPerRequest: number;
   maxBatchSize: number;
@@ -66,6 +67,7 @@ export function loadConfig(): Config {
     offerDefaultTtl: parsePositiveInt(process.env.OFFER_DEFAULT_TTL, '60000', 'OFFER_DEFAULT_TTL', 1000),
     offerMaxTtl: parsePositiveInt(process.env.OFFER_MAX_TTL, '86400000', 'OFFER_MAX_TTL', 1000),
     offerMinTtl: parsePositiveInt(process.env.OFFER_MIN_TTL, '60000', 'OFFER_MIN_TTL', 1000),
+    answeredOfferTtl: parsePositiveInt(process.env.ANSWERED_OFFER_TTL, '30000', 'ANSWERED_OFFER_TTL', 1000),
     cleanupInterval: parsePositiveInt(process.env.CLEANUP_INTERVAL, '60000', 'CLEANUP_INTERVAL', 1000),
     maxOffersPerRequest: parsePositiveInt(process.env.MAX_OFFERS_PER_REQUEST, '100', 'MAX_OFFERS_PER_REQUEST', 1),
     maxBatchSize: parsePositiveInt(process.env.MAX_BATCH_SIZE, '100', 'MAX_BATCH_SIZE', 1),
@@ -93,6 +95,7 @@ export const CONFIG_DEFAULTS = {
   offerDefaultTtl: 60000,
   offerMaxTtl: 86400000,
   offerMinTtl: 60000,
+  answeredOfferTtl: 30000, // 30 seconds TTL after offer is answered
   cleanupInterval: 60000,
   maxOffersPerRequest: 100,
   maxBatchSize: 100,
@@ -133,6 +136,7 @@ export function buildWorkerConfig(env: {
     offerDefaultTtl: env.OFFER_DEFAULT_TTL ? parseInt(env.OFFER_DEFAULT_TTL, 10) : CONFIG_DEFAULTS.offerDefaultTtl,
     offerMaxTtl: env.OFFER_MAX_TTL ? parseInt(env.OFFER_MAX_TTL, 10) : CONFIG_DEFAULTS.offerMaxTtl,
     offerMinTtl: env.OFFER_MIN_TTL ? parseInt(env.OFFER_MIN_TTL, 10) : CONFIG_DEFAULTS.offerMinTtl,
+    answeredOfferTtl: CONFIG_DEFAULTS.answeredOfferTtl,
     cleanupInterval: CONFIG_DEFAULTS.cleanupInterval,
     maxOffersPerRequest: env.MAX_OFFERS_PER_REQUEST ? parseInt(env.MAX_OFFERS_PER_REQUEST, 10) : CONFIG_DEFAULTS.maxOffersPerRequest,
     maxBatchSize: env.MAX_BATCH_SIZE ? parseInt(env.MAX_BATCH_SIZE, 10) : CONFIG_DEFAULTS.maxBatchSize,
