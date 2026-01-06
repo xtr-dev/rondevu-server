@@ -508,6 +508,28 @@ export class D1Storage implements Storage {
     return result?.count ?? 0;
   }
 
+  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (tags.length === 0) return result;
+
+    const now = Date.now();
+
+    // Query each tag individually using json_each
+    for (const tag of tags) {
+      const queryResult = await this.db.prepare(`
+        SELECT COUNT(DISTINCT o.id) as count
+        FROM offers o, json_each(o.tags) as t
+        WHERE t.value = ?
+          AND o.expires_at > ?
+          AND o.answerer_public_key IS NULL
+      `).bind(tag, now).first() as { count: number } | null;
+
+      result.set(tag, queryResult?.count ?? 0);
+    }
+
+    return result;
+  }
+
   // ===== Helper Methods =====
 
   private rowToOffer(row: any): Offer {

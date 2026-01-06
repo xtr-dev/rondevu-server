@@ -255,4 +255,11 @@ export interface Storage {
    * @returns ICE candidate count for offer
    */
   getIceCandidateCount(offerId: string): Promise<number>;
+
+  /**
+   * Counts available (unanswered, non-expired) offers for each of the given tags
+   * @param tags Array of tags to count offers for
+   * @returns Map of tag to offer count
+   */
+  countOffersByTags(tags: string[]): Promise<Map<string, number>>;
 }

@@ -484,6 +484,28 @@ export class PostgreSQLStorage implements Storage {
     return Number(result.rows[0].count);
   }
 
+  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (tags.length === 0) return result;
+
+    const now = Date.now();
+
+    // Query each tag individually using JSONB containment
+    for (const tag of tags) {
+      const queryResult = await this.pool.query(
+        `SELECT COUNT(DISTINCT id) as count
+         FROM offers
+         WHERE tags ? $1
+           AND expires_at > $2
+           AND answerer_public_key IS NULL`,
+        [tag, now]
+      );
+      result.set(tag, Number(queryResult.rows[0].count));
+    }
+
+    return result;
+  }
+
   // ===== Helper Methods =====
 
   private rowToOffer(row: any): Offer {

@@ -543,6 +543,30 @@ export class SQLiteStorage implements Storage {
     return result.count;
   }
 
+  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (tags.length === 0) return result;
+
+    const now = Date.now();
+
+    // Query counts for each tag individually for accuracy
+    // (an offer with multiple matching tags should only count once per tag)
+    const stmt = this.db.prepare(`
+      SELECT COUNT(DISTINCT o.id) as count
+      FROM offers o, json_each(o.tags) as t
+      WHERE t.value = ?
+        AND o.expires_at > ?
+        AND o.answerer_public_key IS NULL
+    `);
+
+    for (const tag of tags) {
+      const row = stmt.get(tag, now) as { count: number };
+      result.set(tag, row.count);
+    }
+
+    return result;
+  }
+
   // ===== Helper Methods =====
 
   /**

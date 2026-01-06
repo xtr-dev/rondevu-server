@@ -476,6 +476,28 @@ export class MySQLStorage implements Storage {
     return Number(rows[0].count);
   }
 
+  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (tags.length === 0) return result;
+
+    const now = Date.now();
+
+    // Query each tag individually using JSON_CONTAINS
+    for (const tag of tags) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT id) as count
+         FROM offers
+         WHERE JSON_CONTAINS(tags, ?)
+           AND expires_at > ?
+           AND answerer_public_key IS NULL`,
+        [JSON.stringify(tag), now]
+      );
+      result.set(tag, Number(rows[0].count));
+    }
+
+    return result;
+  }
+
   // ===== Helper Methods =====
 
   private rowToOffer(row: RowDataPacket): Offer {

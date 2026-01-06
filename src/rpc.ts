@@ -128,6 +128,10 @@ export interface DiscoverParams {
   offset?: number;
 }
 
+export interface CountOffersByTagsParams {
+  tags: string[];
+}
+
 export interface PublishOfferParams {
   tags: string[];
   offers: Array<{ sdp: string }>;
@@ -298,6 +302,28 @@ const handlers: Record<string, RpcHandler> = {
       createdAt: offer.createdAt,
       expiresAt: offer.expiresAt,
     };
+  },
+
+  /**
+   * Count available offers by tags
+   */
+  async countOffersByTags(params: CountOffersByTagsParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
+    const { tags } = params;
+
+    const tagsValidation = validateTags(tags);
+    if (!tagsValidation.valid) {
+      throw new RpcError(ErrorCodes.INVALID_TAG, tagsValidation.error || 'Invalid tags');
+    }
+
+    const counts = await storage.countOffersByTags(tags);
+
+    // Convert Map to object for JSON serialization
+    const result: Record<string, number> = {};
+    for (const [tag, count] of counts) {
+      result[tag] = count;
+    }
+
+    return { counts: result };
   },
 
   /**
@@ -669,7 +695,7 @@ const handlers: Record<string, RpcHandler> = {
 };
 
 // Methods that don't require authentication
-const UNAUTHENTICATED_METHODS = new Set(['discover']);
+const UNAUTHENTICATED_METHODS = new Set(['discover', 'countOffersByTags']);
 
 /**
  * Handle RPC batch request with header-based authentication

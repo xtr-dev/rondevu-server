@@ -445,6 +445,32 @@ export class MemoryStorage implements Storage {
     return candidates ? candidates.length : 0;
   }
 
+  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (tags.length === 0) return result;
+
+    const now = Date.now();
+
+    for (const tag of tags) {
+      const offerIds = this.offersByTag.get(tag);
+      if (!offerIds) {
+        result.set(tag, 0);
+        continue;
+      }
+
+      let count = 0;
+      for (const offerId of offerIds) {
+        const offer = this.offers.get(offerId);
+        if (offer && offer.expiresAt > now && !offer.answererPublicKey) {
+          count++;
+        }
+      }
+      result.set(tag, count);
+    }
+
+    return result;
+  }
+
   // ===== Helper Methods =====
 
   private removeOfferFromIndexes(offer: Offer): void {
