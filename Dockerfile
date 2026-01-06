@@ -53,8 +53,7 @@ USER node
 
 # Environment variables with defaults
 ENV PORT=3000
-ENV STORAGE_TYPE=sqlite
-ENV STORAGE_PATH=/app/data/rondevu.db
+ENV STORAGE_TYPE=memory
 ENV CORS_ORIGINS=*
 ENV NODE_ENV=production
 
