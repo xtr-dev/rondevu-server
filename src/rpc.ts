@@ -540,6 +540,7 @@ const handlers: Record<string, RpcHandler> = {
         answererPublicKey: offer.answererPublicKey,
         sdp: offer.answerSdp,
         answeredAt: offer.answeredAt,
+        matchedTags: offer.matchedTags,
       })),
       iceCandidates: iceCandidatesByOffer,
     };

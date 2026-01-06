@@ -21,6 +21,7 @@ CREATE TABLE identities (
 CREATE INDEX idx_identities_expires ON identities(expires_at);
 
 -- Offers table (uses public_key instead of username)
+-- Note: No foreign key to identities - auth is stateless (signature-based)
 CREATE TABLE offers (
   id TEXT PRIMARY KEY,
   public_key TEXT NOT NULL,  -- Owner's Ed25519 public key
@@ -32,8 +33,7 @@ CREATE TABLE offers (
   answerer_public_key TEXT,
   answer_sdp TEXT,
   answered_at INTEGER,
-  matched_tags TEXT,  -- JSON array: tags the answerer searched for
-  FOREIGN KEY (public_key) REFERENCES identities(public_key) ON DELETE CASCADE
+  matched_tags TEXT  -- JSON array: tags the answerer searched for
 );
 
 CREATE INDEX idx_offers_public_key ON offers(public_key);
@@ -42,14 +42,14 @@ CREATE INDEX idx_offers_last_seen ON offers(last_seen);
 CREATE INDEX idx_offers_answerer ON offers(answerer_public_key);
 
 -- ICE candidates table (uses public_key instead of username)
+-- Note: No foreign key - offers may be deleted before candidates are read
 CREATE TABLE ice_candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   offer_id TEXT NOT NULL,
   public_key TEXT NOT NULL,  -- Sender's Ed25519 public key
   role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
   candidate TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
+  created_at INTEGER NOT NULL
 );
 
 CREATE INDEX idx_ice_offer ON ice_candidates(offer_id);

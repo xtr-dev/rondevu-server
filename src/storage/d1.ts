@@ -35,6 +35,7 @@ export class D1Storage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_identities_expires ON identities(expires_at);
 
       -- WebRTC signaling offers with tags
+      -- Note: No foreign key to identities - auth is stateless (signature-based)
       CREATE TABLE IF NOT EXISTS offers (
         id TEXT PRIMARY KEY,
         public_key TEXT NOT NULL,
@@ -46,8 +47,7 @@ export class D1Storage implements Storage {
         answerer_public_key TEXT,
         answer_sdp TEXT,
         answered_at INTEGER,
-        matched_tags TEXT,
-        FOREIGN KEY (public_key) REFERENCES identities(public_key) ON DELETE CASCADE
+        matched_tags TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_offers_public_key ON offers(public_key);
@@ -56,14 +56,14 @@ export class D1Storage implements Storage {
       CREATE INDEX IF NOT EXISTS idx_offers_answerer ON offers(answerer_public_key);
 
       -- ICE candidates table
+      -- Note: No foreign key - offers may be deleted before candidates are read
       CREATE TABLE IF NOT EXISTS ice_candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         offer_id TEXT NOT NULL,
         public_key TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('offerer', 'answerer')),
         candidate TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        FOREIGN KEY (offer_id) REFERENCES offers(id) ON DELETE CASCADE
+        created_at INTEGER NOT NULL
       );
 
       CREATE INDEX IF NOT EXISTS idx_ice_offer ON ice_candidates(offer_id);
