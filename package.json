@@ -1,6 +1,6 @@
 {
   "name": "@xtr-dev/rondevu-server",
-  "version": "0.5.15",
+  "version": "0.5.16",
   "description": "DNS-like WebRTC signaling server with credential-based authentication and service discovery",
   "main": "dist/index.js",
   "scripts": {
