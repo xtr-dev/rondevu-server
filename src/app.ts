@@ -28,12 +28,17 @@ export function createApp(storage: Storage, config: Config) {
     maxAge: 86400,
   }));
 
-  // Root endpoint - server info
-  app.get('/', (c) => {
+  // Root endpoint - server info with stats
+  app.get('/', async (c) => {
+    const offerCount = await storage.getOfferCount();
+
     return c.json({
       version: config.version,
       name: 'Rondevu',
       description: 'WebRTC signaling with RPC interface and Ed25519 signature-based authentication',
+      stats: {
+        offers: offerCount,
+      },
     }, 200);
   });
 
