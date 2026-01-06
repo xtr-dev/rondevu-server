@@ -2,13 +2,17 @@
 const esbuild = require('esbuild');
 const { execSync } = require('child_process');
 
-// Use git commit hash for version (like Cloudflare Workers deployment)
-let version = 'unknown';
-try {
-  version = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
-} catch (e) {
-  console.warn('Could not get git commit hash, using "unknown"');
+// Use VERSION env var first (for Docker builds), then fall back to git commit hash
+let version = process.env.VERSION;
+if (!version || version === 'unknown') {
+  try {
+    version = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+  } catch (e) {
+    console.warn('Could not get git commit hash, using "unknown"');
+    version = 'unknown';
+  }
 }
+console.log(`Building with version: ${version}`);
 
 esbuild.build({
   entryPoints: ['src/index.ts'],

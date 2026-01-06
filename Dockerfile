@@ -1,12 +1,18 @@
 # Build stage
 FROM node:20-alpine AS builder
 
+# Version is passed as build arg (from git commit hash)
+ARG VERSION=unknown
+
+# Install build tools for better-sqlite3
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies (including native modules)
 RUN npm ci
 
 # Copy source files
@@ -14,21 +20,29 @@ COPY tsconfig.json ./
 COPY build.js ./
 COPY src ./src
 
-# Build TypeScript
-RUN npm run build
+# Build TypeScript with version embedded
+RUN VERSION=$VERSION npm run build
 
 # Production stage
 FROM node:20-alpine
 
+# Install build tools for better-sqlite3 native module
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
-# Install production dependencies only
+# Copy package files and install production deps
 COPY package*.json ./
 RUN npm ci --omit=dev && \
-    npm cache clean --force
+    npm rebuild better-sqlite3 && \
+    npm cache clean --force && \
+    apk del python3 make g++
 
 # Copy built files from builder
 COPY --from=builder /app/dist ./dist
+
+# Copy migrations for schema setup
+COPY migrations ./migrations
 
 # Create data directory for SQLite
 RUN mkdir -p /app/data && \
@@ -40,11 +54,9 @@ USER node
 # Environment variables with defaults
 ENV PORT=3000
 ENV STORAGE_TYPE=sqlite
-ENV STORAGE_PATH=/app/data/sessions.db
-ENV SESSION_TIMEOUT=300000
-ENV CODE_CHARS=0123456789
-ENV CODE_LENGTH=9
+ENV STORAGE_PATH=/app/data/rondevu.db
 ENV CORS_ORIGINS=*
+ENV NODE_ENV=production
 
 # Expose port
 EXPOSE 3000
