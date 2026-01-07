@@ -543,7 +543,7 @@ export class SQLiteStorage implements Storage {
     return result.count;
   }
 
-  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+  async countOffersByTags(tags: string[], unique = false): Promise<Map<string, number>> {
     const result = new Map<string, number>();
     if (tags.length === 0) return result;
 
@@ -551,8 +551,9 @@ export class SQLiteStorage implements Storage {
 
     // Query counts for each tag individually for accuracy
     // (an offer with multiple matching tags should only count once per tag)
+    const countColumn = unique ? 'COUNT(DISTINCT o.public_key)' : 'COUNT(DISTINCT o.id)';
     const stmt = this.db.prepare(`
-      SELECT COUNT(DISTINCT o.id) as count
+      SELECT ${countColumn} as count
       FROM offers o, json_each(o.tags) as t
       WHERE t.value = ?
         AND o.expires_at > ?

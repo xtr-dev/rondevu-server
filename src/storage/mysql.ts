@@ -476,7 +476,7 @@ export class MySQLStorage implements Storage {
     return Number(rows[0].count);
   }
 
-  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+  async countOffersByTags(tags: string[], unique = false): Promise<Map<string, number>> {
     const result = new Map<string, number>();
     if (tags.length === 0) return result;
 
@@ -484,8 +484,9 @@ export class MySQLStorage implements Storage {
 
     // Query each tag individually using JSON_CONTAINS
     for (const tag of tags) {
+      const countColumn = unique ? 'COUNT(DISTINCT public_key)' : 'COUNT(DISTINCT id)';
       const [rows] = await this.pool.query<RowDataPacket[]>(
-        `SELECT COUNT(DISTINCT id) as count
+        `SELECT ${countColumn} as count
          FROM offers
          WHERE JSON_CONTAINS(tags, ?)
            AND expires_at > ?

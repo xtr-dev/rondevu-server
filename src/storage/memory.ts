@@ -445,7 +445,7 @@ export class MemoryStorage implements Storage {
     return candidates ? candidates.length : 0;
   }
 
-  async countOffersByTags(tags: string[]): Promise<Map<string, number>> {
+  async countOffersByTags(tags: string[], unique = false): Promise<Map<string, number>> {
     const result = new Map<string, number>();
     if (tags.length === 0) return result;
 
@@ -458,14 +458,27 @@ export class MemoryStorage implements Storage {
         continue;
       }
 
-      let count = 0;
-      for (const offerId of offerIds) {
-        const offer = this.offers.get(offerId);
-        if (offer && offer.expiresAt > now && !offer.answererPublicKey) {
-          count++;
+      if (unique) {
+        // Count unique public keys
+        const uniquePublicKeys = new Set<string>();
+        for (const offerId of offerIds) {
+          const offer = this.offers.get(offerId);
+          if (offer && offer.expiresAt > now && !offer.answererPublicKey) {
+            uniquePublicKeys.add(offer.publicKey);
+          }
         }
+        result.set(tag, uniquePublicKeys.size);
+      } else {
+        // Count total offers
+        let count = 0;
+        for (const offerId of offerIds) {
+          const offer = this.offers.get(offerId);
+          if (offer && offer.expiresAt > now && !offer.answererPublicKey) {
+            count++;
+          }
+        }
+        result.set(tag, count);
       }
-      result.set(tag, count);
     }
 
     return result;

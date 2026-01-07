@@ -259,7 +259,8 @@ export interface Storage {
   /**
    * Counts available (unanswered, non-expired) offers for each of the given tags
    * @param tags Array of tags to count offers for
-   * @returns Map of tag to offer count
+   * @param unique If true, count unique public keys instead of total offers
+   * @returns Map of tag to count
    */
-  countOffersByTags(tags: string[]): Promise<Map<string, number>>;
+  countOffersByTags(tags: string[], unique?: boolean): Promise<Map<string, number>>;
 }

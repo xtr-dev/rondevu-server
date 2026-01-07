@@ -130,6 +130,7 @@ export interface DiscoverParams {
 
 export interface CountOffersByTagsParams {
   tags: string[];
+  unique?: boolean;
 }
 
 export interface PublishOfferParams {
@@ -308,14 +309,14 @@ const handlers: Record<string, RpcHandler> = {
    * Count available offers by tags
    */
   async countOffersByTags(params: CountOffersByTagsParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
-    const { tags } = params;
+    const { tags, unique } = params;
 
     const tagsValidation = validateTags(tags);
     if (!tagsValidation.valid) {
       throw new RpcError(ErrorCodes.INVALID_TAG, tagsValidation.error || 'Invalid tags');
     }
 
-    const counts = await storage.countOffersByTags(tags);
+    const counts = await storage.countOffersByTags(tags, unique === true);
 
     // Convert Map to object for JSON serialization
     const result: Record<string, number> = {};
