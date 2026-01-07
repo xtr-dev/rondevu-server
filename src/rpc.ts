@@ -482,6 +482,7 @@ const handlers: Record<string, RpcHandler> = {
 
     // Reduce TTL after answer for faster cleanup (answered offers no longer appear in discovery)
     const newExpiresAt = Date.now() + config.answeredOfferTtl;
+
     await storage.answerOffer(offerId, publicKey, sdp, matchedTags, newExpiresAt);
 
     return { success: true, offerId };
@@ -536,6 +537,7 @@ const handlers: Record<string, RpcHandler> = {
     const sinceTimestamp = since !== undefined ? since : 0;
 
     const answeredOffers = await storage.getAnsweredOffers(publicKey);
+
     const filteredAnswers = answeredOffers.filter(
       (offer) => offer.answeredAt && offer.answeredAt > sinceTimestamp
     );

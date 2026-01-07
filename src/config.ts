@@ -95,7 +95,7 @@ export const CONFIG_DEFAULTS = {
   offerDefaultTtl: 60000,
   offerMaxTtl: 86400000,
   offerMinTtl: 60000,
-  answeredOfferTtl: 30000, // 30 seconds TTL after offer is answered
+  answeredOfferTtl: 60000, // 60 seconds TTL after offer is answered
   cleanupInterval: 60000,
   maxOffersPerRequest: 100,
   maxBatchSize: 100,

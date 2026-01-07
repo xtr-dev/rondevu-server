@@ -378,48 +378,54 @@ export class D1Storage implements Storage {
       throw new Error('Too many offer IDs (max 1000)');
     }
 
-    const placeholders = offerIds.map(() => '?').join(',');
+    // D1 has a limit of ~100 bind parameters per query, so batch queries
+    // Each query uses: offerIds.length + 2 (publicKey twice) + 1 (optional since) params
+    // Use batches of 90 offer IDs to stay safely under the limit
+    const BATCH_SIZE = 90;
 
-    let query = `
-      SELECT ic.*, o.public_key as offer_public_key
-      FROM ice_candidates ic
-      INNER JOIN offers o ON o.id = ic.offer_id
-      WHERE ic.offer_id IN (${placeholders})
-      AND (
-        (o.public_key = ? AND ic.role = 'answerer')
-        OR (o.answerer_public_key = ? AND ic.role = 'offerer')
-      )
-    `;
+    for (let i = 0; i < offerIds.length; i += BATCH_SIZE) {
+      const batchOfferIds = offerIds.slice(i, i + BATCH_SIZE);
+      const placeholders = batchOfferIds.map(() => '?').join(',');
 
-    const params: any[] = [...offerIds, publicKey, publicKey];
+      let query = `
+        SELECT ic.*, o.public_key as offer_public_key
+        FROM ice_candidates ic
+        INNER JOIN offers o ON o.id = ic.offer_id
+        WHERE ic.offer_id IN (${placeholders})
+        AND (
+          (o.public_key = ? AND ic.role = 'answerer')
+          OR (o.answerer_public_key = ? AND ic.role = 'offerer')
+        )
+      `;
 
-    if (since !== undefined) {
-      query += ' AND ic.created_at > ?';
-      params.push(since);
-    }
+      const params: any[] = [...batchOfferIds, publicKey, publicKey];
 
-    query += ' ORDER BY ic.created_at ASC';
-
-    const queryResult = await this.db.prepare(query).bind(...params).all();
-
-    if (!queryResult.results) {
-      return result;
-    }
-
-    for (const row of queryResult.results as any[]) {
-      const candidate: IceCandidate = {
-        id: row.id,
-        offerId: row.offer_id,
-        publicKey: row.public_key,
-        role: row.role,
-        candidate: JSON.parse(row.candidate),
-        createdAt: row.created_at,
-      };
-
-      if (!result.has(row.offer_id)) {
-        result.set(row.offer_id, []);
+      if (since !== undefined) {
+        query += ' AND ic.created_at > ?';
+        params.push(since);
       }
-      result.get(row.offer_id)!.push(candidate);
+
+      query += ' ORDER BY ic.created_at ASC';
+
+      const queryResult = await this.db.prepare(query).bind(...params).all();
+
+      if (queryResult.results) {
+        for (const row of queryResult.results as any[]) {
+          const candidate: IceCandidate = {
+            id: row.id,
+            offerId: row.offer_id,
+            publicKey: row.public_key,
+            role: row.role,
+            candidate: JSON.parse(row.candidate),
+            createdAt: row.created_at,
+          };
+
+          if (!result.has(row.offer_id)) {
+            result.set(row.offer_id, []);
+          }
+          result.get(row.offer_id)!.push(candidate);
+        }
+      }
     }
 
     return result;
