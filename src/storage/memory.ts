@@ -116,6 +116,45 @@ export class MemoryStorage implements Storage {
     return true;
   }
 
+  async updateOfferTags(ownerPublicKey: string, newTags: string[]): Promise<number> {
+    const offerIds = this.offersByPublicKey.get(ownerPublicKey);
+    if (!offerIds || offerIds.size === 0) return 0;
+
+    const now = Date.now();
+    let count = 0;
+
+    for (const offerId of offerIds) {
+      const offer = this.offers.get(offerId);
+      if (!offer || offer.expiresAt <= now) continue;
+
+      // Remove old tag indexes
+      for (const oldTag of offer.tags) {
+        const tagOffers = this.offersByTag.get(oldTag);
+        if (tagOffers) {
+          tagOffers.delete(offerId);
+          if (tagOffers.size === 0) {
+            this.offersByTag.delete(oldTag);
+          }
+        }
+      }
+
+      // Update offer tags
+      offer.tags = [...newTags];
+
+      // Add new tag indexes
+      for (const newTag of newTags) {
+        if (!this.offersByTag.has(newTag)) {
+          this.offersByTag.set(newTag, new Set());
+        }
+        this.offersByTag.get(newTag)!.add(offerId);
+      }
+
+      count++;
+    }
+
+    return count;
+  }
+
   async deleteExpiredOffers(now: number): Promise<number> {
     let count = 0;
 

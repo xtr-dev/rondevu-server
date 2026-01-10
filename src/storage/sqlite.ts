@@ -183,6 +183,16 @@ export class SQLiteStorage implements Storage {
     return result.changes > 0;
   }
 
+  async updateOfferTags(ownerPublicKey: string, newTags: string[]): Promise<number> {
+    const stmt = this.db.prepare(`
+      UPDATE offers
+      SET tags = ?
+      WHERE public_key = ? AND expires_at > ?
+    `);
+    const result = stmt.run(JSON.stringify(newTags), ownerPublicKey, Date.now());
+    return result.changes;
+  }
+
   async deleteExpiredOffers(now: number): Promise<number> {
     const stmt = this.db.prepare('DELETE FROM offers WHERE expires_at < ?');
     const result = stmt.run(now);

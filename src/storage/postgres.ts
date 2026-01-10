@@ -177,6 +177,14 @@ export class PostgreSQLStorage implements Storage {
     return (result.rowCount ?? 0) > 0;
   }
 
+  async updateOfferTags(ownerPublicKey: string, newTags: string[]): Promise<number> {
+    const result = await this.pool.query(
+      `UPDATE offers SET tags = $1 WHERE public_key = $2 AND expires_at > $3`,
+      [JSON.stringify(newTags), ownerPublicKey, Date.now()]
+    );
+    return result.rowCount ?? 0;
+  }
+
   async deleteExpiredOffers(now: number): Promise<number> {
     const result = await this.pool.query(
       `DELETE FROM offers WHERE expires_at < $1`,

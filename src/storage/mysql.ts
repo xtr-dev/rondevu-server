@@ -175,6 +175,14 @@ export class MySQLStorage implements Storage {
     return result.affectedRows > 0;
   }
 
+  async updateOfferTags(ownerPublicKey: string, newTags: string[]): Promise<number> {
+    const [result] = await this.pool.query<ResultSetHeader>(
+      `UPDATE offers SET tags = ? WHERE public_key = ? AND expires_at > ?`,
+      [JSON.stringify(newTags), ownerPublicKey, Date.now()]
+    );
+    return result.affectedRows;
+  }
+
   async deleteExpiredOffers(now: number): Promise<number> {
     const [result] = await this.pool.query<ResultSetHeader>(
       `DELETE FROM offers WHERE expires_at < ?`,

@@ -88,6 +88,14 @@ export interface Storage {
   deleteOffer(offerId: string, ownerPublicKey: string): Promise<boolean>;
 
   /**
+   * Updates tags for all offers owned by a public key
+   * @param ownerPublicKey Public key of the offer owner
+   * @param newTags New tags to set on all offers
+   * @returns Number of offers updated
+   */
+  updateOfferTags(ownerPublicKey: string, newTags: string[]): Promise<number>;
+
+  /**
    * Deletes all expired offers
    * @param now Current timestamp
    * @returns Number of offers deleted

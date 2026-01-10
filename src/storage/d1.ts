@@ -154,6 +154,16 @@ export class D1Storage implements Storage {
     return (result.meta.changes || 0) > 0;
   }
 
+  async updateOfferTags(ownerPublicKey: string, newTags: string[]): Promise<number> {
+    const result = await this.db.prepare(`
+      UPDATE offers
+      SET tags = ?
+      WHERE public_key = ? AND expires_at > ?
+    `).bind(JSON.stringify(newTags), ownerPublicKey, Date.now()).run();
+
+    return result.meta.changes || 0;
+  }
+
   async deleteExpiredOffers(now: number): Promise<number> {
     const result = await this.db.prepare(`
       DELETE FROM offers WHERE expires_at < ?

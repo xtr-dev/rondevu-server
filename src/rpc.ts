@@ -143,6 +143,10 @@ export interface DeleteOfferParams {
   offerId: string;
 }
 
+export interface UpdateOfferTagsParams {
+  tags: string[];
+}
+
 export interface AnswerOfferParams {
   offerId: string;
   sdp: string;
@@ -438,6 +442,26 @@ const handlers: Record<string, RpcHandler> = {
     }
 
     return { success: true };
+  },
+
+  /**
+   * Update tags for all offers owned by the authenticated user
+   */
+  async updateOfferTags(params: UpdateOfferTagsParams, publicKey, timestamp, signature, storage, config, request: RpcRequest) {
+    const { tags } = params;
+
+    if (!publicKey) {
+      throw new RpcError(ErrorCodes.AUTH_REQUIRED, 'Authentication required');
+    }
+
+    const tagsValidation = validateTags(tags);
+    if (!tagsValidation.valid) {
+      throw new RpcError(ErrorCodes.INVALID_TAG, tagsValidation.error || 'Invalid tags');
+    }
+
+    const count = await storage.updateOfferTags(publicKey, tags);
+
+    return { success: true, count };
   },
 
   /**
