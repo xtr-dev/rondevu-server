@@ -101,11 +101,23 @@ export class RpcError extends Error {
 }
 
 /**
- * RPC request format (body only - auth in headers)
+ * Per-request authentication (for batched requests)
+ */
+export interface RequestAuth {
+  publicKey: string;
+  timestamp: number;
+  nonce: string;
+  signature: string;
+}
+
+/**
+ * RPC request format
+ * Auth can be provided per-request (for batching) or via HTTP headers (legacy)
  */
 export interface RpcRequest {
   method: string;
   params?: any;
+  auth?: RequestAuth;
   clientIp?: string;
 }
 
@@ -791,7 +803,7 @@ export async function handleRpc(
   // Process all requests
   for (const request of requests) {
     try {
-      const { method, params } = request;
+      const { method, params, auth: requestAuth } = request;
 
       if (!method || typeof method !== 'string') {
         responses.push({
@@ -815,48 +827,54 @@ export async function handleRpc(
       const requiresAuth = !UNAUTHENTICATED_METHODS.has(method);
 
       if (requiresAuth) {
-        if (!publicKey || typeof publicKey !== 'string') {
+        // Use per-request auth if provided, otherwise fall back to HTTP headers
+        const reqPublicKey = requestAuth?.publicKey ?? publicKey;
+        const reqTimestamp = requestAuth?.timestamp ?? timestamp;
+        const reqNonce = requestAuth?.nonce ?? nonce;
+        const reqSignature = requestAuth?.signature ?? signature;
+
+        if (!reqPublicKey || typeof reqPublicKey !== 'string') {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-PublicKey header',
+            error: 'Missing or invalid publicKey (provide in request.auth or X-PublicKey header)',
             errorCode: ErrorCodes.AUTH_REQUIRED,
           });
           continue;
         }
 
-        if (!timestampHeader || typeof timestampHeader !== 'string' || isNaN(timestamp)) {
+        if (reqTimestamp === undefined || reqTimestamp === 0 || typeof reqTimestamp !== 'number') {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-Timestamp header',
+            error: 'Missing or invalid timestamp (provide in request.auth or X-Timestamp header)',
             errorCode: ErrorCodes.AUTH_REQUIRED,
           });
           continue;
         }
 
-        if (!nonce || typeof nonce !== 'string') {
+        if (!reqNonce || typeof reqNonce !== 'string') {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-Nonce header (use crypto.randomUUID())',
+            error: 'Missing or invalid nonce (provide in request.auth or X-Nonce header)',
             errorCode: ErrorCodes.AUTH_REQUIRED,
           });
           continue;
         }
 
-        if (!signature || typeof signature !== 'string') {
+        if (!reqSignature || typeof reqSignature !== 'string') {
           responses.push({
             success: false,
-            error: 'Missing or invalid X-Signature header',
+            error: 'Missing or invalid signature (provide in request.auth or X-Signature header)',
             errorCode: ErrorCodes.AUTH_REQUIRED,
           });
           continue;
         }
 
-        // Verify Ed25519 signature
+        // Verify Ed25519 signature for this specific request
         await verifyRequestSignature(
-          publicKey,
-          timestamp,
-          nonce,
-          signature,
+          reqPublicKey,
+          reqTimestamp,
+          reqNonce,
+          reqSignature,
           method,
           params,
           storage,
@@ -865,9 +883,9 @@ export async function handleRpc(
 
         const result = await handler(
           params || {},
-          publicKey,
-          timestamp,
-          signature,
+          reqPublicKey,
+          reqTimestamp,
+          reqSignature,
           storage,
           config,
           { ...request, clientIp }
@@ -879,9 +897,11 @@ export async function handleRpc(
         });
       } else {
         // Execute handler without strict auth requirement
+        // Still use per-request auth publicKey if provided (for filtering own offers)
+        const reqPublicKey = requestAuth?.publicKey ?? publicKey ?? '';
         const result = await handler(
           params || {},
-          publicKey || '',
+          reqPublicKey,
           0,
           '',
           storage,
